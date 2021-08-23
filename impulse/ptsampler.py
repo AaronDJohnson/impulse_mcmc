@@ -1,11 +1,14 @@
 import numpy as np
+import os
 from multiprocessing import Pool
 from itertools import repeat
 
-from .sampler import MHSampler
-from .proposals import pre_proposals, stock_proposals
-from .save_hdf import save_h5
+from impulse.sampler import MHSampler
+from impulse.proposals import pre_proposals, stock_proposals
+from impulse.save_hdf import save_h5
 
+
+# This is a work in progress....
 
 def temp_ladder(ndim, nchain, temp_min, temp_max=None, temp_step=None):
     """
@@ -51,7 +54,7 @@ def pt_pre_sample(post, x0, mix, num_samples, loop_iterations, full_chain):
     return x0, full_chain, mix
 
 
-def pre_worker(tasks)
+def pre_worker(tasks):
     post, x0, mix, num_samples, loop_iterations = tasks
     x0, full_chain, mix = pt_pre_sample(post, x0, mix, num_samples, loop_iterations, full_chain)
     return x0, full_chain, mix

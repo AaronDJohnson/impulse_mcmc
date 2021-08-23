@@ -1,6 +1,4 @@
-import numpy as np
 import h5py
-import os
 
 
 def save_h5(filepath, data):

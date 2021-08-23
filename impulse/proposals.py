@@ -1,6 +1,6 @@
 import numpy as np
-from .batch_updates import update_covariance
-from .random import rng
+from impulse.batch_updates import update_covariance
+from impulse.random import rng
 
 
 class ProposalMix():

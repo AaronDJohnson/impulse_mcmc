@@ -1,7 +1,7 @@
 import os
 import numpy as np
 # from schwimmbad import MultiPool
-from .random import rng
+from impulse.random import rng
 
 
 class MHSampler(object):

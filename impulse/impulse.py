@@ -1,11 +1,11 @@
 import numpy as np
-from schwimmbad import MultiPool
+# from schwimmbad import MultiPool
 from tqdm import tqdm
 import os
 
-from .sampler import MHSampler
-from .proposals import pre_proposals, stock_proposals
-from .save_hdf import save_h5
+from impulse.sampler import MHSampler
+from impulse.proposals import pre_proposals, stock_proposals
+from impulse.save_hdf import save_h5
 
 
 def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True, outdir='./test', compress=True):
