@@ -48,10 +48,10 @@ class MHSampler(object):
             # compute hastings ratio
             lnprob_star = self.lnprob_fn(x_star)
 
-            hastings_ratio = np.exp(lnprob_star - self.lnprob0) * factor
+            hastings_ratio = lnprob_star - self.lnprob0 + factor
 
             # accept/reject step
-            if rand_num < hastings_ratio:
+            if np.log(rand_num) < hastings_ratio:
                 x0 = x_star
                 self.lnprob0 = lnprob_star
                 naccept += 1

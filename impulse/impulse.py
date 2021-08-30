@@ -15,7 +15,8 @@ def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True,
     full_chain = np.zeros((num_samples, ndim))
     # set up count and iterations between loops
     count = 0
-    while count < int(num_samples / 100):
+    burn_in = int(num_samples / 100)
+    while count < burn_in:
         sampler = MHSampler(x0, post, mix, iterations=loop_iterations)
         chain, accept, lnprob = sampler.sample()
         sampler.save_samples(outdir)
@@ -25,7 +26,7 @@ def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True,
         count += loop_iterations
     # add DE jump:
     mix = stock_proposals(ndim, full_chain)
-    for i in tqdm(range(int(num_samples / 100), int(num_samples), loop_iterations)):
+    for i in tqdm(range(burn_in, int(num_samples), loop_iterations)):
         sampler = MHSampler(x0, post, mix, iterations=loop_iterations)
         chain, accept, lnprob = sampler.sample()
         sampler.save_samples(outdir)

@@ -64,7 +64,7 @@ class PriorProposal():
 
     def __call__(self, x):
         x_star = rng.uniform(self.prior_min, self.prior_max)
-        return x_star, 1
+        return x_star, 0
 
 
 class AMProposal():
@@ -90,8 +90,8 @@ class AMProposal():
         u = rng.standard_normal(len(x))
         x_star = x + np.sqrt(self.alpha) * self.cov_chol @ u
 
-        # proposal ratio factor is 1 (symmetric jump)
-        factor = 1
+        # proposal ratio factor is 0 (symmetric jump)
+        factor = 0
 
         return x_star, factor
 
@@ -119,7 +119,7 @@ class SCAMProposal():
         Dj = self.cov_evec[:, idx]
         x_star = x + np.sqrt(self.alpha) * Dj @ uj
 
-        factor = 1
+        factor = 0
 
         return x_star, factor
 
@@ -147,7 +147,7 @@ class DEProposal():
 
         x_star = x + self.alpha * jump_vec
 
-        factor = 1
+        factor = 0
         return x_star, factor
 
 
