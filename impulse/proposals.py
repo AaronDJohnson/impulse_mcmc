@@ -142,7 +142,7 @@ class DEProposal():
         self.chain = chain
 
     def __call__(self, x):
-        temp = rng.choice(self.chain, size=2, replace=False)
+        temp = rng.choice(self.chain, size=2, replace=True)
         jump_vec = temp[1, :] - temp[0, :]
 
         x_star = x + self.alpha * jump_vec

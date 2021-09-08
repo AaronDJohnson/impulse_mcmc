@@ -78,7 +78,7 @@ class PTPosterior():
 
 
 def PTSampler():
-    def __init__(ndim, nchain, lnlikelihood, lnprior, temp_min=1, temp_max=None, temp_step=None, pool=None):
+    def __init__(self, ndim, nchain, lnlikelihood, lnprior, temp_min=1, temp_max=None, temp_step=None, pool=None):
         self.pool = pool
         self.ndim = ndim
         temps = temp_ladder(ndim, nchain, temp_min, temp_max=temp_max, temp_step=temp_step)
@@ -86,8 +86,8 @@ def PTSampler():
         for temp in temps:
             self.post_list.append(PTPosterior(temp, lnlikelihood, lnprior))
 
-    def sample(post, x0, num_samples=100_000, loop_iterations=1000, save=True, outdir='./test', compress=True):
-        mix = pre_proposals(ndim)
+    def sample(self, post, x0, num_samples=100_000, loop_iterations=1000, save=True, outdir='./test', compress=True):
+        mix = pre_proposals(self.ndim)
         full_chain = np.zeros((nchain, num_samples, ndim))
         count = 0
         while count < int(num_samples / 100):
