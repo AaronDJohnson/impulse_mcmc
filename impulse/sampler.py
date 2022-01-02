@@ -1,7 +1,7 @@
 import os
 import numpy as np
 # from schwimmbad import MultiPool
-from impulse.random import rng
+from random_nums import rng
 
 
 class MHSampler(object):
@@ -22,6 +22,7 @@ class MHSampler(object):
         self.prop_kwargs = prop_kwargs
         self.iterations = iterations
         self.x0 = x0
+        self.num_runs = 0
 
         # initialize chain, acceptance rate, and lnprob
         self.chain = np.zeros((self.iterations, self.ndim))
@@ -36,14 +37,16 @@ class MHSampler(object):
 
     def sample(self):
         naccept = 0
-        x0 = self.x0
+        x0 = self.chain[self.num_runs * self.iterations]
+        self.num_runs += 1
+        # print(x0)
         for ii in range(1, self.iterations):
 
             # propose a move
             x_star, factor = self.prop_fn(x0, **self.prop_kwargs)
-
+            # x_star = x_star
             # draw random number
-            rand_num = rng.uniform(0, 1)
+            rand_num = rng.uniform()
 
             # compute hastings ratio
             lnprob_star = self.lnprob_fn(x_star)

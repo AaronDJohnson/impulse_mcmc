@@ -3,9 +3,9 @@ import numpy as np
 from tqdm import tqdm
 import os
 
-from impulse.sampler import MHSampler
-from impulse.proposals import pre_proposals, stock_proposals
-from impulse.save_hdf import save_h5
+from sampler import MHSampler
+from proposals import pre_proposals, stock_proposals
+from save_hdf import save_h5
 
 
 def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True, outdir='./test', compress=True):
@@ -35,7 +35,7 @@ def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True,
         x0 = chain[-1]
         count += loop_iterations
     # save compressed file and delete others
-    if compress:
+    if save and compress:
         save_h5(outdir + '/chain_1.h5', full_chain)
         os.remove(outdir + '/chain_1.txt')
     return full_chain

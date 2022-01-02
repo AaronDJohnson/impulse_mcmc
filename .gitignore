@@ -117,3 +117,4 @@ dmypy.json
 test/
 
 .DS_Store
+.vscode

@@ -1,6 +1,7 @@
 import numpy as np
-from impulse.batch_updates import update_covariance
-from impulse.random import rng
+from batch_updates import update_covariance
+from numpy.linalg import LinAlgError
+from random_nums import rng
 
 
 class ProposalMix():
@@ -23,7 +24,7 @@ class ProposalMix():
         self.mean, self.cov = update_covariance(old_length, self.cov, self.mean, new_chain)
         for proposal in self.prop_list[0]:
             proposal.update(cov=self.cov, chain=chain)
-    
+
     def __call__(self, x):
         proposal = rng.choice(self.prop_list[0], p=self.prop_list[1])
         return proposal(x)
@@ -83,14 +84,16 @@ class AMProposal():
         
     def update(self, **kwargs):
         cov = kwargs['cov']
-        self.cov_chol = np.linalg.cholesky(cov)
+        try:
+            self.cov_chol = np.linalg.cholesky(cov)
+        except LinAlgError:
+            self.cov_chol = np.linalg.cholesky(cov + np.eye(cov.shape[0]) * 5e-15)
 
     def __call__(self, x):
         # draw x_star
         u = rng.standard_normal(len(x))
         x_star = x + np.sqrt(self.alpha) * self.cov_chol @ u
-
-        # proposal ratio factor is 0 (symmetric jump)
+        # proposal log ratio factor is 1(symmetric jump)
         factor = 0
 
         return x_star, factor
@@ -118,7 +121,6 @@ class SCAMProposal():
         uj = rng.standard_normal(len(x)) * self.cov_evals[idx]
         Dj = self.cov_evec[:, idx]
         x_star = x + np.sqrt(self.alpha) * Dj @ uj
-
         factor = 0
 
         return x_star, factor
@@ -129,7 +131,7 @@ class DEProposal():
     Differential Evolution
     Use after some burn-in period!
     """
-    def __init__(self, ndim, chain, alpha=None):  # try not to have to call cov_chol here....
+    def __init__(self, ndim, chain, alpha=None):
         self.alpha = alpha
         if alpha is None:
             self.alpha = 2.38**2 / ndim
@@ -162,5 +164,5 @@ def stock_proposals(ndim, chain):
     adapt = AMProposal(ndim)
     scam = SCAMProposal(ndim)
     de = DEProposal(ndim, chain)
-    mix = ProposalMix(ndim, [(adapt, 0.15), (scam, 0.35), (de, 0.5)])
+    mix = ProposalMix(ndim, [(adapt, 1), (scam, 0), (de, 0)])
     return mix
