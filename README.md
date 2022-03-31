@@ -13,5 +13,5 @@
   * Convergence tests
 
 ## Future feature list:
-  * Master-slave paradigm for scalable parallel tempering to arbitrary numbers of CPUs
+  * Computational paradigm for scalable parallel tempering to arbitrary numbers of CPUs
   * Convergence tests for burn-in and stop conditions (Geweke, Gelman-Rubin r-hat, etc.)
