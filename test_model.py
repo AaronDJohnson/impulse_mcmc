@@ -25,7 +25,7 @@ class LnLikelihood():
         a = params[1]
         phi = params[2]
         func = a * np.sin(omega * self.x + phi)
-        result = np.sum(-(func - self.data)**2)
+        result = np.sum(-0.5 * (func - self.data)**2)
         if np.isfinite(result):
             return result
         else:

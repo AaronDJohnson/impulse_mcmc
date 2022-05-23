@@ -3,12 +3,13 @@ import numpy as np
 from tqdm import tqdm
 import os
 
-from sampler import MHSampler
-from proposals import pre_proposals, stock_proposals
-from save_hdf import save_h5
+from impulse.sampler import MHSampler
+from impulse.proposals import pre_proposals, stock_proposals
+from impulse.save_hdf import save_h5
 
 
-def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True, outdir='./test', compress=True):
+def sample(lnlike, lnprior, ndim, x0, num_samples=100_000,
+           loop_iterations=1000, save=True, outdir='./test', compress=True):
     # set up proposals for burn-in:
     mix = pre_proposals(ndim)
     # make empty full chain
@@ -17,7 +18,7 @@ def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True,
     count = 0
     burn_in = int(num_samples / 100)
     while count < burn_in:
-        sampler = MHSampler(x0, post, mix, iterations=loop_iterations)
+        sampler = MHSampler(x0, lnlike, lnprior, mix, iterations=loop_iterations)
         chain, accept, lnprob = sampler.sample()
         sampler.save_samples(outdir)
         full_chain[count:count + loop_iterations, :] = chain
@@ -27,7 +28,8 @@ def sample(post, ndim, x0, num_samples=100_000, loop_iterations=1000, save=True,
     # add DE jump:
     mix = stock_proposals(ndim, full_chain)
     for i in tqdm(range(burn_in, int(num_samples), loop_iterations)):
-        sampler = MHSampler(x0, post, mix, iterations=loop_iterations)
+        sampler = MHSampler(x0, lnlike, lnprior, mix, iterations=loop_iterations)
+        mix.update(loop_iterations, chain, full_chain=full_chain)
         chain, accept, lnprob = sampler.sample()
         sampler.save_samples(outdir)
         full_chain[count:count + loop_iterations, :] = chain

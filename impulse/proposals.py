@@ -1,7 +1,8 @@
 import numpy as np
-from batch_updates import update_covariance
 from numpy.linalg import LinAlgError
-from random_nums import rng
+
+from impulse.batch_updates import update_covariance
+from impulse.random_nums import rng
 
 
 class ProposalMix():
