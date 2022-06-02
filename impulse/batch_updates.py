@@ -35,3 +35,16 @@ def update_covariance(old_length, x_cov, x_avg, x_new):
     z = x_new - x_avg
     cov = ((n - 1) * x_cov + np.dot(y.T, z)) / (n + m - 1)
     return x_avgnew, cov
+
+
+def svd_groups(U, S, groups, cov):
+    # do svd on parameter groups
+    # TODO(Aaron): Speed this up using broadcasting
+    for ct, group in enumerate(groups):
+        covgroup = np.zeros((len(group), len(group)))
+        for ii in range(len(group)):
+            for jj in range(len(group)):
+                covgroup[ii, jj] = cov[group[ii], group[jj]]
+
+        U[ct], S[ct], __ = np.linalg.svd(covgroup)
+    return U, S
