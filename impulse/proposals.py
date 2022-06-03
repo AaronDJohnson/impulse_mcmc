@@ -1,5 +1,4 @@
 import numpy as np
-from numpy.linalg import LinAlgError
 
 from impulse.batch_updates import update_covariance, svd_groups
 from impulse.random_nums import rng
@@ -10,6 +9,7 @@ class JumpProposals():
         """
         ndim (int): number of dimensions in the parameter space
         """
+        self.temp = 1.0
         self.prop_list = []
         self.prop_weights = []
         self.prop_probs = []
@@ -39,7 +39,7 @@ class JumpProposals():
     def add_jump(self, jump, weight):
         self.prop_list.append(jump)
         self.prop_weights.append(weight)
-        self.prop_probs = self.prop_weights / sum(self.prop_weights)
+        self.prop_probs = np.array(self.prop_weights) / sum(self.prop_weights)
 
     def recursive_update(self, sample_num, new_chain):
         # update buffer
@@ -57,71 +57,7 @@ class JumpProposals():
         if sum(self.prop_probs) != 1:
             self.prop_probs /= sum(self.prop_probs)  # normalize the probabilities
         proposal = rng.choice(self.prop_list, p=self.prop_probs)
-        return proposal(x)
-
-
-# class ProposalMix():
-#     def __init__(self, ndim, prop_list, cov=None, mean=None):
-#         """
-#         ndim (int): number of dimensions in the parameter space
-#         prop_list (list of tuples): (Proposal, weight)
-#         """
-#         self.ndim = ndim
-#         self.cov = cov
-#         self.mean = mean
-#         if cov is None:
-#             self.cov = np.identity(ndim) * 0.01**2
-#         if mean is None:
-#             self.mean = 0
-#         self.prop_list = list(map(list, zip(*prop_list)))
-
-#     def update(self, old_length, new_chain, **kwargs):
-#         chain = kwargs.get('full_chain', None)
-#         self.mean, self.cov = update_covariance(old_length, self.cov, self.mean, new_chain)
-#         for proposal in self.prop_list[0]:
-#             proposal.update(cov=self.cov, chain=chain)
-
-#     def __call__(self, x):
-#         proposal = rng.choice(self.prop_list[0], p=self.prop_list[1])
-#         return proposal(x)
-
-
-# class GaussianProposal():
-#     def __init__(self, sigma=0.1):
-#         self.sigma = sigma
-
-#     def update(self, **kwargs):
-#         self.sigma = kwargs.get('sigma', 0.1)
-
-#     def __call__(self, x):
-#         # draw x_star
-#         x_star = x + rng.standard_normal(len(x)) * self.sigma
-
-#         # proposal ratio factor is 1 (symmetric jump)
-#         factor = 1
-
-#         return x_star, factor
-
-
-# class PriorProposal():
-#     """
-#     Are you feeling lucky? Uniform prior draws.
-#     """
-#     def __init__(self, prior_min, prior_max, rng=rng):
-#         """
-#         prior_min: vector containing mins of priors
-#         prior_max: vector containing maxes of priors
-#         """
-#         self.rng = rng
-#         self.prior_min = prior_min
-#         self.prior_max = prior_max
-
-#     def update(self, **kwargs):
-#         return None
-
-#     def __call__(self, x):
-#         x_star = rng.uniform(self.prior_min, self.prior_max)
-#         return x_star, 0
+        return proposal(x, self.U, self.S, self.groups, self.temp, self._buffer)
 
 
 def am(x, U, S, groups, temp, buffer):

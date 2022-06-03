@@ -115,6 +115,8 @@ dmypy.json
 
 # test folder
 test/
+chains/
+.txt
 
 .DS_Store
 .vscode
