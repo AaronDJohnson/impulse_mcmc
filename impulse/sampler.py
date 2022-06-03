@@ -14,9 +14,6 @@ class MHSampler(object):
         """
         self.ndim = len(x0)
 
-        # self.cov = cov
-        # if cov is None:
-        #     self.cov = np.diag(np.ones(self.ndim) * 0.01**2)
         self.lnlike_fn = lnlike_fn
         self.lnprior_fn = lnprior_fn
         self.prop_fn = prop_fn

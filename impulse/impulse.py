@@ -47,7 +47,7 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
 @ray.remote
 def ray_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
                amweight=30, scamweight=15, deweight=50,
-               loop_iterations=1000, save=True, outdir='./test', filename='/chain_1.txt', compress=True):
+               loop_iterations=1000, save=True, outdir='./test', filename='/chain_1.txt', compress=False):
     return sample(lnlike, lnprior, ndim, x0, num_samples=num_samples, buf_size=buf_size,
                   amweight=amweight, scamweight=scamweight, deweight=deweight,
                   loop_iterations=loop_iterations, save=save, outdir=outdir, filename=filename, compress=compress)

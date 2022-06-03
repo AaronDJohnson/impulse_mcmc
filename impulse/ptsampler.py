@@ -1,142 +1,82 @@
-import numpy as np
 import os
+import numpy as np
+from impulse.random_nums import rng
 
 
 class PTSampler(object):
+    def __init__(self, x0, lnlike_fn, lnprior_fn, prop_fn, temp, lnlike_kwargs={},
+                 lnprior_kwargs={}, prop_kwargs={}, iterations=1000):
+        """
+        x0: vector of length ndim
+        lnlike_fn: log likelihood function
+        lnpost_fn: log prior function
+        num_iters: number of iterations to perform
+        """
+        self.ndim = len(x0)
+        self.temp = temp
 
-    """
-    Parallel Tempering Markov Chain Monte-Carlo (PTMCMC) sampler.
-    This implementation uses an adaptive jump proposal scheme
-    by default using both standard and single component Adaptive
-    Metropolis (AM) and Differential Evolution (DE) jumps.
+        self.lnlike_fn = lnlike_fn
+        self.lnprior_fn = lnprior_fn
+        self.prop_fn = prop_fn
+        self.lnlike_kwargs = lnlike_kwargs
+        self.lnprior_kwargs = lnprior_kwargs
+        self.prop_kwargs = prop_kwargs
+        self.iterations = iterations
+        self.x0 = x0
+        self.num_runs = 0
 
-    This implementation also makes use of MPI (mpi4py) to run
-    the parallel chains.
+        # initialize chain, acceptance rate, and lnprob
+        self.chain = np.zeros((self.iterations, self.ndim))
+        self.lnprob = np.zeros(iterations)
+        self.accept_rate = np.zeros(iterations)
 
-    Along with the AM and DE jumps, the user can add custom
-    jump proposals with the ``addProposalToCycle`` fuction.
+        # first sample
+        self.chain[0] = x0
+        lnlike0 = 1 / self.temp * self.lnlike_fn(x0, **self.lnlike_kwargs)
+        lnprior0 = self.lnprior_fn(x0, **self.lnlike_kwargs)
+        self.lnprob0 = lnlike0 + lnprior0
+        self.lnprob[0] = self.lnprob0
 
-    @param ndim: number of dimensions in problem
-    @param logl: log-likelihood function
-    @param logp: log prior function (must be normalized for evidence evaluation)
-    @param cov: Initial covariance matrix of model parameters for jump proposals
-    @param covinds: Indices of parameters for which to perform adaptive jumps
-    @param loglargs: any additional arguments (apart from the parameter vector) for
-    log likelihood
-    @param loglkwargs: any additional keyword arguments (apart from the parameter vector)
-    for log likelihood
-    @param logpargs: any additional arguments (apart from the parameter vector) for
-    log like prior
-    @param logl_grad: log-likelihood function, including gradients
-    @param logp_grad: prior function, including gradients
-    @param logpkwargs: any additional keyword arguments (apart from the parameter vector)
-    for log prior
-    @param outDir: Full path to output directory for chain files (default = ./chains)
-    @param verbose: Update current run-status to the screen (default=True)
-    @param resume: Resume from a previous chain (still in testing so beware) (default=False)
+    def sample(self):
+        naccept = 0
+        # x0 = self.chain[self.num_runs * self.iterations]
+        self.num_runs += 1
+        for ii in range(1, self.iterations):
 
-    """
+            # propose a move
+            x_star, factor = self.prop_fn(self.x0, **self.prop_kwargs)
+            # x_star = x_star
+            # draw random number
+            rand_num = rng.uniform()
 
-    def __init__(
-        self,
-        ndim,
-        logl,
-        logp,
-        ladder=None,
-        Tmin=1,
-        Tmax=None,
-        Tskip=100,
-        cov=None,
-        groups=None,
-        loglargs=[],
-        loglkwargs={},
-        logpargs=[],
-        logpkwargs={},
-        ncores=1,
-        outDir="./chains",
-        verbose=True,
-        resume=False,
-        covUpdate=1000,
-        buffer_size=1000,
-        thin=10,
-        writeHotChains=True,
-        hotChain=False,):
+            # compute hastings ratio
+            lnprior_star = self.lnprior_fn(x_star, **self.lnprior_kwargs)
+            if np.isinf(lnprior_star):
+                lnprob_star = -np.inf
+            else:
+                lnlike_star = 1 / self.temp * self.lnlike_fn(x_star, **self.lnlike_kwargs)
+                lnprob_star = lnprior_star + lnlike_star
 
-        self.ndim = ndim
-        self.logl = _function_wrapper(logl, loglargs, loglkwargs)
-        self.logp = _function_wrapper(logp, logpargs, logpkwargs)
+            hastings_ratio = lnprob_star - self.lnprob0 + factor
 
-        self.outDir = outDir
-        self.verbose = verbose
-        self.resume = resume
+            # accept/reject step
+            if np.log(rand_num) < hastings_ratio:
+                self.x0 = x_star
+                self.lnprob0 = lnprob_star
+                naccept += 1
 
-        # setup output file
-        if not os.path.exists(self.outDir):
-            try:
-                os.makedirs(self.outDir)
-            except OSError:
-                pass
+            # update chain
+            self.chain[ii] = self.x0
+            self.lnprob[ii] = self.lnprob0
+            self.accept_rate[ii] = naccept / ii
 
-        # find indices for which to perform adaptive jumps
-        self.groups = groups
-        if groups is None:
-            self.groups = [np.arange(0, self.ndim)]
+        return self.chain, self.accept_rate, self.lnprob
 
-        # set up covariance matrix
-        self.cov = cov
-        self.U = [[]] * len(self.groups)
-        self.S = [[]] * len(self.groups)
-
-        self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
-
-        self.M2 = np.zeros((ndim, ndim))
-        self.mu = np.zeros(ndim)
-
-        # initialize proposal cycle
-        self.propCycle = []
-        self.jumpDict = {}
-
-        # indicator for auxilary jumps
-        self.aux = []
-
-
-
-
-
-
-
-
-
-
-def svd_groups(U, S, groups, cov):
-    # do svd on parameter groups
-    for ct, group in enumerate(groups):
-        covgroup = np.zeros((len(group), len(group)))
-        for ii in range(len(group)):
-            for jj in range(len(group)):
-                covgroup[ii, jj] = cov[group[ii], group[jj]]
-
-        U[ct], S[ct], v = np.linalg.svd(covgroup)
-    return U, S
-
-
-
-
-
-
-
-class _function_wrapper(object):
-
-    """
-    This is a hack to make the likelihood function pickleable when ``args``
-    or ``kwargs`` are also included.
-
-    """
-
-    def __init__(self, f, args, kwargs):
-        self.f = f
-        self.args = args
-        self.kwargs = kwargs
-
-    def __call__(self, x):
-        return self.f(x, *self.args, **self.kwargs)
+    def save_samples(self, outdir, filename='/chain_1.txt'):
+        # make directory if it doesn't exist
+        if not os.path.exists(outdir):
+            os.makedirs(outdir)
+        filename = outdir + filename
+        data = np.column_stack((self.chain, self.lnprob, self.accept_rate))
+        with open(filename, 'a+') as fname:
+            np.savetxt(fname, data)
