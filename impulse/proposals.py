@@ -9,13 +9,13 @@ class JumpProposals():
         """
         ndim (int): number of dimensions in the parameter space
         """
-        self.temp = 1.0
+        self.nsamples = 0  # sample count
+        self.buf_size = buf_size
         self.prop_list = []
         self.prop_weights = []
         self.prop_probs = []
         self.ndim = ndim
         self._buffer = np.zeros((buf_size, ndim))
-        self._fullbuffer = False  # check if enough samples for DE jumps
 
         # setup sampling groups
         self.groups = groups
@@ -39,12 +39,10 @@ class JumpProposals():
     def add_jump(self, jump, weight):
         self.prop_list.append(jump)
         self.prop_weights.append(weight)
-        self.prop_probs = np.array(self.prop_weights) / sum(self.prop_weights)
+        self.prop_probs = np.array(self.prop_weights) / sum(self.prop_weights)  # normalize probabilities
 
     def recursive_update(self, sample_num, new_chain):
         # update buffer
-        if sample_num > len(self._buffer):
-            self._fullbuffer = True
         self._buffer = new_chain
 
         # get new sample mean and covariance
@@ -53,11 +51,13 @@ class JumpProposals():
         # new SVD on groups
         self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
 
-    def __call__(self, x):
-        if sum(self.prop_probs) != 1:
-            self.prop_probs /= sum(self.prop_probs)  # normalize the probabilities
+    def __call__(self, x, temp=1.):
+        self.nsamples += 1
         proposal = rng.choice(self.prop_list, p=self.prop_probs)
-        return proposal(x, self.U, self.S, self.groups, self.temp, self._buffer)
+        # don't let DE jumps happen until after buffer is full
+        while proposal.__name__ == 'de' and self.nsamples < self.buf_size:
+            proposal = rng.choice(self.prop_list, p=self.prop_probs)
+        return proposal(x, self.U, self.S, self.groups, temp, self._buffer)
 
 
 def am(x, U, S, groups, temp, buffer):

@@ -4,15 +4,15 @@ from impulse.random_nums import rng
 
 
 class PTSampler(object):
-    def __init__(self, x0, lnlike_fn, lnprior_fn, prop_fn, temp, lnlike_kwargs={},
-                 lnprior_kwargs={}, prop_kwargs={}, iterations=1000):
+    def __init__(self, ndim, lnlike_fn, lnprior_fn, prop_fn, temp, lnlike_kwargs={},
+                 lnprior_kwargs={}, iterations=1000):
         """
         x0: vector of length ndim
         lnlike_fn: log likelihood function
         lnpost_fn: log prior function
         num_iters: number of iterations to perform
         """
-        self.ndim = len(x0)
+        self.ndim = ndim
         self.temp = temp
 
         self.lnlike_fn = lnlike_fn
@@ -20,9 +20,7 @@ class PTSampler(object):
         self.prop_fn = prop_fn
         self.lnlike_kwargs = lnlike_kwargs
         self.lnprior_kwargs = lnprior_kwargs
-        self.prop_kwargs = prop_kwargs
         self.iterations = iterations
-        self.x0 = x0
         self.num_runs = 0
 
         # initialize chain, acceptance rate, and lnprob
@@ -30,6 +28,8 @@ class PTSampler(object):
         self.lnlike = np.zeros(iterations)
         self.lnprob = np.zeros(iterations)
 
+    def sample(self, x0):
+        naccept = 0
         # first sample
         self.chain[0] = x0
         lnlike0 = 1 / self.temp * self.lnlike_fn(x0, **self.lnlike_kwargs)
@@ -37,15 +37,12 @@ class PTSampler(object):
         self.lnprob0 = lnlike0 + lnprior0
         self.lnprob[0] = self.lnprob0
         self.lnlike[0] = lnlike0
-
-    def sample(self):
-        naccept = 0
         # x0 = self.chain[self.num_runs * self.iterations]
         self.num_runs += 1
         for ii in range(1, self.iterations):
 
             # propose a move
-            x_star, factor = self.prop_fn(self.x0, **self.prop_kwargs)
+            x_star, factor = self.prop_fn(x0, self.temp)
             # x_star = x_star
             # draw random number
             rand_num = rng.uniform()
@@ -63,16 +60,16 @@ class PTSampler(object):
 
             # accept/reject step
             if np.log(rand_num) < hastings_ratio:
-                self.x0 = x_star
+                x0 = x_star
                 self.lnprob0 = lnprob_star
                 naccept += 1
 
             # update chain
-            self.chain[ii] = self.x0
+            self.chain[ii] = x0
             self.lnprob[ii] = self.lnprob0
             self.lnlike[ii] = lnlike_star
             # self.accept_rate[ii] = naccept / ii
-        return self.chain, self.lnlike
+        return self.chain, self.lnlike, x0
 
     def save_samples(self, outdir, filename='/chain_1.txt'):
         # make directory if it doesn't exist
