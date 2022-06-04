@@ -50,27 +50,31 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
               swap_count=100,
               loop_iterations=1000, save=True, outdir='./test', filename='/chain_1.txt', compress=True):
     ladder = temp_ladder(tmin, ndim, ntemps, tmax=tmax, tstep=tstep)
+    # make empty full chain
+    full_chain = np.zeros((num_samples, ndim, ntemps))
+
+    chain = np.zeros((loop_iterations, ndim, ntemps))
+    lnlike_arr = np.zeros((loop_iterations, ntemps))
     # set up proposals for burn-in:
     mixes = []
     for ii in range(len(ladder)):
         mixes.append(JumpProposals(ndim, buf_size=buf_size))
         mixes[ii].add_jump(am, amweight)
         mixes[ii].add_jump(scam, scamweight)
-    # make empty full chain
-    full_chain = np.zeros((num_samples, ndim, ntemps))
-
-    chain = np.zeros((loop_iterations, ndim, ntemps))
-    lnlike_arr = np.zeros((loop_iterations, ntemps))
+        full_chain[0, :, ii] = x0[ii]
+        print(full_chain[0, :, ii])
+    
     # set up count and iterations between loops
     count = 0
     while count < buf_size:  # fill the buffer
         swap_tot = 0
 
-        samplers = [PTSampler(x0[ii], lnlike, lnprior, mixes[ii], ladder[ii], iterations=swap_count) for ii in range(len(ladder))]
         while swap_tot == 0 or loop_iterations / swap_tot != 1:
+            print(full_chain[count + swap_tot, :, ii])
+            samplers = [PTSampler(full_chain[count + swap_tot, :, ii], lnlike, lnprior, mixes[ii], ladder[ii], iterations=swap_count) for ii in range(len(ladder))]
             for ii, sampler in enumerate(samplers):
                 chain[swap_tot:swap_tot + swap_count, :, ii], lnlike_arr[swap_tot:swap_tot + swap_count, ii] = sampler.sample()
-            propose_swaps(chain, lnlike_arr, ladder)
+            chain = propose_swaps(chain, lnlike_arr, ladder, swap_tot)
             swap_tot += swap_count
         full_chain[count:count + loop_iterations, :, :] = chain
         for ii in range(len(ladder)):

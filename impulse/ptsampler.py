@@ -101,13 +101,13 @@ def temp_ladder(tmin, ndim, ntemps, tmax=None, tstep=None):
     return ladder
 
 
-def propose_swaps(chain, lnlike, ladder):
+def propose_swaps(chain, lnlike, ladder, swap_idx):
     lnchainswap = (1 / ladder[:-1] - 1 / ladder[1:]) * (lnlike[-1, :-1] - lnlike[-1, 1:])
     lnchainswap = np.nan_to_num(lnchainswap)
-    print(lnchainswap)
     nums = np.log(rng.random(size=len(ladder) - 1))
     idxs = np.where(lnchainswap > nums)[0] + 1
-    chain[-1, :, [idxs - 1, idxs]] = chain[-1, :, [idxs, idxs - 1]]
+    if not idxs.size == 0:
+        chain[swap_idx, :, [idxs - 1, idxs]] = chain[swap_idx, :, [idxs, idxs - 1]]
     return chain
 
 
