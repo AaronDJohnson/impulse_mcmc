@@ -3,6 +3,7 @@ from tqdm import tqdm
 import os
 import ray
 from impulse.sampler import MHSampler
+from impulse.ptsampler import PTSampler, temp_ladder, propose_swaps
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_hdf import save_h5
 
@@ -42,6 +43,62 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
         save_h5(outdir + filename, full_chain)
         os.remove(outdir + filename)
     return full_chain
+
+
+def pt_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
+              amweight=30, scamweight=15, deweight=50, ntemps=2, tmin=1, tmax=None, tstep=None,
+              swap_count=100,
+              loop_iterations=1000, save=True, outdir='./test', filename='/chain_1.txt', compress=True):
+    ladder = temp_ladder(tmin, ndim, ntemps, tmax=tmax, tstep=tstep)
+    # set up proposals for burn-in:
+    mixes = []
+    for ii in range(len(ladder)):
+        mixes.append(JumpProposals(ndim, buf_size=buf_size))
+        mixes[ii].add_jump(am, amweight)
+        mixes[ii].add_jump(scam, scamweight)
+    # make empty full chain
+    full_chain = np.zeros((num_samples, ndim, ntemps))
+
+    chain = np.zeros((loop_iterations, ndim, ntemps))
+    lnlike_arr = np.zeros((ntemps, ntemps))
+    # set up count and iterations between loops
+    count = 0
+    while count < buf_size:  # fill the buffer
+        swap_tot = 0
+        samplers = [PTSampler(x0[ii], lnlike, lnprior, mixes[ii], ladder[ii], iterations=swap_count) for ii in range(len(ladder))]
+        while swap_tot == 0 or loop_iterations % swap_tot != 0:
+            for ii, sampler in enumerate(samplers):
+                swap_tot += swap_count
+                chain[count:count + swap_tot, :, ii], lnlike_arr[count:count + swap_tot, ii] = sampler.sample()
+                print(chain[count:count + swap_tot, :, ii])
+            chain = propose_swaps(chain, lnlike_arr, ladder)
+        full_chain[count:count + loop_iterations, :, :] = chain
+        for ii in range(len(ladder)):
+            samplers[ii].save_samples(outdir, filename='/chain_{0}.txt'.format(ladder[ii]))
+            mixes[ii].recursive_update(count, chain[:, :, ii])
+            print(chain)
+            x0[ii] = chain[-1, :, ii]
+        count += loop_iterations
+    # add DE jump:
+    # mix.add_jump(de, deweight)
+    # for i in tqdm(range(buf_size, int(num_samples), loop_iterations)):
+    #     sampler = MHSampler(x0, lnlike, lnprior, mix, iterations=loop_iterations)
+    #     mix.recursive_update(count, chain)
+    #     chain, accept, lnprob = sampler.sample()
+    #     sampler.save_samples(outdir, filename=filename)
+    #     full_chain[count:count + loop_iterations, :] = chain
+    #     mix.recursive_update(count, chain)
+    #     x0 = chain[-1]
+    #     count += loop_iterations
+    # # save compressed file and delete others
+    # if save and compress:
+    #     save_h5(outdir + filename, full_chain)
+    #     os.remove(outdir + filename)
+    # return full_chain
+
+
+
+
 
 
 @ray.remote

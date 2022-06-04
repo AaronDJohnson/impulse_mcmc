@@ -27,8 +27,8 @@ class PTSampler(object):
 
         # initialize chain, acceptance rate, and lnprob
         self.chain = np.zeros((self.iterations, self.ndim))
+        self.lnlike = np.zeros(iterations)
         self.lnprob = np.zeros(iterations)
-        self.accept_rate = np.zeros(iterations)
 
         # first sample
         self.chain[0] = x0
@@ -36,6 +36,7 @@ class PTSampler(object):
         lnprior0 = self.lnprior_fn(x0, **self.lnlike_kwargs)
         self.lnprob0 = lnlike0 + lnprior0
         self.lnprob[0] = self.lnprob0
+        self.lnlike[0] = lnlike0
 
     def sample(self):
         naccept = 0
@@ -68,15 +69,44 @@ class PTSampler(object):
             # update chain
             self.chain[ii] = self.x0
             self.lnprob[ii] = self.lnprob0
-            self.accept_rate[ii] = naccept / ii
+            self.lnlike[ii] = lnlike_star
+            # self.accept_rate[ii] = naccept / ii
 
-        return self.chain, self.accept_rate, self.lnprob
+        return self.chain, self.lnlike
 
     def save_samples(self, outdir, filename='/chain_1.txt'):
         # make directory if it doesn't exist
         if not os.path.exists(outdir):
             os.makedirs(outdir)
         filename = outdir + filename
-        data = np.column_stack((self.chain, self.lnprob, self.accept_rate))
+        data = np.column_stack((self.chain, self.lnprob, self.lnlike))
         with open(filename, 'a+') as fname:
             np.savetxt(fname, data)
+
+
+def temp_ladder(tmin, ndim, ntemps, tmax=None, tstep=None):
+    """
+    Method to compute temperature ladder. At the moment this uses
+    a geometrically spaced temperature ladder with a temperature
+    spacing designed to give 25 % temperature swap acceptance rate.
+    """
+
+    if tstep is None and tmax is None:
+        tstep = 1 + np.sqrt(2 / ndim)
+    elif tstep is None and tmax is not None:
+        tstep = np.exp(np.log(tmax / tmin) / (ntemps - 1))
+    ii = np.arange(ntemps)
+    ladder = tmin * tstep**ii
+
+    return ladder
+
+
+def propose_swaps(chain, lnlike, ladder):
+    lnchainswap = (1 / ladder[:-1] - 1 / ladder[1:]) * (lnlike[-1, :-1] - lnlike[-1, 1:])
+    nums = np.log(rng.random(size=len(ladder)))
+    for idx in np.where(lnchainswap > nums)[0]:  # this could be done without a for loop
+        chain[-1, :, [idx - 1, idx]] = chain[-1, :, [idx, idx - 1]]
+    return chain
+
+
+
