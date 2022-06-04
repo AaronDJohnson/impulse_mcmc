@@ -60,25 +60,25 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
     full_chain = np.zeros((num_samples, ndim, ntemps))
 
     chain = np.zeros((loop_iterations, ndim, ntemps))
-    lnlike_arr = np.zeros((ntemps, ntemps))
+    lnlike_arr = np.zeros((loop_iterations, ntemps))
     # set up count and iterations between loops
     count = 0
     while count < buf_size:  # fill the buffer
         swap_tot = 0
+
         samplers = [PTSampler(x0[ii], lnlike, lnprior, mixes[ii], ladder[ii], iterations=swap_count) for ii in range(len(ladder))]
-        while swap_tot == 0 or loop_iterations % swap_tot != 0:
+        while swap_tot == 0 or loop_iterations / swap_tot != 1:
             for ii, sampler in enumerate(samplers):
-                swap_tot += swap_count
-                chain[count:count + swap_tot, :, ii], lnlike_arr[count:count + swap_tot, ii] = sampler.sample()
-                print(chain[count:count + swap_tot, :, ii])
-            chain = propose_swaps(chain, lnlike_arr, ladder)
+                chain[swap_tot:swap_tot + swap_count, :, ii], lnlike_arr[swap_tot:swap_tot + swap_count, ii] = sampler.sample()
+            propose_swaps(chain, lnlike_arr, ladder)
+            swap_tot += swap_count
         full_chain[count:count + loop_iterations, :, :] = chain
         for ii in range(len(ladder)):
             samplers[ii].save_samples(outdir, filename='/chain_{0}.txt'.format(ladder[ii]))
             mixes[ii].recursive_update(count, chain[:, :, ii])
-            print(chain)
             x0[ii] = chain[-1, :, ii]
         count += loop_iterations
+    return full_chain
     # add DE jump:
     # mix.add_jump(de, deweight)
     # for i in tqdm(range(buf_size, int(num_samples), loop_iterations)):

@@ -54,6 +54,7 @@ class PTSampler(object):
             lnprior_star = self.lnprior_fn(x_star, **self.lnprior_kwargs)
             if np.isinf(lnprior_star):
                 lnprob_star = -np.inf
+                lnlike_star = -np.inf
             else:
                 lnlike_star = 1 / self.temp * self.lnlike_fn(x_star, **self.lnlike_kwargs)
                 lnprob_star = lnprior_star + lnlike_star
@@ -71,7 +72,6 @@ class PTSampler(object):
             self.lnprob[ii] = self.lnprob0
             self.lnlike[ii] = lnlike_star
             # self.accept_rate[ii] = naccept / ii
-
         return self.chain, self.lnlike
 
     def save_samples(self, outdir, filename='/chain_1.txt'):
@@ -103,9 +103,11 @@ def temp_ladder(tmin, ndim, ntemps, tmax=None, tstep=None):
 
 def propose_swaps(chain, lnlike, ladder):
     lnchainswap = (1 / ladder[:-1] - 1 / ladder[1:]) * (lnlike[-1, :-1] - lnlike[-1, 1:])
-    nums = np.log(rng.random(size=len(ladder)))
-    for idx in np.where(lnchainswap > nums)[0]:  # this could be done without a for loop
-        chain[-1, :, [idx - 1, idx]] = chain[-1, :, [idx, idx - 1]]
+    lnchainswap = np.nan_to_num(lnchainswap)
+    print(lnchainswap)
+    nums = np.log(rng.random(size=len(ladder) - 1))
+    idxs = np.where(lnchainswap > nums)[0] + 1
+    chain[-1, :, [idxs - 1, idxs]] = chain[-1, :, [idxs, idxs - 1]]
     return chain
 
 
