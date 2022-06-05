@@ -8,7 +8,7 @@ from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_hdf import save_h5
 
 
-def sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
+def sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=20000,
            amweight=30, scamweight=15, deweight=50,
            loop_iterations=1000, save=True, outdir='./test', filename='/chain_1.txt', compress=True):
     # set up proposals:
@@ -34,7 +34,7 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
     return full_chain
 
 
-def pt_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
+def pt_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=20000,
               amweight=30, scamweight=15, deweight=50, ntemps=2, tmin=1, tmax=None, tstep=None,
               swap_count=100, ladder=None,
               loop_iterations=1000, save=True, outdir='./test', filename='/chain_1.txt', compress=True):
@@ -76,7 +76,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
 
 
 @ray.remote
-def ray_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=10000,
+def ray_sample(lnlike, lnprior, ndim, x0, num_samples=100_000, buf_size=20000,
                amweight=30, scamweight=15, deweight=50,
                loop_iterations=1000, save=True, outdir='./test', filename='/chain_1.txt', compress=False):
     return sample(lnlike, lnprior, ndim, x0, num_samples=num_samples, buf_size=buf_size,
