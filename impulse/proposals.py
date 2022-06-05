@@ -1,11 +1,25 @@
 import numpy as np
+from scipy.ndimage.interpolation import shift
 
 from impulse.batch_updates import update_covariance, svd_groups
 from impulse.random_nums import rng
 
 
+def shift_array(arr, num, fill_value=0.):
+    result = np.empty_like(arr)
+    if num > 0:
+        result[:num] = fill_value
+        result[num:] = arr[:-num]
+    elif num < 0:
+        result[num:] = fill_value
+        result[:num] = arr[-num:]
+    else:
+        result[:] = arr
+    return result
+
+
 class JumpProposals():
-    def __init__(self, ndim, buf_size=1000, groups=None, cov=None, mean=None):
+    def __init__(self, ndim, buf_size=10000, groups=None, cov=None, mean=None):
         """
         ndim (int): number of dimensions in the parameter space
         """
@@ -43,7 +57,8 @@ class JumpProposals():
 
     def recursive_update(self, sample_num, new_chain):
         # update buffer
-        self._buffer = new_chain
+        self._buffer = shift_array(self._buffer, -len(new_chain))
+        self._buffer[-len(new_chain):] = new_chain
 
         # get new sample mean and covariance
         self.mean, self.cov = update_covariance(sample_num, self.cov, self.mean, self._buffer)
