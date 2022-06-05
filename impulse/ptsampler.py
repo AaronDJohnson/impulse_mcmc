@@ -75,9 +75,8 @@ class PTSampler(object):
         # make directory if it doesn't exist
         if not os.path.exists(outdir):
             os.makedirs(outdir)
-        filename = outdir + filename
         data = np.column_stack((self.chain, self.lnprob, self.lnlike))
-        with open(filename, 'a+') as fname:
+        with open(outdir + filename, 'a+') as fname:
             np.savetxt(fname, data)
 
 
