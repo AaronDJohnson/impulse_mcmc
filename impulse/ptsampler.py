@@ -51,7 +51,7 @@ class PTSampler(object):
             lnprior_star = self.lnprior_fn(x_star, **self.lnprior_kwargs)
             if np.isinf(lnprior_star):
                 lnprob_star = -np.inf
-                lnlike_star = -np.inf
+                lnlike_star = self.lnlike[ii - 1]
             else:
                 lnlike_star = 1 / self.temp * self.lnlike_fn(x_star, **self.lnlike_kwargs)
                 lnprob_star = lnprior_star + lnlike_star
@@ -106,6 +106,3 @@ def propose_swaps(chain, lnlike, ladder, swap_idx):
     if not idxs.size == 0:
         chain[swap_idx, :, [idxs - 1, idxs]] = chain[swap_idx, :, [idxs, idxs - 1]]
     return chain
-
-
-

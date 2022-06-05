@@ -6,7 +6,7 @@ def make_sin_data(num_pts):
 
     omega_real = 3 * rng.uniform(0, 1)
     a_real = 5 * rng.uniform(0, 1)
-    phi_real = 2 * np.pi * rng.uniform(0, 1)
+    phi_real = np.pi * rng.uniform(0, 1)
 
     x = np.linspace(0, 2*np.pi, num_pts)
     data = rng.standard_normal(num_pts) + a_real * np.sin(omega_real * x + phi_real)
