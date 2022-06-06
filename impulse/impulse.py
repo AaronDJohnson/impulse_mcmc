@@ -70,7 +70,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
             chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot - 1)
             # ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
             #                     adaptation_time=adapt_time)
-            [samplers[ii].set_x0(chain[swap_tot - 1, :, ii], logprob_arr[swap_tot, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
+            [samplers[ii].set_x0(chain[swap_tot - 1, :, ii], logprob_arr[swap_tot - 1, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
             swap_tot += swap_count
         for ii in range(ntemps):
             saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii], temps_arr[:, ii])
