@@ -19,7 +19,8 @@ def shift_array(arr, num, fill_value=0.):
 
 
 class JumpProposals():
-    def __init__(self, ndim, buf_size=10000, groups=None, cov=None, mean=None):
+    def __init__(self, ndim, buf_size=10000, groups=None, cov=None,
+                 mean=None):
         """
         ndim (int): number of dimensions in the parameter space
         """

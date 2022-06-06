@@ -1,4 +1,4 @@
 import numpy as np
 
-seed = 123
+seed = None
 rng = np.random.default_rng(seed)

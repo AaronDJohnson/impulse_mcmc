@@ -10,7 +10,7 @@ class MHSampler(object):
         x0: vector of length ndim
         lnlike_fn: log likelihood function
         lnpost_fn: log prior function
-        num_iters: number of iterations to perform
+
         """
         self.ndim = ndim
 
@@ -20,25 +20,27 @@ class MHSampler(object):
         self.lnlike_kwargs = lnlike_kwargs
         self.lnprior_kwargs = lnprior_kwargs
         self.iterations = iterations
-        self.num_runs = 0
+        self.num_samples = 0  # running total of all samples
 
         # initialize chain, acceptance rate, and lnprob
         self.chain = np.zeros((self.iterations, self.ndim))
+        self.lnlike = np.zeros(iterations)
         self.lnprob = np.zeros(iterations)
         self.accept_rate = np.zeros(iterations)
 
-    def sample(self, x0):
+    def sample(self, x0, temp=1.):
         naccept = 0
         # first sample
         self.chain[0] = x0
-        lnlike0 = self.lnlike_fn(x0, **self.lnlike_kwargs)
+        lnlike0 = 1 / temp * self.lnlike_fn(x0, **self.lnlike_kwargs)
         lnprior0 = self.lnprior_fn(x0, **self.lnlike_kwargs)
         self.lnprob0 = lnlike0 + lnprior0
         self.lnprob[0] = self.lnprob0
+        self.lnlike[0] = lnlike0
+        self.num_samples += 1
 
-        self.num_runs += 1
         for ii in range(1, self.iterations):
-
+            self.num_samples += 1
             # propose a move
             x_star, factor = self.prop_fn(x0)
             # x_star = x_star
@@ -49,8 +51,9 @@ class MHSampler(object):
             lnprior_star = self.lnprior_fn(x_star, **self.lnprior_kwargs)
             if np.isinf(lnprior_star):
                 lnprob_star = -np.inf
+                lnlike_star = self.lnlike[ii - 1]
             else:
-                lnlike_star = self.lnlike_fn(x_star, **self.lnlike_kwargs)
+                lnlike_star = 1 / temp * self.lnlike_fn(x_star, **self.lnlike_kwargs)
                 lnprob_star = lnprior_star + lnlike_star
 
             hastings_ratio = lnprob_star - self.lnprob0 + factor
@@ -64,14 +67,7 @@ class MHSampler(object):
             # update chain
             self.chain[ii] = x0
             self.lnprob[ii] = self.lnprob0
-            self.accept_rate[ii] = naccept / ii
+            self.lnlike[ii] = lnlike_star
+            self.accept_rate[ii] = naccept / self.num_samples
 
-        return self.chain, self.accept_rate, self.lnprob, x0
-
-    def save_samples(self, outdir, filename='/chain_1.txt'):
-        # make directory if it doesn't exist
-        if not os.path.exists(outdir):
-            os.makedirs(outdir)
-        data = np.column_stack((self.chain, self.lnprob, self.accept_rate))
-        with open(outdir + filename, 'a+') as fname:
-            np.savetxt(fname, data)
+        return self.chain, self.lnlike, self.lnprob, self.accept_rate, x0

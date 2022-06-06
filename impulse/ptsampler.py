@@ -1,107 +1,75 @@
-import os
 import numpy as np
 from impulse.random_nums import rng
 
+# TODO: make the following into their own class called PTSwap or something:
+# we need to keep up with some bits here and it would be easier with a class
 
-class PTSampler(object):
-    def __init__(self, ndim, lnlike_fn, lnprior_fn, prop_fn, temp, lnlike_kwargs={},
-                 lnprior_kwargs={}, iterations=1000):
-        """
-        x0: vector of length ndim
-        lnlike_fn: log likelihood function
-        lnpost_fn: log prior function
-        num_iters: number of iterations to perform
-        """
+class PTSwap():
+
+    def __init__(self, ndim, ntemps, tmin=1, tmax=None, tstep=None,
+                 tinf=False, adaptation_time=1e2, adaptation_lag=1e3,
+                 ladder=None):
         self.ndim = ndim
-        self.temp = temp
-
-        self.lnlike_fn = lnlike_fn
-        self.lnprior_fn = lnprior_fn
-        self.prop_fn = prop_fn
-        self.lnlike_kwargs = lnlike_kwargs
-        self.lnprior_kwargs = lnprior_kwargs
-        self.iterations = iterations
-        self.num_runs = 0
-
-        # initialize chain, acceptance rate, and lnprob
-        self.chain = np.zeros((self.iterations, self.ndim))
-        self.lnlike = np.zeros(iterations)
-        self.lnprob = np.zeros(iterations)
-
-    def sample(self, x0):
-        naccept = 0
-        # first sample
-        self.chain[0] = x0
-        lnlike0 = 1 / self.temp * self.lnlike_fn(x0, **self.lnlike_kwargs)
-        lnprior0 = self.lnprior_fn(x0, **self.lnlike_kwargs)
-        self.lnprob0 = lnlike0 + lnprior0
-        self.lnprob[0] = self.lnprob0
-        self.lnlike[0] = lnlike0
-        # x0 = self.chain[self.num_runs * self.iterations]
-        self.num_runs += 1
-        for ii in range(1, self.iterations):
-
-            # propose a move
-            x_star, factor = self.prop_fn(x0, self.temp)
-            # x_star = x_star
-            # draw random number
-            rand_num = rng.uniform()
-
-            # compute hastings ratio
-            lnprior_star = self.lnprior_fn(x_star, **self.lnprior_kwargs)
-            if np.isinf(lnprior_star):
-                lnprob_star = -np.inf
-                lnlike_star = self.lnlike[ii - 1]
-            else:
-                lnlike_star = 1 / self.temp * self.lnlike_fn(x_star, **self.lnlike_kwargs)
-                lnprob_star = lnprior_star + lnlike_star
-
-            hastings_ratio = lnprob_star - self.lnprob0 + factor
-
-            # accept/reject step
-            if np.log(rand_num) < hastings_ratio:
-                x0 = x_star
-                self.lnprob0 = lnprob_star
-                naccept += 1
-
-            # update chain
-            self.chain[ii] = x0
-            self.lnprob[ii] = self.lnprob0
-            self.lnlike[ii] = lnlike_star
-            # self.accept_rate[ii] = naccept / ii
-        return self.chain, self.lnlike, x0
-
-    def save_samples(self, outdir, filename='/chain_1.txt'):
-        # make directory if it doesn't exist
-        if not os.path.exists(outdir):
-            os.makedirs(outdir)
-        data = np.column_stack((self.chain, self.lnprob, self.lnlike))
-        with open(outdir + filename, 'a+') as fname:
-            np.savetxt(fname, data)
+        self.ntemps = ntemps
+        self.tmin = tmin
+        self.tmax = tmax
+        self.tstep = tstep
+        if ladder is None:
+            self.ladder = self.temp_ladder()
+        else:
+            self.ladder = ladder
+            self.ntemps = len(ladder)
+        if tinf:
+            ladder = np.delete(ladder, -1)  # remove last element
+            ladder = np.append(ladder, np.inf)  # replace with inf
+        self.swap_accept = np.zeros(ntemps - 1)  # swap acceptance between chains
+        self.adaptation_time = adaptation_time
+        self.adaptation_lag = adaptation_lag
+        self.nswaps = 0
 
 
-def temp_ladder(tmin, ndim, ntemps, tmax=None, tstep=None):
-    """
-    Method to compute temperature ladder. At the moment this uses
-    a geometrically spaced temperature ladder with a temperature
-    spacing designed to give 25 % temperature swap acceptance rate.
-    """
-
-    if tstep is None and tmax is None:
-        tstep = 1 + np.sqrt(2 / ndim)
-    elif tstep is None and tmax is not None:
-        tstep = np.exp(np.log(tmax / tmin) / (ntemps - 1))
-    ii = np.arange(ntemps)
-    ladder = tmin * tstep**ii
-
-    return ladder
+    def temp_ladder(self):
+        """
+        Method to compute temperature ladder. At the moment this uses
+        a geometrically spaced temperature ladder with a temperature
+        spacing designed to give 25 % temperature swap acceptance rate.
+        """
+        if self.tstep is None and self.tmax is None:
+            self.tstep = 1 + np.sqrt(2 / self.ndim)
+        elif self.tstep is None and self.tmax is not None:
+            self.tstep = np.exp(np.log(self.tmax / self.tmin) / (self.tmaxntemps - 1))
+        ii = np.arange(self.ntemps)
+        ladder = self.tmin * self.tstep**ii
+        return ladder
 
 
-def propose_swaps(chain, lnlike, ladder, swap_idx):
-    lnchainswap = (1 / ladder[:-1] - 1 / ladder[1:]) * (lnlike[-1, :-1] - lnlike[-1, 1:])
-    lnchainswap = np.nan_to_num(lnchainswap)
-    nums = np.log(rng.random(size=len(ladder) - 1))
-    idxs = np.where(lnchainswap > nums)[0] + 1
-    if not idxs.size == 0:
+    def adapt_ladder(self, sample_num, adaptation_lag=1e3, adaptation_time=1e2):
+        """
+        Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
+        """
+        # Modulate temperature adjustments with a hyperbolic decay.
+        decay = adaptation_lag / (sample_num + adaptation_lag)  # t0 / (t + t0)
+        kappa = decay / adaptation_time  # 1 / nu
+        # Construct temperature adjustments.
+        accept_ratio = self.compute_accept_ratio()
+        dSs = kappa * (accept_ratio[:-1] - accept_ratio[1:])  # delta acceptance ratios for chains
+        # Compute new ladder (hottest and coldest chains don't move).
+        deltaTs = np.diff(self.ladder[:-1])
+        deltaTs *= np.exp(dSs)
+        self.ladder[1:-1] = 1 / (np.cumsum(deltaTs) + self.ladder[0])
+
+
+    def compute_accept_ratio(self):
+        return self.swap_accept / self.nswaps
+
+
+    def __call__(self, chain, lnlike, swap_idx):  # propose swaps!
+        self.nswaps += 1
+        lnchainswap = (1 / self.ladder[:-1] - 1 / self.ladder[1:]) * (lnlike[-1, :-1] - lnlike[-1, 1:])
+        # lnchainswap = np.nan_to_num(lnchainswap)
+        nums = np.log(rng.random(size=len(self.ladder) - 1))
+        idxs = np.where(lnchainswap > nums)[0] + 1
+        # if not idxs.size == 0:
+        self.swap_accept[idxs - 1] += 1
         chain[swap_idx, :, [idxs - 1, idxs]] = chain[swap_idx, :, [idxs, idxs - 1]]
-    return chain
+        return chain
