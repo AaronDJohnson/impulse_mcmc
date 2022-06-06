@@ -26,7 +26,6 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
         full_chain[count:count + loop_iterations, :] = chain
         mix.recursive_update(count, chain)
         count = sampler.num_samples
-        print(accept[-1])
     return full_chain
 
 
@@ -56,23 +55,22 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
         mixes[ii].add_jump(de, deweight)
 
     # make set of samplers (1 for each temp)
-    samplers = [MHSampler(ndim, lnlike, lnprior, mixes[ii], iterations=swap_count) for ii in range(ntemps)]
+    samplers = [MHSampler(x0[ii], lnlike, lnprior, mixes[ii], iterations=swap_count, init_temp=ptswap.ladder[ii]) for ii in range(ntemps)]
 
     # set up count and iterations between loops
     count = 0
     for _ in tqdm(range(0, int(num_samples), loop_iterations)):
         swap_tot = 0
-        for jj in range(loop_iterations // swap_count):
+        for _ in range(loop_iterations // swap_count):
             for ii, sampler in enumerate(samplers):
                 (chain[swap_tot:swap_tot + swap_count, :, ii],
                  lnlike_arr[swap_tot:swap_tot + swap_count, ii],
                  lnprob_arr[swap_tot:swap_tot + swap_count, ii],
-                 accept_arr[swap_tot:swap_tot + swap_count, ii],
-                 x0[ii]) = sampler.sample(x0[ii], ptswap.ladder[ii])
-            chain, lnlike_arr, lnprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot)
-            x0 = chain[swap_tot, :, :].T
+                 accept_arr[swap_tot:swap_tot + swap_count, ii]) = sampler.sample()
+            chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot)
             # ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
             #                     adaptation_time=adapt_time)
+            [samplers[ii].set_x0(chain[swap_tot, :, ii], logprob_arr[swap_tot, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
             swap_tot += swap_count
         for ii in range(ntemps):
             saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii], temps_arr[:, ii])

@@ -1,3 +1,4 @@
+from re import I
 import numpy as np
 from impulse.random_nums import rng
 
@@ -36,7 +37,7 @@ class PTSwap():
         if self.tstep is None and self.tmax is None:
             self.tstep = 1 + np.sqrt(2 / self.ndim)
         elif self.tstep is None and self.tmax is not None:
-            self.tstep = np.exp(np.log(self.tmax / self.tmin) / (self.tmaxntemps - 1))
+            self.tstep = np.exp(np.log(self.tmax / self.tmin) / (self.ntemps - 1))
         ii = np.arange(self.ntemps)
         ladder = self.tmin * self.tstep**ii
         return ladder
@@ -62,17 +63,43 @@ class PTSwap():
         return self.swap_accept / self.nswaps
 
 
+    # def __call__(self, chain, lnlike, lnprob, swap_idx):  # propose swaps!
+    #     self.nswaps += 1
+    #     dbeta = (1 / self.ladder[1:] - 1 / self.ladder[:-1])
+    #     paccept = dbeta * (lnlike[swap_idx, :-1] - lnlike[swap_idx, 1:])
+    #     # lnchainswap = np.nan_to_num(lnchainswap)
+    #     raccept = np.log(rng.random(size=len(self.ladder) - 1))
+    #     mask = np.greater(paccept, raccept)
+    #     idxs = np.arange(self.ntemps - 1)[mask] + 1
+    #     if not idxs.size == 0:
+    #         self.swap_accept[idxs - 1] += 1
+    #         chain[swap_idx, :, [idxs - 1, idxs]] = chain[swap_idx, :, [idxs, idxs - 1]]
+    #         lnlike[swap_idx, [idxs - 1, idxs]] = lnlike[swap_idx, [idxs, idxs - 1]]
+    #         # TODO: the sign on dbeta on the next line is wrong
+    #         lnprob[swap_idx, [idxs - 1, idxs]] = lnprob[swap_idx, [idxs, idxs - 1]] - dbeta[idxs-1] * lnlike[swap_idx, [idxs, idxs - 1]]
+    #     return chain, lnlike, lnprob
+
+
     def __call__(self, chain, lnlike, lnprob, swap_idx):  # propose swaps!
         self.nswaps += 1
-        dbeta = (1 / self.ladder[1:] - 1 / self.ladder[:-1])
-        paccept = dbeta * (lnlike[swap_idx, :-1] - lnlike[swap_idx, 1:])
-        # lnchainswap = np.nan_to_num(lnchainswap)
-        raccept = np.log(rng.random(size=len(self.ladder) - 1))
-        mask = np.greater(paccept, raccept)
-        idxs = np.arange(self.ntemps - 1)[mask] + 1
-        if not idxs.size == 0:
-            self.swap_accept[idxs - 1] += 1
-            chain[swap_idx, :, [idxs - 1, idxs]] = chain[swap_idx, :, [idxs, idxs - 1]]
-            lnlike[swap_idx, [idxs - 1, idxs]] = lnlike[swap_idx, [idxs, idxs - 1]]
-            lnprob[swap_idx, [idxs - 1, idxs]] = lnprob[swap_idx, [idxs, idxs - 1]] - dbeta[idxs-1] * lnlike[swap_idx, [idxs, idxs - 1]]
+        for i in range(self.ntemps):
+            dbeta = (1 / self.ladder[i - 1] - 1 / self.ladder[i])
+
+            raccept = np.log(rng.random())
+            paccept = dbeta * (lnlike[swap_idx, i] - lnlike[swap_idx, i - 1])
+
+            if paccept > raccept:
+                self.swap_accept[i - 1] += 1
+                chain_temp = np.copy(chain[swap_idx, :, i])
+                # logl_temp = np.copy(lnlike[swap_idx, i])
+                # logp_temp = np.copy(lnprob[swap_idx, i])
+
+                chain[swap_idx, :, i] = chain[swap_idx, :, i - 1]
+                # lnlike[swap_idx, i] = lnlike[swap_idx, i - 1]
+                # lnprob[swap_idx, i] = lnprob[swap_idx, i - 1] - dbeta * lnlike[swap_idx, i - 1]
+
+                chain[swap_idx, :, i - 1] = chain_temp
+                # lnlike[swap_idx, i - 1] = logl_temp
+                # lnprob[swap_idx, i - 1] = logp_temp + dbeta * logl_temp
+        # print(self.compute_accept_ratio())
         return chain, lnlike, lnprob
