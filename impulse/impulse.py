@@ -31,7 +31,7 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
 
 def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
               amweight=30, scamweight=15, deweight=50, ntemps=2, tmin=1, tmax=None, tstep=None,
-              swap_count=200, ladder=None, tinf=False, adapt_time=100, adapt_lag=1000,
+              swap_count=100, ladder=None, tinf=False, adapt_time=100, adapt_lag=1000,
               loop_iterations=1000, outdir='./chains'):
 
     ptswap = PTSwap(ndim, ntemps, tmin=tmin, tmax=tmax, tstep=tstep,
@@ -67,10 +67,10 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
                  lnlike_arr[swap_tot:swap_tot + swap_count, ii],
                  lnprob_arr[swap_tot:swap_tot + swap_count, ii],
                  accept_arr[swap_tot:swap_tot + swap_count, ii]) = sampler.sample()
-            chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot)
+            chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot - 1)
             # ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
             #                     adaptation_time=adapt_time)
-            [samplers[ii].set_x0(chain[swap_tot, :, ii], logprob_arr[swap_tot, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
+            [samplers[ii].set_x0(chain[swap_tot - 1, :, ii], logprob_arr[swap_tot, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
             swap_tot += swap_count
         for ii in range(ntemps):
             saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii], temps_arr[:, ii])

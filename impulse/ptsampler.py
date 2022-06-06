@@ -1,4 +1,3 @@
-from re import I
 import numpy as np
 from impulse.random_nums import rng
 
@@ -82,24 +81,22 @@ class PTSwap():
 
     def __call__(self, chain, lnlike, lnprob, swap_idx):  # propose swaps!
         self.nswaps += 1
-        for i in range(self.ntemps):
+        for i in range(1, self.ntemps):
             dbeta = (1 / self.ladder[i - 1] - 1 / self.ladder[i])
-
             raccept = np.log(rng.random())
             paccept = dbeta * (lnlike[swap_idx, i] - lnlike[swap_idx, i - 1])
 
             if paccept > raccept:
                 self.swap_accept[i - 1] += 1
                 chain_temp = np.copy(chain[swap_idx, :, i])
-                # logl_temp = np.copy(lnlike[swap_idx, i])
+                logl_temp = np.copy(lnlike[swap_idx, i])
                 # logp_temp = np.copy(lnprob[swap_idx, i])
 
                 chain[swap_idx, :, i] = chain[swap_idx, :, i - 1]
-                # lnlike[swap_idx, i] = lnlike[swap_idx, i - 1]
+                lnlike[swap_idx, i] = lnlike[swap_idx, i - 1]
                 # lnprob[swap_idx, i] = lnprob[swap_idx, i - 1] - dbeta * lnlike[swap_idx, i - 1]
 
                 chain[swap_idx, :, i - 1] = chain_temp
-                # lnlike[swap_idx, i - 1] = logl_temp
+                lnlike[swap_idx, i - 1] = logl_temp
                 # lnprob[swap_idx, i - 1] = logp_temp + dbeta * logl_temp
-        # print(self.compute_accept_ratio())
         return chain, lnlike, lnprob

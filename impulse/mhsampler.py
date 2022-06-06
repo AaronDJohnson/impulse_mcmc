@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from impulse.random_nums import rng
 
