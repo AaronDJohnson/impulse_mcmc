@@ -70,7 +70,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
                  accept_arr[swap_tot:swap_tot + swap_count, ii],
                  x0[ii]) = sampler.sample(x0[ii], ptswap.ladder[ii])
             chain, lnlike_arr, lnprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot)
-            x0 = chain[-1, :, :].T
+            x0 = chain[swap_tot, :, :].T
             # ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
             #                     adaptation_time=adapt_time)
             swap_tot += swap_count
