@@ -32,9 +32,9 @@ class MHSampler(object):
     def sample(self, x0, temp=1.):
         # first sample
         self.chain[0] = x0
-        lnlike0 = 1 / temp * self.lnlike_fn(x0, **self.lnlike_kwargs)
+        lnlike0 = self.lnlike_fn(x0, **self.lnlike_kwargs)
         lnprior0 = self.lnprior_fn(x0, **self.lnlike_kwargs)
-        self.lnprob0 = lnlike0 + lnprior0
+        self.lnprob0 = 1 / temp * lnlike0 + lnprior0
         self.lnprob[0] = self.lnprob0
         self.lnlike[0] = lnlike0
         self.num_samples += 1
@@ -53,8 +53,8 @@ class MHSampler(object):
                 lnprob_star = -np.inf
                 lnlike_star = self.lnlike[ii - 1]
             else:
-                lnlike_star = 1 / temp * self.lnlike_fn(x_star, **self.lnlike_kwargs)
-                lnprob_star = lnprior_star + lnlike_star
+                lnlike_star = self.lnlike_fn(x_star, **self.lnlike_kwargs)
+                lnprob_star = 1 / temp * lnprior_star + lnlike_star
 
             hastings_ratio = lnprob_star - self.lnprob0 + factor
 

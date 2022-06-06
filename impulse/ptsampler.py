@@ -51,7 +51,6 @@ class PTSwap():
         kappa = decay / adaptation_time  # 1 / nu
         # Construct temperature adjustments.
         accept_ratio = self.compute_accept_ratio()
-        print(accept_ratio)
         dSs = kappa * (accept_ratio[:-1] - accept_ratio[1:])  # delta acceptance ratios for chains
         # Compute new ladder (hottest and coldest chains don't move).
         deltaTs = np.diff(self.ladder[:-1])
@@ -66,14 +65,14 @@ class PTSwap():
     def __call__(self, chain, lnlike, lnprob, swap_idx):  # propose swaps!
         self.nswaps += 1
         dbeta = (1 / self.ladder[1:] - 1 / self.ladder[:-1])
-        paccept = dbeta * (lnlike[-1, :-1] - lnlike[-1, 1:])
-        print(lnlike[-1, :])
+        paccept = dbeta * (lnlike[swap_idx, :-1] - lnlike[swap_idx, 1:])
         # lnchainswap = np.nan_to_num(lnchainswap)
         raccept = np.log(rng.random(size=len(self.ladder) - 1))
-        idxs = np.where(paccept > raccept)[0] + 1
+        mask = np.greater(paccept, raccept)
+        idxs = np.arange(self.ntemps - 1)[mask] + 1
         if not idxs.size == 0:
             self.swap_accept[idxs - 1] += 1
             chain[swap_idx, :, [idxs - 1, idxs]] = chain[swap_idx, :, [idxs, idxs - 1]]
             lnlike[swap_idx, [idxs - 1, idxs]] = lnlike[swap_idx, [idxs, idxs - 1]]
-            lnprob[swap_idx, [idxs - 1, idxs]] = lnprob[swap_idx, [idxs, idxs - 1]] - dbeta * lnlike[swap_idx, [idxs, idxs - 1]]
+            lnprob[swap_idx, [idxs - 1, idxs]] = lnprob[swap_idx, [idxs, idxs - 1]] - dbeta[idxs-1] * lnlike[swap_idx, [idxs, idxs - 1]]
         return chain, lnlike, lnprob
