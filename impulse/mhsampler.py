@@ -35,13 +35,11 @@ class MHSampler(object):
         lnlike0 = self.lnlike_fn(x0, **self.lnlike_kwargs)
         lnprior0 = self.lnprior_fn(x0, **self.lnlike_kwargs)
         self.lnprob0 = 1 / self.temp * lnlike0 + lnprior0
-        self.num_samples += 1
 
     def set_x0(self, x0, lnprob0, temp=1.):
         # set x0 and temp!
         self.temp = temp
         self.x0 = x0
-        self.lnprob0 = lnprob0
         self.lnprob0 = 1 / self.temp * self.lnlike_fn(x0) + self.lnprior_fn(x0)
         # print(1 / self.temp * self.lnlike_fn(x0) + self.lnprior_fn(x0))
         # print(self.lnprob0)
@@ -53,7 +51,6 @@ class MHSampler(object):
             self.num_samples += 1
             # propose a move
             x_star, factor = self.prop_fn(self.x0, self.temp)
-            # x_star = x_star
             # draw random number
             rand_num = rng.uniform()
 

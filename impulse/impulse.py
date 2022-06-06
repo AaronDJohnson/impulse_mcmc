@@ -8,7 +8,7 @@ from impulse.save_data import SaveData
 
 def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
            amweight=30, scamweight=15, deweight=50, loop_iterations=1000,
-           save=True, outdir='./chains', filename='/chain_1.txt', compress=True):
+           save=True, outdir='./chains', filename='/chain_1.txt'):
     save = SaveData(outdir=outdir, filename=filename)
     # set up proposals:
     mix = JumpProposals(ndim, buf_size=buf_size)
@@ -18,20 +18,20 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
     # make empty full chain
     full_chain = np.zeros((num_samples, ndim))
     # set up count and iterations between loops
-    sampler = MHSampler(ndim, lnlike, lnprior, mix, iterations=loop_iterations)
+    sampler = MHSampler(x0, lnlike, lnprior, mix, iterations=loop_iterations)
     count = 0
     for _ in tqdm(range(0, int(num_samples), loop_iterations)):
-        chain, like, prob, accept, x0 = sampler.sample(x0)
+        chain, like, prob, accept = sampler.sample()
         save(chain, like, prob, accept)
         full_chain[count:count + loop_iterations, :] = chain
         mix.recursive_update(count, chain)
-        count = sampler.num_samples
+        count += loop_iterations
     return full_chain
 
 
 def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
               amweight=30, scamweight=15, deweight=50, ntemps=2, tmin=1, tmax=None, tstep=None,
-              swap_count=100, ladder=None, tinf=False, adapt_time=100, adapt_lag=1000,
+              swap_count=200, ladder=None, tinf=False, adapt_time=100, adapt_lag=1000,
               loop_iterations=1000, outdir='./chains'):
 
     ptswap = PTSwap(ndim, ntemps, tmin=tmin, tmax=tmax, tstep=tstep,
