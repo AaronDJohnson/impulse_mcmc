@@ -27,9 +27,9 @@ class MHSampler(object):
         self.lnlike = np.zeros(iterations)
         self.lnprob = np.zeros(iterations)
         self.accept_rate = np.zeros(iterations)
+        self.naccept = 0
 
     def sample(self, x0, temp=1.):
-        naccept = 0
         # first sample
         self.chain[0] = x0
         lnlike0 = 1 / temp * self.lnlike_fn(x0, **self.lnlike_kwargs)
@@ -62,12 +62,12 @@ class MHSampler(object):
             if np.log(rand_num) < hastings_ratio:
                 x0 = x_star
                 self.lnprob0 = lnprob_star
-                naccept += 1
+                self.naccept += 1
 
             # update chain
             self.chain[ii] = x0
             self.lnprob[ii] = self.lnprob0
             self.lnlike[ii] = lnlike_star
-            self.accept_rate[ii] = naccept / self.num_samples
+            self.accept_rate[ii] = self.naccept / self.num_samples
 
         return self.chain, self.lnlike, self.lnprob, self.accept_rate, x0

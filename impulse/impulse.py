@@ -26,6 +26,7 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
         full_chain[count:count + loop_iterations, :] = chain
         mix.recursive_update(count, chain)
         count = sampler.num_samples
+        print(accept[-1])
     return full_chain
 
 
@@ -45,6 +46,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
     lnlike_arr = np.zeros((loop_iterations, ntemps))
     lnprob_arr = np.zeros((loop_iterations, ntemps))
     accept_arr = np.zeros((loop_iterations, ntemps))
+    temps_arr = np.zeros((loop_iterations, ntemps))
     # set up proposals
     mixes = []
     for ii in range(ntemps):
@@ -60,20 +62,20 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
     count = 0
     for _ in tqdm(range(0, int(num_samples), loop_iterations)):
         swap_tot = 0
-        for _ in range(loop_iterations // swap_count):
+        for jj in range(loop_iterations // swap_count):
             for ii, sampler in enumerate(samplers):
                 (chain[swap_tot:swap_tot + swap_count, :, ii],
                  lnlike_arr[swap_tot:swap_tot + swap_count, ii],
                  lnprob_arr[swap_tot:swap_tot + swap_count, ii],
                  accept_arr[swap_tot:swap_tot + swap_count, ii],
                  x0[ii]) = sampler.sample(x0[ii], ptswap.ladder[ii])
-            chain = ptswap(chain, lnlike_arr, swap_tot)
-            ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
-                                adaptation_time=adapt_time)
-
+            chain, lnlike_arr, lnprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot)
+            x0 = chain[-1, :, :].T
+            # ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
+            #                     adaptation_time=adapt_time)
             swap_tot += swap_count
         for ii in range(ntemps):
-            saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii])
+            saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii], temps_arr[:, ii])
             mixes[ii].recursive_update(count, chain[:, :, ii])
         full_chain[count:count + loop_iterations, :, :] = chain
         count += loop_iterations
