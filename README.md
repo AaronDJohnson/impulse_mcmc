@@ -1,17 +1,11 @@
 # impulse
- Rewrite of PTMCMCSampler focusing on modularity
+  Rewrite of PTMCMCSampler focusing on modularity
+
+# This is a work in progress 
 
 ## Currently working:
-  * Metropolis Hastings sampler for one core
-  * Modular jump proposals and ability to mix proposals
-  * HDF5 saving after sampler is finished
+  * `sample()`
+  * `pt_sample()`
 
 ## Currently under development:
-  * Parallel Tempering MCMC
-  * Using Schwimmbad to swap between MPI and multiprocessing
   * Resume function
-  * Convergence tests
-
-## Future feature list:
-  * Computational paradigm for scalable parallel tempering to arbitrary numbers of CPUs
-  * Convergence tests for burn-in and stop conditions (Geweke, Gelman-Rubin r-hat, etc.)
