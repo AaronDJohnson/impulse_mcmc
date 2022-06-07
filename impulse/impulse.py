@@ -46,7 +46,6 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
     lnlike_arr = np.zeros((loop_iterations, ntemps))
     lnprob_arr = np.zeros((loop_iterations, ntemps))
     accept_arr = np.zeros((loop_iterations, ntemps))
-    temps = []
     # set up proposals
     mixes = []
     for ii in range(ntemps):
@@ -80,5 +79,4 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
             mixes[ii].recursive_update(count, chain[:, :, ii])
         full_chain[count:count + loop_iterations, :, :] = chain
         count += loop_iterations
-    print(ptswap.compute_accept_ratio())
-    return full_chain, temps
+    return full_chain
