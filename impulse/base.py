@@ -29,10 +29,10 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
     return full_chain
 
 
-# TODO: make this a class and combine these two functions with better counting built in
+# TODO: make this a class and combine these two functions with cleaner counting built in
 def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
               amweight=30, scamweight=15, deweight=50, ntemps=2, tmin=1, tmax=None, tstep=None,
-              swap_count=100, ladder=None, tinf=False, adapt_t0=100, adapt_nu=10,
+              swap_count=100, ladder=None, tinf=False, adapt=True, adapt_t0=100, adapt_nu=10,
               loop_iterations=1000, outdir='./chains'):
 
     ptswap = PTSwap(ndim, ntemps, tmin=tmin, tmax=tmax, tstep=tstep,
@@ -69,7 +69,8 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
                  accept_arr[swap_tot:swap_tot + swap_count, ii]) = sampler.sample()
             swap_idx = samplers[0].num_samples % loop_iterations - 1
             chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_idx)
-            ptswap.adapt_ladder(adapt_t0=adapt_t0, adapt_nu=adapt_nu)
+            if adapt:
+                ptswap.adapt_ladder()
             [samplers[ii].set_x0(chain[swap_idx, :, ii], logprob_arr[swap_idx, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
             # print(samplers[0].x0)
             swap_tot += swap_count

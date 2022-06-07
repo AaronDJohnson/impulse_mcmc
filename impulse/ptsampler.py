@@ -7,7 +7,7 @@ from impulse.random_nums import rng
 class PTSwap():
 
     def __init__(self, ndim, ntemps, tmin=1, tmax=None, tstep=None,
-                 tinf=False, adaptation_time=1e2, adaptation_lag=1e3,
+                 tinf=False, adapt_t0=100, adapt_nu=10,
                  ladder=None):
         self.ndim = ndim
         self.ntemps = ntemps
@@ -22,8 +22,8 @@ class PTSwap():
         if tinf:
             self.ladder[-1] = np.inf
         self.swap_accept = np.zeros(ntemps - 1)  # swap acceptance between chains
-        self.adaptation_time = adaptation_time
-        self.adaptation_lag = adaptation_lag
+        self.adapt_t0 = adapt_t0
+        self.adapt_nu = adapt_nu
         self.nswaps = 0
 
 
@@ -42,13 +42,13 @@ class PTSwap():
         return ladder
 
 
-    def adapt_ladder(self, adapt_t0=100, adapt_nu=10):
+    def adapt_ladder(self):
         """
         Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
         """
         # Modulate temperature adjustments with a hyperbolic decay.
-        decay = adapt_t0 / (self.nswaps + adapt_t0)  # t0 / (t + t0)
-        kappa = decay / adapt_nu  # 1 / nu
+        decay = self.adapt_t0 / (self.nswaps + self.adapt_t0)  # t0 / (t + t0)
+        kappa = decay / self.adapt_nu  # 1 / nu
         # Construct temperature adjustments.
         accept_ratio = self.compute_accept_ratio()
         dSs = kappa * (accept_ratio[:-1] - accept_ratio[1:])  # delta acceptance ratios for chains
@@ -56,8 +56,16 @@ class PTSwap():
         deltaTs = np.diff(self.ladder[:-1])
         deltaTs *= np.exp(dSs)
         self.ladder[1:-1] = (np.cumsum(deltaTs) + self.ladder[0])
-        with open('./data/temps.txt', 'a+') as f:
-            np.savetxt(f, self.ladder)
+
+        # temp_filepath = './data/temps.txt'
+        # with open(temp_filepath, 'a+') as f:
+        #     np.savetxt(f, self.ladder, newline=' ')
+        #     f.write('\n')
+
+        # accept_filepath = './data/accept.txt'
+        # with open(accept_filepath, 'a+') as f:
+        #     np.savetxt(f, self.compute_accept_ratio(), newline=' ')
+        #     f.write('\n')
 
 
     def compute_accept_ratio(self):
