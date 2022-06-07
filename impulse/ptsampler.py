@@ -42,7 +42,7 @@ class PTSwap():
         return ladder
 
 
-    def adapt_ladder(self, sample_num, adaptation_lag=1e5, adaptation_time=1e3):
+    def adapt_ladder(self, sample_num, adaptation_lag=1e5, adaptation_time=0.001):
         """
         Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
         """
