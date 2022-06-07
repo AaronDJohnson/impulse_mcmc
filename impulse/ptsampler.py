@@ -42,13 +42,13 @@ class PTSwap():
         return ladder
 
 
-    def adapt_ladder(self, sample_num, adaptation_lag=1e5, adaptation_time=0.001):
+    def adapt_ladder(self, adapt_t0=100, adapt_nu=10):
         """
         Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
         """
         # Modulate temperature adjustments with a hyperbolic decay.
-        decay = adaptation_lag / (sample_num + adaptation_lag)  # t0 / (t + t0)
-        kappa = decay / adaptation_time  # 1 / nu
+        decay = adapt_t0 / (self.nswaps + adapt_t0)  # t0 / (t + t0)
+        kappa = decay / adapt_nu  # 1 / nu
         # Construct temperature adjustments.
         accept_ratio = self.compute_accept_ratio()
         dSs = kappa * (accept_ratio[:-1] - accept_ratio[1:])  # delta acceptance ratios for chains
@@ -56,6 +56,8 @@ class PTSwap():
         deltaTs = np.diff(self.ladder[:-1])
         deltaTs *= np.exp(dSs)
         self.ladder[1:-1] = (np.cumsum(deltaTs) + self.ladder[0])
+        with open('./data/temps.txt', 'a+') as f:
+            np.savetxt(f, self.ladder)
 
 
     def compute_accept_ratio(self):
