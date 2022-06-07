@@ -1,7 +1,8 @@
 # impulse
   Rewrite of PTMCMCSampler focusing on modularity
 
-# This is a work in progress 
+# This is a work in progress (USE AT YOUR OWN RISK)
+  * tests of accuracy are under way
 
 ## Currently working:
   * `sample()`
