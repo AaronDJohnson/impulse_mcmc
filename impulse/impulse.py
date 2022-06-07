@@ -45,7 +45,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
     lnlike_arr = np.zeros((loop_iterations, ntemps))
     lnprob_arr = np.zeros((loop_iterations, ntemps))
     accept_arr = np.zeros((loop_iterations, ntemps))
-    temps_arr = np.zeros((loop_iterations, ntemps))
+    temps = []
     # set up proposals
     mixes = []
     for ii in range(ntemps):
@@ -68,16 +68,17 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
                  lnprob_arr[swap_tot:swap_tot + swap_count, ii],
                  accept_arr[swap_tot:swap_tot + swap_count, ii]) = sampler.sample()
             chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_tot - 1)
-            # ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
-            #                     adaptation_time=adapt_time)
+            ptswap.adapt_ladder(samplers[0].num_samples, adaptation_lag=adapt_lag,
+                                adaptation_time=adapt_time)
+            temps.append(ptswap.ladder)
             [samplers[ii].set_x0(chain[swap_tot - 1, :, ii], logprob_arr[swap_tot - 1, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
             swap_tot += swap_count
         for ii in range(ntemps):
-            saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii], temps_arr[:, ii])
+            saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii])
             mixes[ii].recursive_update(count, chain[:, :, ii])
         full_chain[count:count + loop_iterations, :, :] = chain
         count += loop_iterations
-    return full_chain
+    return full_chain, temps
 
 
 # @ray.remote

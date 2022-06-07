@@ -42,7 +42,7 @@ class PTSwap():
         return ladder
 
 
-    def adapt_ladder(self, sample_num, adaptation_lag=1e3, adaptation_time=1e2):
+    def adapt_ladder(self, sample_num, adaptation_lag=1e5, adaptation_time=1e3):
         """
         Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
         """
@@ -55,7 +55,7 @@ class PTSwap():
         # Compute new ladder (hottest and coldest chains don't move).
         deltaTs = np.diff(self.ladder[:-1])
         deltaTs *= np.exp(dSs)
-        self.ladder[1:-1] = 1 / (np.cumsum(deltaTs) + self.ladder[0])
+        self.ladder[1:-1] = (np.cumsum(deltaTs) + self.ladder[0])
 
 
     def compute_accept_ratio(self):
