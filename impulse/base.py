@@ -34,7 +34,7 @@ def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
 def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
               amweight=30, scamweight=15, deweight=50, ntemps=2, tmin=1, tmax=None, tstep=None,
               swap_count=100, ladder=None, tinf=False, adapt=True, adapt_t0=100, adapt_nu=10,
-              loop_iterations=1000, outdir='./chains'):
+              loop_iterations=1000, outdir='./chains', temp_dir=None):
 
     ptswap = PTSwap(ndim, ntemps, tmin=tmin, tmax=tmax, tstep=tstep,
                     tinf=tinf, adapt_t0=adapt_t0,
@@ -71,7 +71,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
             swap_idx = samplers[0].num_samples % loop_iterations - 1
             chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_idx)
             if adapt:
-                ptswap.adapt_ladder()
+                ptswap.adapt_ladder(temp_dir=temp_dir)
             [samplers[ii].set_x0(chain[swap_idx, :, ii], logprob_arr[swap_idx, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
             # print(samplers[0].x0)
             swap_tot += swap_count
@@ -86,7 +86,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
 def parallel_pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
               amweight=30, scamweight=15, deweight=50, ntemps=2, tmin=1, tmax=None, tstep=None,
               swap_count=100, ladder=None, tinf=False, adapt=True, adapt_t0=100, adapt_nu=10,
-              loop_iterations=1000, outdir='./chains'):
+              loop_iterations=1000, outdir='./chains', temp_dir='./temp_data'):
 
     if not ray.is_initialized():
         ray.init(num_cpus=ntemps)
@@ -97,7 +97,7 @@ def parallel_pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_siz
     saves = [SaveData(outdir=outdir, filename='/chain_{}.txt'.format(ptswap.ladder[ii])) for ii in range(ntemps)]
 
     # make empty full chain
-    full_chain = np.zeros((num_samples, ndim, ntemps))
+    # full_chain = np.zeros((num_samples, ndim, ntemps))
     chain = np.zeros((loop_iterations, ndim, ntemps))
     lnlike_arr = np.zeros((loop_iterations, ntemps))
     lnprob_arr = np.zeros((loop_iterations, ntemps))
@@ -127,13 +127,13 @@ def parallel_pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_siz
             swap_idx = ray.get(samplers[0].get_num_samples.remote()) % loop_iterations - 1
             chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_idx)
             if adapt:
-                ptswap.adapt_ladder()
+                ptswap.adapt_ladder(temp_dir=temp_dir)
             [samplers[ii].set_x0.remote(chain[swap_idx, :, ii], logprob_arr[swap_idx, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
             # print(samplers[0].x0)
             swap_tot += swap_count
         for ii in range(ntemps):
             saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii])
             mixes[ii].recursive_update(count, chain[:, :, ii])
-        full_chain[count:count + loop_iterations, :, :] = chain
+        # full_chain[count:count + loop_iterations, :, :] = chain
         count += loop_iterations
-    return full_chain
+    # return full_chain

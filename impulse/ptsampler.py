@@ -1,5 +1,7 @@
 import numpy as np
+import os
 from impulse.random_nums import rng
+
 
 # TODO: make the following into their own class called PTSwap or something:
 # we need to keep up with some bits here and it would be easier with a class
@@ -42,7 +44,7 @@ class PTSwap():
         return ladder
 
 
-    def adapt_ladder(self):
+    def adapt_ladder(self, temp_dir=None):
         """
         Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
         """
@@ -57,15 +59,20 @@ class PTSwap():
         deltaTs *= np.exp(dSs)
         self.ladder[1:-1] = (np.cumsum(deltaTs) + self.ladder[0])
 
-        # temp_filepath = './data/temps.txt'
-        # with open(temp_filepath, 'a+') as f:
-        #     np.savetxt(f, self.ladder, newline=' ')
-        #     f.write('\n')
+        if temp_dir is not None:
 
-        # accept_filepath = './data/accept.txt'
-        # with open(accept_filepath, 'a+') as f:
-        #     np.savetxt(f, self.compute_accept_ratio(), newline=' ')
-        #     f.write('\n')
+            if not os.path.isdir:
+                os.makedirs(temp_dir)
+
+            temp_filepath = temp_dir + '/temps.txt'
+            with open(temp_filepath, 'a+') as f:
+                np.savetxt(f, self.ladder, newline=' ')
+                f.write('\n')
+
+            accept_filepath = temp_dir + '/accept.txt'
+            with open(accept_filepath, 'a+') as f:
+                np.savetxt(f, self.compute_accept_ratio(), newline=' ')
+                f.write('\n')
 
 
     def compute_accept_ratio(self):
