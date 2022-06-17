@@ -1,5 +1,6 @@
 import numpy as np
 from impulse.random_nums import rng
+import ray
 
 
 class MHSampler(object):
@@ -77,3 +78,11 @@ class MHSampler(object):
             self.accept_rate[ii] = self.naccept / self.num_samples
 
         return self.chain, self.lnlike, self.lnprob, self.accept_rate
+
+    def get_num_samples(self):
+        return self.num_samples
+
+
+@ray.remote(num_cpus=1)
+class PMHSampler(MHSampler):
+    pass
