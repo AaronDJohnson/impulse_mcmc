@@ -42,7 +42,7 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
     saves = [SaveData(outdir=outdir, filename='/chain_{}.txt'.format(ptswap.ladder[ii])) for ii in range(ntemps)]
 
     # make empty full chain
-    full_chain = np.zeros((num_samples, ndim, ntemps))
+    # full_chain = np.zeros((num_samples, ndim, ntemps))
     chain = np.zeros((loop_iterations, ndim, ntemps))
     lnlike_arr = np.zeros((loop_iterations, ntemps))
     lnprob_arr = np.zeros((loop_iterations, ntemps))
@@ -78,9 +78,9 @@ def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
         for ii in range(ntemps):
             saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii])
             mixes[ii].recursive_update(count, chain[:, :, ii])
-        full_chain[count:count + loop_iterations, :, :] = chain
+        # full_chain[count:count + loop_iterations, :, :] = chain
         count += loop_iterations
-    return full_chain
+    # return full_chain
 
 
 def parallel_pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
