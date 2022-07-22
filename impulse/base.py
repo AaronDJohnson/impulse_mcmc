@@ -74,6 +74,11 @@ class PTSampler():
         self._init_proposals()
         self._init_sampler()
 
+        if resume and all([self.saves[ii].exists() for ii in range(self.ntemps)]):
+            self._resume()
+        else:
+            logger.exception('One or more chain files were not found. Starting from scratch.')
+
 
     def _init_ptswap(self):
         """
@@ -121,10 +126,14 @@ class PTSampler():
         Resume from previous run
         """
         logger.info("Resuming from previous run.")
-        self.sample_count = 0
+        with open(self.outdir + '/chain_0.txt', 'r') as f:
+            full_chain = np.loadtxt(f)
+        self.sample_count = full_chain.shape[0]
+        self.sample_count = self.sample_count - self.sample_count % self.loop_iterations
+        full_chain_cut = full_chain[self.sample_count:, :, :]
+
         for ii in range(self.ntemps):
-            self.samplers[ii].resume()
-            self.saves[ii].resume()
+            self.mixes[ii].recursive_update(self.sample_count, full_chain_cut[:, :, ii])
 
 
     def _ptstep(self):
