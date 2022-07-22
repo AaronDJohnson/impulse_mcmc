@@ -3,9 +3,6 @@ import os
 from impulse.random_nums import rng
 
 
-# TODO: make the following into their own class called PTSwap or something:
-# we need to keep up with some bits here and it would be easier with a class
-
 class PTSwap():
 
     def __init__(self, ndim, ntemps, tmin=1, tmax=None, tstep=None,

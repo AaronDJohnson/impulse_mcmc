@@ -1,5 +1,4 @@
 import numpy as np
-from scipy.ndimage.interpolation import shift
 
 from impulse.batch_updates import update_covariance, svd_groups
 from impulse.random_nums import rng
