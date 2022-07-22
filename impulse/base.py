@@ -13,9 +13,9 @@ from impulse.save_data import SaveData
 
 class PTSampler():
     def __init__(self, lnlike, lnprior, x0, num_samples=1_000_000, buf_size=50_000, ntemps=8, ncores=1,
-                 tmin=1, tmax=None, tstep=None, swap_count=100, ladder=None, tinf=False, adapt=True,
+                 tmin=1, tmax=None, tstep=None, swap_count=100, ladder=None, tinf=False, adapt=True, thin=10,
                  amweight=30, scamweight=15, deweight=50, adapt_t0=100, adapt_nu=10, loop_iterations=1000,
-                 outdir='./chains', temp_dir=None, ret_chain=False, resume=False):
+                 groups=None, cov=None, outdir='./chains', temp_dir=None, ret_chain=False, resume=False):
         """
         :param lnlike: log-likelihood function
         :param lnprior: log-prior function
@@ -33,6 +33,8 @@ class PTSampler():
         :param adapt_t0: initial temperature
         :param adapt_nu: temperature adaptation rate
         :param loop_iterations: number of iterations between loops
+        :param groups: list of groups of parameters to be considered as independent
+        :param cov: sample covariance matrix of the parameters
         :param outdir: output directory
         :param temp_dir: temperature directory
         :param ret_chain: if True, return chain
@@ -56,9 +58,12 @@ class PTSampler():
         self.ladder = ladder
         self.tinf = tinf
         self.adapt = adapt
+        self.thin = thin
         self.adapt_t0 = adapt_t0
         self.adapt_nu = adapt_nu
         self.loop_iterations = loop_iterations
+        self.groups = groups
+        self.cov = cov
         self.outdir = outdir
         self.temp_dir = temp_dir
         self.ret_chain = ret_chain
@@ -68,6 +73,7 @@ class PTSampler():
         self.deweight = deweight
         if ret_chain:
             self.full_chain = np.zeros((num_samples, self.ndim, ntemps))
+        self.resume = resume
 
         self._init_ptswap()
         self._init_saves()
@@ -76,6 +82,8 @@ class PTSampler():
 
         if resume and all([self.saves[ii].exists() for ii in range(self.ntemps)]):
             self._resume()
+        elif not resume:
+            pass
         else:
             logger.exception('One or more chain files were not found. Starting from scratch.')
 
@@ -85,16 +93,15 @@ class PTSampler():
         Initialize PTSwap
         """
         self.ptswap = PTSwap(self.ndim, self.ntemps, tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
-                             tinf=self.tinf, adapt_t0=self.adapt_t0,
-                             adapt_nu=self.adapt_nu, ladder=self.ladder)
+                             tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, ladder=self.ladder)
 
 
     def _init_saves(self):
         """
         Initialize save objects
         """
-        self.filenames = ['/chain_{}.txt'.format(ii) for ii in range(self.ntemps)]  # temps change (label by chain number)
-        self.saves = [SaveData(outdir=self.outdir, filename=self.filenames[ii]) for ii in range(self.ntemps)]
+        self.filenames = ['/chain_{}.txt'.format(ii + 1) for ii in range(self.ntemps)]  # temps change (label by chain number)
+        self.saves = [SaveData(outdir=self.outdir, filename=self.filenames[ii], resume=self.resume, thin=self.thin) for ii in range(self.ntemps)]
 
 
     def _init_proposals(self):
@@ -103,7 +110,7 @@ class PTSampler():
         """
         self.mixes = []
         for ii in range(self.ntemps):
-            self.mixes.append(JumpProposals(self.ndim, buf_size=self.buf_size))
+            self.mixes.append(JumpProposals(self.ndim, buf_size=self.buf_size, groups=self.groups, cov=self.cov))
             self.mixes[ii].add_jump(am, self.amweight)
             self.mixes[ii].add_jump(scam, self.scamweight)
             self.mixes[ii].add_jump(de, self.deweight)
@@ -150,7 +157,8 @@ class PTSampler():
         swap_idx = self.samplers[0].num_samples % self.loop_iterations - 1
         self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
         if self.adapt:
-            self.ptswap.adapt_ladder(temp_dir=self.temp_dir)
+            self.ptswap.adapt_ladder()
+        self.saves[0].save_swap_data(self.ptswap)
         [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 

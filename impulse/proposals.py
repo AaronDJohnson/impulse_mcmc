@@ -18,7 +18,7 @@ def shift_array(arr, num, fill_value=0.):
 
 
 class JumpProposals():
-    def __init__(self, ndim, buf_size=10000, groups=None, cov=None,
+    def __init__(self, ndim, buf_size=50000, groups=None, cov=None,
                  mean=None):
         """
         ndim (int): number of dimensions in the parameter space
@@ -39,7 +39,7 @@ class JumpProposals():
         # set up sample covariance matrix
         self.cov = cov
         if cov is None:
-            self.cov = np.identity(ndim) * 0.01**2
+            self.cov = np.identity(ndim)
         self.U = [[]] * len(self.groups)
         self.S = [[]] * len(self.groups)
 

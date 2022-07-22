@@ -41,7 +41,7 @@ class PTSwap():
         return ladder
 
 
-    def adapt_ladder(self, temp_dir=None):
+    def adapt_ladder(self):
         """
         Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
         """
@@ -56,41 +56,9 @@ class PTSwap():
         deltaTs *= np.exp(dSs)
         self.ladder[1:-1] = (np.cumsum(deltaTs) + self.ladder[0])
 
-        if temp_dir is not None:
-
-            if not os.path.isdir:
-                os.makedirs(temp_dir)
-
-            temp_filepath = temp_dir + '/temps.txt'
-            with open(temp_filepath, 'a+') as f:
-                np.savetxt(f, self.ladder, newline=' ')
-                f.write('\n')
-
-            accept_filepath = temp_dir + '/accept.txt'
-            with open(accept_filepath, 'a+') as f:
-                np.savetxt(f, self.compute_accept_ratio(), newline=' ')
-                f.write('\n')
-
 
     def compute_accept_ratio(self):
         return self.swap_accept / self.nswaps
-
-
-    # def __call__(self, chain, lnlike, lnprob, swap_idx):  # propose swaps!
-    #     self.nswaps += 1
-    #     dbeta = (1 / self.ladder[1:] - 1 / self.ladder[:-1])
-    #     paccept = dbeta * (lnlike[swap_idx, :-1] - lnlike[swap_idx, 1:])
-    #     # lnchainswap = np.nan_to_num(lnchainswap)
-    #     raccept = np.log(rng.random(size=len(self.ladder) - 1))
-    #     mask = np.greater(paccept, raccept)
-    #     idxs = np.arange(self.ntemps - 1)[mask] + 1
-    #     if not idxs.size == 0:
-    #         self.swap_accept[idxs - 1] += 1
-    #         chain[swap_idx, :, [idxs - 1, idxs]] = chain[swap_idx, :, [idxs, idxs - 1]]
-    #         lnlike[swap_idx, [idxs - 1, idxs]] = lnlike[swap_idx, [idxs, idxs - 1]]
-    #         # TODO: the sign on dbeta on the next line is wrong
-    #         lnprob[swap_idx, [idxs - 1, idxs]] = lnprob[swap_idx, [idxs, idxs - 1]] - dbeta[idxs-1] * lnlike[swap_idx, [idxs, idxs - 1]]
-    #     return chain, lnlike, lnprob
 
 
     def __call__(self, chain, lnlike, lnprob, swap_idx):  # propose swaps!
