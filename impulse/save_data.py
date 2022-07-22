@@ -15,6 +15,9 @@ class SaveData():
         with open(self.filepath, 'a+') as f:
             np.savetxt(f, np.column_stack((args)))
 
+    def exists(self, outdir, filename):
+        return pathlib.Path(outdir + filename).exists()
+
 
 def save_h5(filepath, data):
     hf = h5py.File(filepath, 'w')

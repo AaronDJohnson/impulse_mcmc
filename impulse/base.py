@@ -91,20 +91,13 @@ class PTSampler():
         if ret_chain:
             self.full_chain = np.zeros((num_samples, self.ndim, ntemps))
 
-        # set up parallel tempering swaps
-        self.init_ptswap()
-
-        # set up objects to save data
-        self.init_saves()
-        
-        # set up proposals
-        self.init_proposals()
-
-        # make set of samplers (1 for each temp)
-        self.init_sampler()
+        self._init_ptswap()
+        self._init_saves()
+        self._init_proposals()
+        self._init_sampler()
 
 
-    def init_ptswap(self):
+    def _init_ptswap(self):
         """
         Initialize PTSwap
         """
@@ -113,7 +106,7 @@ class PTSampler():
                              adapt_nu=self.adapt_nu, ladder=self.ladder)
 
 
-    def init_saves(self):
+    def _init_saves(self):
         """
         Initialize save objects
         """
@@ -121,7 +114,7 @@ class PTSampler():
         self.saves = [SaveData(outdir=self.outdir, filename=self.filenames[ii]) for ii in range(self.ntemps)]
 
 
-    def init_proposals(self):
+    def _init_proposals(self):
         """
         Initialize JumpProposals (one for each temperature)
         """
@@ -133,12 +126,30 @@ class PTSampler():
             self.mixes[ii].add_jump(de, self.deweight)
 
 
-    def init_sampler(self):
+    def _init_sampler(self):
         """
         Initialize sampler (one for each temperature)
         """
         self.samplers = [MHSampler(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii],
                          iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
+
+
+    def _resume(self):
+        """
+        Resume from previous run
+        """
+        logger.info("Resuming from previous run.")
+        self.sample_count = 0
+        for ii in range(self.ntemps):
+            self.samplers[ii].resume()
+            self.saves[ii].resume()
+
+
+    def _ptstep(self):
+        """
+        Perform PT step
+        """
+        self.ptswap.step()
 
 
     def add_jump(self, jump, weight):
