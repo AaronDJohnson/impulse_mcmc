@@ -4,6 +4,7 @@ from tqdm import tqdm
 from loguru import logger
 
 from pathos.pools import ProcessPool as Pool
+# from ray.util.multiprocessing import Pool
 
 from impulse.mhsampler import MHSampler
 from impulse.ptsampler import PTSwap
@@ -47,7 +48,7 @@ class PTSampler():
         if ncores > 1:
             self.ndim = len(x0[0])
         else:
-            self.ndim = len(x0)
+            self.ndim = len(x0) if type(x0) != list else len(x0[0])
         self.buf_size = buf_size
         self.ntemps = ntemps
         self.ncores = ncores
@@ -147,8 +148,11 @@ class PTSampler():
         """
         Perform PT step
         """
-        with Pool(nodes=min(self.ntemps, self.ncores)) as p:
-            res = p.map(lambda sampler: sampler.sample(), self.samplers)
+        with Pool(ncpus=min(self.ntemps, self.ncores)) as p:
+            if p.ncpus > 1:
+                res = p.map(lambda sampler: sampler.sample(), self.samplers)
+            else:
+                res = list(map(lambda sampler: sampler.sample(), self.samplers))
         for ii in range(len(res)):
             (self.chain[self.swap_tot:self.swap_tot + self.swap_count, :, ii],
              self.lnlike_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
