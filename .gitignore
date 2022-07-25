@@ -122,3 +122,4 @@ chains/
 .vscode
 
 data/
+*.txt

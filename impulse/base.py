@@ -72,21 +72,52 @@ class PTSampler():
         self.amweight = amweight
         self.scamweight = scamweight
         self.deweight = deweight
-        if ret_chain:
-            self.full_chain = np.zeros((num_samples, self.ndim, ntemps))
         self.resume = resume
 
-        self._init_ptswap()
-        self._init_saves()
-        self._init_proposals()
-        self._init_sampler()
+        if ntemps > 1:  # PTSampler
+            self._init_ptswap()
+            self._init_pt_saves()
+            self._init_pt_proposals()
+            self._init_pt_sampler()
 
+        else:  # MHSampler
+            self._init_mh_save()
+            self._init_mh_jumps()
+            self._init_mh_sampler()
+
+        # resume from previous run
         if resume and all([self.saves[ii].exists() for ii in range(self.ntemps)]):
-            self._resume()
+            self._pt_resume()
         elif not resume:
             pass
         else:
             logger.exception('One or more chain files were not found. Starting from scratch.')
+
+
+    def _init_mh_save(self):
+        self.save = SaveData(outdir=self.outdir, filename='/chain_1.txt')
+
+
+    def _init_mh_jumps(self):
+        self.mix = JumpProposals(self.ndim, buf_size=self.buf_size)
+        self.mix.add_jump(am, self.amweight)
+        self.mix.add_jump(scam, self.scamweight)
+        self.mix.add_jump(de, self.deweight)
+
+
+    def _init_mh_sampler(self):
+        if self.ret_chain:
+            self.full_chain = np.zeros((self.num_samples, self.ndim))
+        self.sampler = MHSampler(self.x0, self.lnlike, self.lnprior, self.mix, iterations=self.loop_iterations)
+
+
+    def _mh_sampler_step(self):
+        self.chain, self.like, self.prob, self.accept = self.sampler.sample()
+        self.save(self.chain, self.like, self.prob, self.accept)
+        if self.ret_chain:
+            self.full_chain[self.sample_count:self.sample_count + self.loop_iterations, :] = self.chain
+        self.mix.recursive_update(self.sample_count, self.chain)
+        self.sample_count += self.loop_iterations
 
 
     def _init_ptswap(self):
@@ -97,7 +128,7 @@ class PTSampler():
                              tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, ladder=self.ladder)
 
 
-    def _init_saves(self):
+    def _init_pt_saves(self):
         """
         Initialize save objects
         """
@@ -105,7 +136,7 @@ class PTSampler():
         self.saves = [SaveData(outdir=self.outdir, filename=self.filenames[ii], resume=self.resume, thin=self.thin) for ii in range(self.ntemps)]
 
 
-    def _init_proposals(self):
+    def _init_pt_proposals(self):
         """
         Initialize JumpProposals (one for each temperature)
         """
@@ -117,10 +148,12 @@ class PTSampler():
             self.mixes[ii].add_jump(de, self.deweight)
 
 
-    def _init_sampler(self):
+    def _init_pt_sampler(self):
         """
         Initialize sampler (one for each temperature) and chains
         """
+        if self.ret_chain:
+            self.full_chain = np.zeros((self.num_samples, self.ndim, self.ntemps))
         self.chain = np.zeros((self.loop_iterations, self.ndim, self.ntemps))
         self.lnlike_arr = np.zeros((self.loop_iterations, self.ntemps))
         self.lnprob_arr = np.zeros((self.loop_iterations, self.ntemps))
@@ -129,7 +162,7 @@ class PTSampler():
                          iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 
-    def _resume(self):
+    def _pt_resume(self):
         """
         Resume from previous run
         """
@@ -173,21 +206,39 @@ class PTSampler():
 
 
     def add_jump(self, jump, weight):
-        for ii in range(self.ntemps):
-            self.samplers[ii].add_jump(jump, weight)
+        try:
+            for ii in range(self.ntemps):
+                self.mixes[ii].add_jump(jump, weight)
+        except AttributeError:
+            self.mix.add_jump(jump, weight)
+
+    
+    def set_ntemps(self, ntemps):
+        self.ntemps = ntemps
+        self._init_ptswap()
+        self._init_pt_saves()
+        self._init_pt_proposals()
+        self._init_pt_sampler()
 
 
     def sample(self):
         # set up count and iterations between loops
-        for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
-            self.swap_tot = 0  # count the samples between swaps
-            for _ in range(self.loop_iterations // self.swap_count):  # swap loops
-                self._ptstep()
-                self.swap_tot += self.swap_count
-            self._save_step()
-            if self.ret_chain:
-                self.full_chain[self.sample_count:self.sample_count + self.loop_iterations, :, :] = self.chain
-            self.sample_count += self.loop_iterations
+        if self.ntemps > 1:
+            # PTSampler
+            for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
+                self.swap_tot = 0  # count the samples between swaps
+                for _ in range(self.loop_iterations // self.swap_count):  # swap loops
+                    self._ptstep()
+                    self.swap_tot += self.swap_count
+                self._save_step()
+                if self.ret_chain:
+                    self.full_chain[self.sample_count:self.sample_count + self.loop_iterations, :, :] = self.chain
+                self.sample_count += self.loop_iterations
+        else:
+            # MHSampler
+            for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
+                self._mh_sampler_step()
+
         if self.ret_chain:
             return self.full_chain
 
@@ -249,26 +300,58 @@ class PTSampler():
 #     if ret_chain:
 #         return full_chain
 
+class Sampler():
+    def __init__(self, lnlike, lnprior, x0, num_samples=1_000_000, buf_size=50_000,
+                 amweight=30, scamweight=15, deweight=50, loop_iterations=1000,
+                 outdir='./chains', filename='/chain_1.txt', ret_chain=False):
+        self.lnlike = lnlike
+        self.lnprior = lnprior
+        self.x0 = x0 if type(x0) != list else x0[0]
+        self.num_samples = int(num_samples)
+        self.ndim = len(x0) if type(x0) != list else len(x0[0])
+        self.buf_size = buf_size
+        self.amweight = amweight
+        self.scamweight = scamweight
+        self.deweight = deweight
+        self.loop_iterations = loop_iterations
+        self.outdir = outdir
+        self.filename = filename
+        self.ret_chain = ret_chain
 
-# def sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
-#            amweight=30, scamweight=15, deweight=50, loop_iterations=1000,
-#            save=True, outdir='./chains', filename='/chain_1.txt'):
-#     save = SaveData(outdir=outdir, filename=filename)
-#     # set up proposals:
-#     mix = JumpProposals(ndim, buf_size=buf_size)
-#     mix.add_jump(am, amweight)
-#     mix.add_jump(scam, scamweight)
-#     mix.add_jump(de, deweight)
-#     # make empty full chain
-#     full_chain = np.zeros((num_samples, ndim))
-#     # set up count and iterations between loops
-#     sampler = MHSampler(x0, lnlike, lnprior, mix, iterations=loop_iterations)
-#     count = 0
-#     for _ in tqdm(range(0, int(num_samples), loop_iterations)):
-#         chain, like, prob, accept = sampler.sample()
-#         save(chain, like, prob, accept)
-#         full_chain[count:count + loop_iterations, :] = chain
-#         mix.recursive_update(count, chain)
-#         count += loop_iterations
-#     return full_chain
+        self._init_save()
+        self._init_jumps()
+        self._init_sampler()
+
+        if ret_chain:
+            self.full_chain = np.zeros((self.num_samples, self.ndim))
+
+        self.count = 0  # num of samples so far
+
+        
+
+    def _init_save(self):
+        self.save = SaveData(outdir=self.outdir, filename=self.filename)
+
+    def _init_jumps(self):
+        self.mix = JumpProposals(self.ndim, buf_size=self.buf_size)
+        self.mix.add_jump(am, self.amweight)
+        self.mix.add_jump(scam, self.scamweight)
+        self.mix.add_jump(de, self.deweight)
+
+    def _init_sampler(self):
+        self.sampler = MHSampler(self.x0, self.lnlike, self.lnprior, self.mix, iterations=self.loop_iterations)
+    
+    def _sampler_step(self):
+        self.chain, self.like, self.prob, self.accept = self.sampler.sample()
+        self.save(self.chain, self.like, self.prob, self.accept)
+        if self.ret_chain:
+            self.full_chain[self.count:self.count + self.loop_iterations, :] = self.chain
+        self.mix.recursive_update(self.count, self.chain)
+        self.count += self.loop_iterations
+
+    def sample(self):
+        for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
+            self._sampler_step()
+        if self.ret_chain:
+            return self.full_chain
 
