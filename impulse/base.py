@@ -3,9 +3,8 @@ from tqdm import tqdm
 
 from loguru import logger
 
-# from pathos.pools import ProcessPool as Pool
+from pathos.pools import ProcessPool as Pool
 # from ray.util.multiprocessing import Pool
-from joblib import Parallel, delayed
 
 from impulse.mhsampler import MHSampler
 from impulse.ptsampler import PTSwap
@@ -178,25 +177,26 @@ class PTSampler():
             self.mixes[ii].recursive_update(self.sample_count, full_chain_cut[:, :, ii])
 
 
-    def _ptstep(self, p):
+    def _ptstep(self):
         """
         Perform PT step
         """
-        if p.n_jobs > 1:
-            res = p.map(lambda sampler: sampler.sample(), self.samplers)
-        else:
-            res = list(map(lambda sampler: sampler.sample(), self.samplers))
-        for ii in range(len(res)):
-            (self.chain[self.swap_tot:self.swap_tot + self.swap_count, :, ii],
-            self.lnlike_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
-            self.lnprob_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
-            self.accept_arr[self.swap_tot:self.swap_tot + self.swap_count, ii]) = res[ii]
-        swap_idx = self.samplers[0].num_samples % self.loop_iterations - 1
-        self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
-        if self.adapt:
-            self.ptswap.adapt_ladder()
-        self.saves[0].save_swap_data(self.ptswap)
-        [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
+        with Pool(ncpus=min(self.ntemps, self.ncores)) as p:
+            if p.ncpus > 1:
+                res = p.map(lambda sampler: sampler.sample(), self.samplers)
+            else:
+                res = list(map(lambda sampler: sampler.sample(), self.samplers))
+            for ii in range(len(res)):
+                (self.chain[self.swap_tot:self.swap_tot + self.swap_count, :, ii],
+                self.lnlike_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
+                self.lnprob_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
+                self.accept_arr[self.swap_tot:self.swap_tot + self.swap_count, ii]) = res[ii]
+            swap_idx = self.samplers[0].num_samples % self.loop_iterations - 1
+            self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
+            if self.adapt:
+                self.ptswap.adapt_ladder()
+            self.saves[0].save_swap_data(self.ptswap)
+            [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 
     def _save_step(self):
@@ -212,7 +212,7 @@ class PTSampler():
         except AttributeError:
             self.mix.add_jump(jump, weight)
 
-
+    
     def set_ntemps(self, ntemps):
         self.ntemps = ntemps
         self._init_ptswap()
@@ -225,16 +225,15 @@ class PTSampler():
         # set up count and iterations between loops
         if self.ntemps > 1:
             # PTSampler
-            with Parallel(n_jobs=min(self.ntemps, self.ncores)) as p:
-                for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
-                    self.swap_tot = 0  # count the samples between swaps
-                    for _ in range(self.loop_iterations // self.swap_count):  # swap loops
-                        self._ptstep(p)
-                        self.swap_tot += self.swap_count
-                    self._save_step()
-                    if self.ret_chain:
-                        self.full_chain[self.sample_count:self.sample_count + self.loop_iterations, :, :] = self.chain
-                    self.sample_count += self.loop_iterations
+            for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
+                self.swap_tot = 0  # count the samples between swaps
+                for _ in range(self.loop_iterations // self.swap_count):  # swap loops
+                    self._ptstep()
+                    self.swap_tot += self.swap_count
+                self._save_step()
+                if self.ret_chain:
+                    self.full_chain[self.sample_count:self.sample_count + self.loop_iterations, :, :] = self.chain
+                self.sample_count += self.loop_iterations
         else:
             # MHSampler
             for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
