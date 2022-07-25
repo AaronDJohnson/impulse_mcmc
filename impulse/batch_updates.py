@@ -1,5 +1,4 @@
 import numpy as np
-from numba import njit
 
 
 def update_mean(old_length, x_avg, x_new):
@@ -38,7 +37,6 @@ def update_covariance(old_length, x_cov, x_avg, x_new):
     return x_avgnew, cov
 
 
-@njit
 def svd_groups(U, S, groups, cov):
     # do svd on parameter groups
     # TODO(Aaron): Speed this up using broadcasting

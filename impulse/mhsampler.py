@@ -9,7 +9,6 @@ class MHSampler(object):
         x0: vector of length ndim
         lnlike_fn: log likelihood function
         lnpost_fn: log prior function
-
         """
         self.x0 = x0
         self.ndim = len(x0)
@@ -80,3 +79,40 @@ class MHSampler(object):
 
     def get_num_samples(self):
         return self.num_samples
+
+
+def mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, temp,
+                   iterations, chain, lnlike, lnprob, accept_rate,
+                   lnlike_kwargs={}, lnprior_kwargs={}):
+    naccept = 0
+    num_samples = 0
+    for ii in range(iterations):
+        num_samples += 1
+        # propose a move
+        x_star, factor = prop_fn(x0, temp)
+        # draw random number
+        rand_num = rng.uniform()
+
+        # compute hastings ratio
+        lnprior_star = lnprior_fn(x_star, **lnprior_kwargs)
+        if np.isinf(lnprior_star):
+            lnprob_star = -np.inf
+            lnlike_star = lnlike[ii - 1]
+        else:
+            lnlike_star = lnlike_fn(x_star, **lnlike_kwargs)
+            lnprob_star = 1 / temp * lnlike_star + lnprior_star
+
+        hastings_ratio = lnprob_star - lnprob0 + factor
+
+        # accept/reject step
+        if np.log(rand_num) < hastings_ratio:
+            x0 = x_star
+            lnprob0 = lnprob_star
+            naccept += 1
+
+        # update chain
+        chain[ii] = x0
+        lnprob[ii] = lnprob0
+        lnlike[ii] = lnlike_star
+        accept_rate[ii] = naccept / num_samples
+    return chain, lnlike, lnprob, accept_rate

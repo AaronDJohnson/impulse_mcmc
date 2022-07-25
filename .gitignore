@@ -116,6 +116,7 @@ dmypy.json
 # test folder
 test/
 chains/
+prior_chains/
 .txt
 
 .DS_Store

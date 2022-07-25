@@ -4,7 +4,7 @@ import pickle
 import platform
 
 import numpy as np
-from PTMCMCSampler.PTMCMCSampler import PTSampler as ptmcmc
+from loguru import logger
 
 from enterprise_extensions import __version__
 from enterprise_extensions.empirical_distr import (EmpiricalDistribution1D,
@@ -132,7 +132,7 @@ def extend_emp_dists(pta, emp_dists, npoints=100_000, save_ext_dists=False, outd
             new_emp_dists.append(new_emp)
 
         else:
-            print('Unable to extend class of unknown type to the edges of the priors.')
+            logger.error('Unable to extend class of unknown type to the edges of the priors.')
             new_emp_dists.append(emp_dist)
             continue
 
@@ -200,8 +200,8 @@ class ExtraProposals(object):
                         with open(emp_file, 'rb') as f:
                             pickled_distr = np.append(pickled_distr, pickle.load(f))
                     except:
-                        print(f'\nI can\'t open the empirical distribution pickle file at location {idx} in list!')
-                        print("Empirical distributions set to 'None'")
+                        logger.error(f'\nI can\'t open the empirical distribution pickle file at location {idx} in list!')
+                        logger.error("Empirical distributions set to 'None'")
                         pickled_distr = None
                         break
 
@@ -220,7 +220,7 @@ class ExtraProposals(object):
                         pickled_distr = pickle.load(f)
                 # if the second attempt fails...
                 except:
-                    print('\nI can\'t open the empirical distribution pickle file!')
+                    logger.error('\nI can\'t open the empirical distribution pickle file!')
                     pickled_distr = None
 
             self.empirical_distr = pickled_distr
@@ -242,7 +242,7 @@ class ExtraProposals(object):
             if len(mask) >= 1:
                 self.empirical_distr = [self.empirical_distr[m] for m in mask]
                 # extend empirical_distr here:
-                print('Extending empirical distributions to priors...\n')
+                logger.info('Extending empirical distributions to priors...\n')
                 self.empirical_distr = extend_emp_dists(pta, self.empirical_distr, npoints=100_000,
                                                         save_ext_dists=save_ext_dists, outdir=outdir)
             else:
@@ -250,7 +250,7 @@ class ExtraProposals(object):
 
         if empirical_distr is not None and self.empirical_distr is None:
             # if an emp dist path is provided, but fails the code, this helpful msg is provided
-            print("Adding empirical distributions failed!! Empirical distributions set to 'None'\n")
+            logger.error("Adding empirical distributions failed!! Empirical distributions set to 'None'\n")
 
         # F-statistic map
         if f_stat_file is not None and os.path.isfile(f_stat_file):
@@ -1103,80 +1103,80 @@ def setup_sampler(pta, outdir='chains', empirical_distr=None,
 
     # try adding empirical proposals
     if empirical_distr is not None:
-        print('Attempting to add empirical proposals...\n')
+        logger.info('Attempting to add empirical proposals...\n')
         sampler.add_jump(jp.draw_from_empirical_distr, 10)
 
     # Red noise prior draw
     if 'red noise' in jp.snames:
-        print('Adding red noise prior draws...\n')
+        logger.info('Adding red noise prior draws...\n')
         sampler.add_jump(jp.draw_from_red_prior, 10)
 
     # DM GP noise prior draw
     if 'dm_gp' in jp.snames:
-        print('Adding DM GP noise prior draws...\n')
+        logger.info('Adding DM GP noise prior draws...\n')
         sampler.add_jump(jp.draw_from_dm_gp_prior, 10)
 
     # DM annual prior draw
     if 'dm_s1yr' in jp.snames:
-        print('Adding DM annual prior draws...\n')
+        logger.info('Adding DM annual prior draws...\n')
         sampler.add_jump(jp.draw_from_dm1yr_prior, 10)
 
     # DM dip prior draw
     if 'dmexp' in jp.snames:
-        print('Adding DM exponential dip prior draws...\n')
+        logger.info('Adding DM exponential dip prior draws...\n')
         sampler.add_jump(jp.draw_from_dmexpdip_prior, 10)
 
     # DM cusp prior draw
     if 'dm_cusp' in jp.snames:
-        print('Adding DM exponential cusp prior draws...\n')
+        logger.info('Adding DM exponential cusp prior draws...\n')
         sampler.add_jump(jp.draw_from_dmexpcusp_prior, 10)
 
     # DMX prior draw
     if 'dmx_signal' in jp.snames:
-        print('Adding DMX prior draws...\n')
+        logger.info('Adding DMX prior draws...\n')
         sampler.add_jump(jp.draw_from_dmx_prior, 10)
 
     # Ephemeris prior draw
     if 'd_jupiter_mass' in pta.param_names:
-        print('Adding ephemeris model prior draws...\n')
+        logger.info('Adding ephemeris model prior draws...\n')
         sampler.add_jump(jp.draw_from_ephem_prior, 10)
 
     # GWB uniform distribution draw
     if np.any([('gw' in par and 'log10_A' in par) for par in pta.param_names]):
-        print('Adding GWB uniform distribution draws...\n')
+        logger.info('Adding GWB uniform distribution draws...\n')
         sampler.add_jump(jp.draw_from_gwb_log_uniform_distribution, 10)
 
     # Dipole uniform distribution draw
     if 'dipole_log10_A' in pta.param_names:
-        print('Adding dipole uniform distribution draws...\n')
+        logger.info('Adding dipole uniform distribution draws...\n')
         sampler.add_jump(jp.draw_from_dipole_log_uniform_distribution, 10)
 
     # Monopole uniform distribution draw
     if 'monopole_log10_A' in pta.param_names:
-        print('Adding monopole uniform distribution draws...\n')
+        logger.info('Adding monopole uniform distribution draws...\n')
         sampler.add_jump(jp.draw_from_monopole_log_uniform_distribution, 10)
 
     # Altpol uniform distribution draw
     if 'log10Apol_tt' in pta.param_names:
-        print('Adding alternative GW-polarization uniform distribution draws...\n')
+        logger.info('Adding alternative GW-polarization uniform distribution draws...\n')
         sampler.add_jump(jp.draw_from_altpol_log_uniform_distribution, 10)
 
     # BWM prior draw
     if 'bwm_log10_A' in pta.param_names:
-        print('Adding BWM prior draws...\n')
+        logger.info('Adding BWM prior draws...\n')
         sampler.add_jump(jp.draw_from_bwm_prior, 10)
 
     # FDM prior draw
     if 'fdm_log10_A' in pta.param_names:
-        print('Adding FDM prior draws...\n')
+        logger.info('Adding FDM prior draws...\n')
         sampler.add_jump(jp.draw_from_fdm_prior, 10)
 
     # CW prior draw
     if 'cw_log10_h' in pta.param_names:
-        print('Adding CW strain prior draws...\n')
+        logger.info('Adding CW strain prior draws...\n')
         sampler.add_jump(jp.draw_from_cw_log_uniform_distribution, 10)
     if 'cw_log10_Mc' in pta.param_names:
-        print('Adding CW prior draws...\n')
+        logger.info('Adding CW prior draws...\n')
         sampler.add_jump(jp.draw_from_cw_distribution, 10)
 
     return sampler
