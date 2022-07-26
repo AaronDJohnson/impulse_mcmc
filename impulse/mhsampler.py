@@ -1,5 +1,6 @@
 import numpy as np
 from impulse.random_nums import rng
+import ray
 
 
 class MHSampler(object):
@@ -81,38 +82,56 @@ class MHSampler(object):
         return self.num_samples
 
 
-# def mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
-#                    iterations, lnprob0, chain, lnlike, lnprob,
-#                    accept_rate, lnlike_kwargs={}, lnprior_kwargs={}):
-#     naccept = 0
-#     num_samples = 0
-#     for ii in range(iterations):
-#         num_samples += 1
-#         # propose a move
-#         x_star, factor = prop_fn(x0, temp)
-#         # draw random number
-#         rand_num = rng.uniform()
+def mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
+                   iterations, lnprob0, chain, lnlike, lnprob,
+                   accept_rate, lnlike_kwargs={}, lnprior_kwargs={}):
+    # TODO (Aaron): Fix accept_rate
+    chain = np.copy(chain)
+    lnprob = np.copy(lnprob)
+    lnlike = np.copy(lnlike)
+    accept_rate = np.copy(accept_rate)
+    lnprob0 = np.copy(lnprob0)
+    x0 = np.copy(x0)
 
-#         # compute hastings ratio
-#         lnprior_star = lnprior_fn(x_star, **lnprior_kwargs)
-#         if np.isinf(lnprior_star):
-#             lnprob_star = -np.inf
-#             lnlike_star = lnlike[ii - 1]
-#         else:
-#             lnlike_star = lnlike_fn(x_star, **lnlike_kwargs)
-#             lnprob_star = 1 / temp * lnlike_star + lnprior_star
+    naccept = 0
+    num_samples = 0
+    for ii in range(iterations):
+        num_samples += 1
+        # propose a move
+        x_star, factor = prop_fn(x0, temp)
+        # draw random number
+        rand_num = rng.uniform()
 
-#         hastings_ratio = lnprob_star - lnprob0 + factor
+        # compute hastings ratio
+        lnprior_star = lnprior_fn(x_star, **lnprior_kwargs)
+        if np.isinf(lnprior_star):
+            lnprob_star = -np.inf
+            lnlike_star = lnlike[ii - 1]
+        else:
+            lnlike_star = lnlike_fn(x_star, **lnlike_kwargs)
+            lnprob_star = 1 / temp * lnlike_star + lnprior_star
 
-#         # accept/reject step
-#         if np.log(rand_num) < hastings_ratio:
-#             x0 = x_star
-#             lnprob0 = lnprob_star
-#             naccept += 1
+        hastings_ratio = lnprob_star - lnprob0 + factor
 
-#         # update chain
-#         chain[ii] = x0
-#         lnprob[ii] = lnprob0
-#         lnlike[ii] = lnlike_star
-#         accept_rate[ii] = naccept / num_samples
-#     return chain, lnlike, lnprob, accept_rate
+        # accept/reject step
+        if np.log(rand_num) < hastings_ratio:
+            x0 = x_star
+            lnprob0 = lnprob_star
+            naccept += 1
+
+        # update chain
+        chain[ii] = x0
+        lnprob[ii] = lnprob0
+        lnlike[ii] = lnlike_star
+        accept_rate[ii] = naccept / num_samples
+    return chain, lnlike, lnprob, accept_rate
+
+
+@ray.remote(num_cpus=1)
+def parallel_mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
+                            iterations, lnprob0, chain, lnlike, lnprob,
+                            accept_rate, lnlike_kwargs={}, lnprior_kwargs={}):
+    return mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
+                          iterations, lnprob0, chain, lnlike, lnprob,
+                          accept_rate, lnlike_kwargs=lnlike_kwargs,
+                          lnprior_kwargs=lnprior_kwargs)

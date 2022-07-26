@@ -2,11 +2,13 @@ import numpy as np
 from tqdm import tqdm
 
 from loguru import logger
+import ray
 
-from pathos.pools import ProcessPool as Pool
+from multiprocessing import Pool
+# from pathos.pools import ProcessPool as Pool
 # from ray.util.multiprocessing import Pool
 
-from impulse.mhsampler import MHSampler
+from impulse.mhsampler import MHSampler, mh_sample_step, parallel_mh_sample_step
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
@@ -73,6 +75,9 @@ class PTSampler():
         self.scamweight = scamweight
         self.deweight = deweight
         self.resume = resume
+
+        if self.ncores > 1 and not ray.is_initialized():
+            ray.init(num_cpus=self.ncores)
 
         if ntemps > 1:  # PTSampler
             self._init_ptswap()
@@ -181,22 +186,25 @@ class PTSampler():
         """
         Perform PT step
         """
-        with Pool(ncpus=min(self.ntemps, self.ncores)) as p:
-            if p.ncpus > 1:
-                res = p.map(lambda sampler: sampler.sample(), self.samplers)
-            else:
-                res = list(map(lambda sampler: sampler.sample(), self.samplers))
-            for ii in range(len(res)):
-                (self.chain[self.swap_tot:self.swap_tot + self.swap_count, :, ii],
-                self.lnlike_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
-                self.lnprob_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
-                self.accept_arr[self.swap_tot:self.swap_tot + self.swap_count, ii]) = res[ii]
-            swap_idx = self.samplers[0].num_samples % self.loop_iterations - 1
-            self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
-            if self.adapt:
-                self.ptswap.adapt_ladder()
-            self.saves[0].save_swap_data(self.ptswap)
-            [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
+        if self.ncores > 1:
+            res = ray.get([parallel_mh_sample_step.remote(sampler.lnlike_fn, sampler.lnprior_fn, sampler.prop_fn, sampler.x0,
+                                  sampler.temp, sampler.iterations, sampler.lnprob0,
+                                  sampler.chain, sampler.lnlike, sampler.lnprob, sampler.accept_rate) for sampler in self.samplers])
+        else:
+            # res = list(map(lambda sampler: sampler.sample(), self.samplers))
+            res = list(map(lambda sampler: sampler.sample(), self.samplers))
+
+        for ii in range(len(res)):
+            (self.chain[self.swap_tot:self.swap_tot + self.swap_count, :, ii],
+            self.lnlike_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
+            self.lnprob_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
+            self.accept_arr[self.swap_tot:self.swap_tot + self.swap_count, ii]) = res[ii]
+        swap_idx = self.samplers[0].num_samples % self.loop_iterations - 1
+        self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
+        if self.adapt:
+            self.ptswap.adapt_ladder()
+        self.saves[0].save_swap_data(self.ptswap)
+        [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 
     def _save_step(self):
@@ -239,6 +247,7 @@ class PTSampler():
             for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
                 self._mh_sampler_step()
 
+        ray.shutdown()
         if self.ret_chain:
             return self.full_chain
 
