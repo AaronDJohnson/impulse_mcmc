@@ -2,9 +2,8 @@ import numpy as np
 from tqdm import tqdm
 
 from loguru import logger
-import ray
 
-from multiprocessing import Pool
+from multiprocess import Pool
 # from pathos.pools import ProcessPool as Pool
 # from ray.util.multiprocessing import Pool
 
@@ -88,14 +87,16 @@ class PTSampler():
         self.deweight = deweight
         self.resume = resume
 
-        if self.ncores > 1 and not ray.is_initialized():
-            ray.init(num_cpus=self.ncores)
+        # if self.ncores > 1 and not ray.is_initialized():
+        #     ray.init(num_cpus=self.ncores)
+        self._close_pool()
 
         if ntemps > 1:  # PTSampler
             self._init_ptswap()
             self._init_pt_saves()
             self._init_pt_proposals()
             self._init_pt_sampler()
+            self._setup_pool()
 
         else:  # MHSampler
             self._init_mh_save()
@@ -199,11 +200,8 @@ class PTSampler():
         Perform PT step
         """
         if self.ncores > 1:
-            res = ray.get([parallel_mh_sample_step.remote(sampler.lnlike_fn, sampler.lnprior_fn, sampler.prop_fn, sampler.x0,
-                            sampler.temp, sampler.iterations, sampler.lnprob0,
-                            sampler.chain, sampler.lnlike, sampler.lnprob, sampler.accept_rate) for sampler in self.samplers])
+            res = self.pool.map(call_step, self.samplers)
         else:
-            # res = list(map(lambda sampler: sampler.sample(), self.samplers))
             res = list(map(lambda sampler: sampler.sample(), self.samplers))
         low_idx = self.swap_tot
         high_idx = self.swap_tot + self.swap_count
@@ -220,28 +218,25 @@ class PTSampler():
 
 
     def _setup_pool(self):
-        if self.npool > 1:
-            logger.info(f"Setting up multiproccesing pool with {self.npool} processes")
-            import multiprocessing
+        if self.ncores > 1:
+            logger.info(f"Setting up multiprocessing pool with {self.ncores} processes")
 
-            self.pool = multiprocessing.Pool(
-                processes=self.npool,
+            self.pool = Pool(
+                processes=self.ncores,
                 initializer=_initialize_global_variables,
                 initargs=(
-                    self.likelihood,
-                    self.priors,
-                    self._search_parameter_keys,
-                    self.use_ratio,
+                    self.lnlike,
+                    self.lnprior,
+                    self.mixes
                 ),
             )
         else:
             self.pool = None
 
         _initialize_global_variables(
-            likelihood=self.likelihood,
-            priors=self.priors,
-            search_parameter_keys=self._search_parameter_keys,
-            use_ratio=self.use_ratio,
+            self.lnlike,
+            self.lnprior,
+            self.mixes
         )
 
     def _close_pool(self):
@@ -293,123 +288,9 @@ class PTSampler():
             for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
                 self._mh_sampler_step()
 
-        ray.shutdown()
+        self._close_pool()
         if self.ret_chain:
             return self.full_chain
-
-
-
-# # TODO: make this a class and combine these two functions with cleaner counting built in
-# def pt_sample(lnlike, lnprior, ndim, x0, num_samples=1_000_000, buf_size=50_000,
-#               amweight=30, scamweight=15, deweight=50, ntemps=2, ncores=1, tmin=1, tmax=None, tstep=None,
-#               swap_count=100, ladder=None, tinf=False, adapt=True, adapt_t0=100, adapt_nu=10,
-#               loop_iterations=1000, outdir='./chains', temp_dir=None, ret_chain=False):
-
-#     ptswap = PTSwap(ndim, ntemps, tmin=tmin, tmax=tmax, tstep=tstep,
-#                     tinf=tinf, adapt_t0=adapt_t0,
-#                     adapt_nu=adapt_nu, ladder=ladder)
-#     saves = [SaveData(outdir=outdir, filename='/chain_{}.txt'.format(ptswap.ladder[ii])) for ii in range(ntemps)]
-
-#     # make empty full chain
-#     if ret_chain:
-#         full_chain = np.zeros((num_samples, ndim, ntemps))
-#     chain = np.zeros((loop_iterations, ndim, ntemps))
-#     lnlike_arr = np.zeros((loop_iterations, ntemps))
-#     lnprob_arr = np.zeros((loop_iterations, ntemps))
-#     accept_arr = np.zeros((loop_iterations, ntemps))
-#     # set up proposals
-#     mixes = []
-#     for ii in range(ntemps):
-#         mixes.append(JumpProposals(ndim, buf_size=buf_size))
-#         mixes[ii].add_jump(am, amweight)
-#         mixes[ii].add_jump(scam, scamweight)
-#         mixes[ii].add_jump(de, deweight)
-
-#     # make set of samplers (1 for each temp)
-#     samplers = [MHSampler(x0[ii], lnlike, lnprior, mixes[ii], iterations=swap_count, init_temp=ptswap.ladder[ii]) for ii in range(ntemps)]
-
-#     # set up count and iterations between loops
-#     count = 0
-#     for _ in tqdm(range(0, int(num_samples), loop_iterations)):
-#         swap_tot = 0
-#         for _ in range(loop_iterations // swap_count):
-#             with Pool(nodes=min(ntemps, ncores)) as p:
-#                 res = p.map(lambda sampler: sampler.sample(), samplers)
-#             for ii in range(len(res)):
-#                 (chain[swap_tot:swap_tot + swap_count, :, ii],
-#                  lnlike_arr[swap_tot:swap_tot + swap_count, ii],
-#                  lnprob_arr[swap_tot:swap_tot + swap_count, ii],
-#                  accept_arr[swap_tot:swap_tot + swap_count, ii]) = res[ii]
-#             swap_idx = samplers[0].num_samples % loop_iterations - 1
-#             chain, lnlike_arr, logprob_arr = ptswap(chain, lnlike_arr, lnprob_arr, swap_idx)
-#             if adapt:
-#                 ptswap.adapt_ladder(temp_dir=temp_dir)
-#             [samplers[ii].set_x0(chain[swap_idx, :, ii], logprob_arr[swap_idx, ii], temp=ptswap.ladder[ii]) for ii in range(ntemps)]
-#             # print(samplers[0].x0)
-#             swap_tot += swap_count
-#         for ii in range(ntemps):
-#             saves[ii](chain[:, :, ii], lnlike_arr[:, ii], lnprob_arr[:, ii], accept_arr[:, ii])
-#             mixes[ii].recursive_update(count, chain[:, :, ii])
-#         if ret_chain:
-#             full_chain[count:count + loop_iterations, :, :] = chain
-#         count += loop_iterations
-#     if ret_chain:
-#         return full_chain
-
-# class Sampler():
-#     def __init__(self, lnlike, lnprior, x0, num_samples=1_000_000, buf_size=50_000,
-#                  amweight=30, scamweight=15, deweight=50, loop_iterations=1000,
-#                  outdir='./chains', filename='/chain_1.txt', ret_chain=False):
-#         self.lnlike = lnlike
-#         self.lnprior = lnprior
-#         self.x0 = x0 if type(x0) != list else x0[0]
-#         self.num_samples = int(num_samples)
-#         self.ndim = len(x0) if type(x0) != list else len(x0[0])
-#         self.buf_size = buf_size
-#         self.amweight = amweight
-#         self.scamweight = scamweight
-#         self.deweight = deweight
-#         self.loop_iterations = loop_iterations
-#         self.outdir = outdir
-#         self.filename = filename
-#         self.ret_chain = ret_chain
-
-#         self._init_save()
-#         self._init_jumps()
-#         self._init_sampler()
-
-#         if ret_chain:
-#             self.full_chain = np.zeros((self.num_samples, self.ndim))
-
-#         self.count = 0  # num of samples so far
-
-        
-
-#     def _init_save(self):
-#         self.save = SaveData(outdir=self.outdir, filename=self.filename)
-
-#     def _init_jumps(self):
-#         self.mix = JumpProposals(self.ndim, buf_size=self.buf_size)
-#         self.mix.add_jump(am, self.amweight)
-#         self.mix.add_jump(scam, self.scamweight)
-#         self.mix.add_jump(de, self.deweight)
-
-#     def _init_sampler(self):
-#         self.sampler = MHSampler(self.x0, self.lnlike, self.lnprior, self.mix, iterations=self.loop_iterations)
-    
-#     def _sampler_step(self):
-#         self.chain, self.like, self.prob, self.accept = self.sampler.sample()
-#         self.save(self.chain, self.like, self.prob, self.accept)
-#         if self.ret_chain:
-#             self.full_chain[self.count:self.count + self.loop_iterations, :] = self.chain
-#         self.mix.recursive_update(self.count, self.chain)
-#         self.count += self.loop_iterations
-
-#     def sample(self):
-#         for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
-#             self._sampler_step()
-#         if self.ret_chain:
-#             return self.full_chain
 
 
 # Methods borrowed from BilbyMCMC to aid in parallelization
@@ -421,15 +302,13 @@ def call_step(sampler):
 
 _likelihood = None
 _priors = None
-_search_parameter_keys = None
-_use_ratio = False
+_mixes = None
 
 
 def _initialize_global_variables(
     likelihood,
     priors,
-    search_parameter_keys,
-    use_ratio,
+    mixes
     ):
     """
     Store a global copy of the likelihood, priors, and search keys for
@@ -437,9 +316,7 @@ def _initialize_global_variables(
     """
     global _likelihood
     global _priors
-    global _search_parameter_keys
-    global _use_ratio
+    global _mixes
     _likelihood = likelihood
     _priors = priors
-    _search_parameter_keys = search_parameter_keys
-    _use_ratio = use_ratio
+    _mixes = mixes

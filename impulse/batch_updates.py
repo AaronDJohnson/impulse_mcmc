@@ -41,26 +41,26 @@ def update_covariance(old_length, x_cov, x_avg, x_new):
     return x_avgnew, cov
 
 
-# def svd_groups(U, S, groups, cov):
-#     # do svd on parameter groups
-#     # TODO(Aaron): Speed this up using broadcasting
-#     for ct, group in enumerate(groups):
-#         covgroup = np.zeros((len(group), len(group)))
-#         for ii in range(len(group)):
-#             for jj in range(len(group)):
-#                 covgroup[ii, jj] = cov[group[ii], group[jj]]
-#         U[ct], S[ct], __ = np.linalg.svd(covgroup)
-#     return U, S
-
-
-@njit
-def svd_groups(groups, cov):
+def svd_groups(U, S, groups, cov):
     # do svd on parameter groups
     # TODO(Aaron): Speed this up using broadcasting
-    Ul = []
-    Sl = []
-    for group in groups:
-        U, S, __ = np.linalg.svd(cov[group][group])
-        Ul.append(U)
-        Sl.append(S)
-    return Ul, Sl
+    for ct, group in enumerate(groups):
+        covgroup = np.zeros((len(group), len(group)))
+        for ii in range(len(group)):
+            for jj in range(len(group)):
+                covgroup[ii, jj] = cov[group[ii], group[jj]]
+        U[ct], S[ct], __ = np.linalg.svd(covgroup)
+    return U, S
+
+
+# @njit
+# def svd_groups(groups, cov):
+#     # do svd on parameter groups
+#     # TODO(Aaron): Speed this up using broadcasting
+#     Ul = []
+#     Sl = []
+#     for group in groups:
+#         U, S, __ = np.linalg.svd(cov[group][group])
+#         Ul.append(U)
+#         Sl.append(S)
+#     return Ul, Sl

@@ -43,13 +43,13 @@ class JumpProposals():
         self.cov = cov
         if cov is None:
             self.cov = np.identity(ndim)
-        # self.U = [[]] * len(self.groups)
-        # self.S = [[]] * len(self.groups)
+        self.U = [[]] * len(self.groups)
+        self.S = [[]] * len(self.groups)
         # logger.debug('groups: {}'.format(self.groups))
 
         # do SVD on param groups
-        # self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
-        self.U, self.S = svd_groups(self.groups, self.cov)
+        self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
+        # self.U, self.S = svd_groups(self.groups, self.cov)
 
         self.mean = mean
         if mean is None:
@@ -69,8 +69,8 @@ class JumpProposals():
         self.mean, self.cov = update_covariance(sample_num, self.cov, self.mean, self._buffer)
 
         # new SVD on groups
-        # self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
-        self.U, self.S = svd_groups(self.groups, self.cov)
+        self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
+        # self.U, self.S = svd_groups(self.groups, self.cov)
 
     def __call__(self, x, temp=1.):
         self.nsamples += 1
