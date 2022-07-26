@@ -8,7 +8,7 @@ from multiprocessing import Pool
 # from pathos.pools import ProcessPool as Pool
 # from ray.util.multiprocessing import Pool
 
-from impulse.mhsampler import MHSampler, mh_sample_step, parallel_mh_sample_step
+from impulse.mhsampler import MHSampler, mh_sample_step  #  parallel_mh_sample_step
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
@@ -321,63 +321,63 @@ class PTSampler():
 #     if ret_chain:
 #         return full_chain
 
-class Sampler():
-    def __init__(self, lnlike, lnprior, x0, num_samples=1_000_000, buf_size=50_000,
-                 amweight=30, scamweight=15, deweight=50, loop_iterations=1000,
-                 outdir='./chains', filename='/chain_1.txt', ret_chain=False):
-        self.lnlike = lnlike
-        self.lnprior = lnprior
-        self.x0 = x0 if type(x0) != list else x0[0]
-        self.num_samples = int(num_samples)
-        self.ndim = len(x0) if type(x0) != list else len(x0[0])
-        self.buf_size = buf_size
-        self.amweight = amweight
-        self.scamweight = scamweight
-        self.deweight = deweight
-        self.loop_iterations = loop_iterations
-        self.outdir = outdir
-        self.filename = filename
-        self.ret_chain = ret_chain
+# class Sampler():
+#     def __init__(self, lnlike, lnprior, x0, num_samples=1_000_000, buf_size=50_000,
+#                  amweight=30, scamweight=15, deweight=50, loop_iterations=1000,
+#                  outdir='./chains', filename='/chain_1.txt', ret_chain=False):
+#         self.lnlike = lnlike
+#         self.lnprior = lnprior
+#         self.x0 = x0 if type(x0) != list else x0[0]
+#         self.num_samples = int(num_samples)
+#         self.ndim = len(x0) if type(x0) != list else len(x0[0])
+#         self.buf_size = buf_size
+#         self.amweight = amweight
+#         self.scamweight = scamweight
+#         self.deweight = deweight
+#         self.loop_iterations = loop_iterations
+#         self.outdir = outdir
+#         self.filename = filename
+#         self.ret_chain = ret_chain
 
-        self._init_save()
-        self._init_jumps()
-        self._init_sampler()
+#         self._init_save()
+#         self._init_jumps()
+#         self._init_sampler()
 
-        if ret_chain:
-            self.full_chain = np.zeros((self.num_samples, self.ndim))
+#         if ret_chain:
+#             self.full_chain = np.zeros((self.num_samples, self.ndim))
 
-        self.count = 0  # num of samples so far
+#         self.count = 0  # num of samples so far
 
         
 
-    def _init_save(self):
-        self.save = SaveData(outdir=self.outdir, filename=self.filename)
+#     def _init_save(self):
+#         self.save = SaveData(outdir=self.outdir, filename=self.filename)
 
-    def _init_jumps(self):
-        self.mix = JumpProposals(self.ndim, buf_size=self.buf_size)
-        self.mix.add_jump(am, self.amweight)
-        self.mix.add_jump(scam, self.scamweight)
-        self.mix.add_jump(de, self.deweight)
+#     def _init_jumps(self):
+#         self.mix = JumpProposals(self.ndim, buf_size=self.buf_size)
+#         self.mix.add_jump(am, self.amweight)
+#         self.mix.add_jump(scam, self.scamweight)
+#         self.mix.add_jump(de, self.deweight)
 
-    def _init_sampler(self):
-        self.sampler = MHSampler(self.x0, self.lnlike, self.lnprior, self.mix, iterations=self.loop_iterations)
+#     def _init_sampler(self):
+#         self.sampler = MHSampler(self.x0, self.lnlike, self.lnprior, self.mix, iterations=self.loop_iterations)
     
-    def _sampler_step(self):
-        self.chain, self.like, self.prob, self.accept = self.sampler.sample()
-        self.save(self.chain, self.like, self.prob, self.accept)
-        if self.ret_chain:
-            self.full_chain[self.count:self.count + self.loop_iterations, :] = self.chain
-        self.mix.recursive_update(self.count, self.chain)
-        self.count += self.loop_iterations
+#     def _sampler_step(self):
+#         self.chain, self.like, self.prob, self.accept = self.sampler.sample()
+#         self.save(self.chain, self.like, self.prob, self.accept)
+#         if self.ret_chain:
+#             self.full_chain[self.count:self.count + self.loop_iterations, :] = self.chain
+#         self.mix.recursive_update(self.count, self.chain)
+#         self.count += self.loop_iterations
 
-    def sample(self):
-        for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
-            self._sampler_step()
-        if self.ret_chain:
-            return self.full_chain
+#     def sample(self):
+#         for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
+#             self._sampler_step()
+#         if self.ret_chain:
+#             return self.full_chain
 
 
-# Methods borrowed from Bilby to aid in parallelization
+# Methods borrowed from BilbyMCMC to aid in parallelization
 
 def call_step(sampler):
     sampler = sampler.sample()

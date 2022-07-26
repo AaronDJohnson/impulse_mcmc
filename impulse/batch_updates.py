@@ -3,6 +3,7 @@ from loguru import logger
 from numba import njit
 
 
+@njit
 def update_mean(old_length, x_avg, x_new):
     """
     Batch update the mean
@@ -19,6 +20,7 @@ def update_mean(old_length, x_avg, x_new):
     return x_avg + x_wgt / (n + m)
 
 
+@njit
 def update_covariance(old_length, x_cov, x_avg, x_new):
     """
     Batch update covariance matrix
