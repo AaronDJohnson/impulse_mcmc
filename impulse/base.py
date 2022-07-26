@@ -7,7 +7,7 @@ from multiprocess import Pool
 # from pathos.pools import ProcessPool as Pool
 # from ray.util.multiprocessing import Pool
 
-from impulse.mhsampler import MHSampler, mh_sample_step  #  parallel_mh_sample_step
+from impulse.mhsampler import MHSampler
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
@@ -241,11 +241,10 @@ class PTSampler():
 
     def _close_pool(self):
         if getattr(self, "pool", None) is not None:
-            logger.info("Starting to close worker pool.")
             self.pool.close()
             self.pool.join()
             self.pool = None
-            logger.info("Finished closing worker pool.")
+            logger.info("Worker pool closed.")
 
 
     def _save_step(self):
