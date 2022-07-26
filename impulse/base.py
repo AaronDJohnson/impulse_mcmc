@@ -13,6 +13,7 @@ from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
 
 from numba import njit
+# from numba.typed import List
 
 
 @njit

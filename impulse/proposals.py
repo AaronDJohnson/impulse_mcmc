@@ -4,8 +4,6 @@ from impulse.batch_updates import update_covariance, svd_groups
 from impulse.random_nums import rng
 from loguru import logger
 
-from numba import njit
-
 
 def shift_array(arr, num, fill_value=0.):
     result = np.empty_like(arr)
