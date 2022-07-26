@@ -13,6 +13,18 @@ from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
 
+from numba import njit
+
+
+@njit
+def update_chains(res, chain, lnlike_arr, lnprob_arr, accept_arr, low_idx, high_idx):
+    for ii in np.arange(len(res)):
+        (chain[low_idx:high_idx, :, ii],
+         lnlike_arr[low_idx:high_idx, ii],
+         lnprob_arr[low_idx:high_idx, ii],
+         accept_arr[low_idx:high_idx, ii]) = res[ii]
+    return chain, lnlike_arr, lnprob_arr, accept_arr
+
 
 class PTSampler():
     def __init__(self, lnlike, lnprior, x0, num_samples=1_000_000, buf_size=50_000, ntemps=8, ncores=1,
@@ -188,17 +200,17 @@ class PTSampler():
         """
         if self.ncores > 1:
             res = ray.get([parallel_mh_sample_step.remote(sampler.lnlike_fn, sampler.lnprior_fn, sampler.prop_fn, sampler.x0,
-                                  sampler.temp, sampler.iterations, sampler.lnprob0,
-                                  sampler.chain, sampler.lnlike, sampler.lnprob, sampler.accept_rate) for sampler in self.samplers])
+                            sampler.temp, sampler.iterations, sampler.lnprob0,
+                            sampler.chain, sampler.lnlike, sampler.lnprob, sampler.accept_rate) for sampler in self.samplers])
         else:
             # res = list(map(lambda sampler: sampler.sample(), self.samplers))
             res = list(map(lambda sampler: sampler.sample(), self.samplers))
+        low_idx = self.swap_tot
+        high_idx = self.swap_tot + self.swap_count
+        self.chain, self.lnlike_arr, self.lnprob_arr, self.accept_arr = update_chains(res, self.chain, self.lnlike_arr,
+                                                                                      self.lnprob_arr, self.accept_arr,
+                                                                                      low_idx, high_idx)
 
-        for ii in range(len(res)):
-            (self.chain[self.swap_tot:self.swap_tot + self.swap_count, :, ii],
-            self.lnlike_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
-            self.lnprob_arr[self.swap_tot:self.swap_tot + self.swap_count, ii],
-            self.accept_arr[self.swap_tot:self.swap_tot + self.swap_count, ii]) = res[ii]
         swap_idx = self.samplers[0].num_samples % self.loop_iterations - 1
         self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
         if self.adapt:
@@ -364,3 +376,35 @@ class Sampler():
         if self.ret_chain:
             return self.full_chain
 
+
+# Methods borrowed from Bilby to aid in parallelization
+
+def call_step(sampler):
+    sampler = sampler.sample()
+    return sampler
+
+
+_likelihood = None
+_priors = None
+_search_parameter_keys = None
+_use_ratio = False
+
+
+def _initialize_global_variables(
+    likelihood,
+    priors,
+    search_parameter_keys,
+    use_ratio,
+    ):
+    """
+    Store a global copy of the likelihood, priors, and search keys for
+    multiprocessing.
+    """
+    global _likelihood
+    global _priors
+    global _search_parameter_keys
+    global _use_ratio
+    _likelihood = likelihood
+    _priors = priors
+    _search_parameter_keys = search_parameter_keys
+    _use_ratio = use_ratio

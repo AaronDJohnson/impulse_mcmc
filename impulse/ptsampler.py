@@ -1,5 +1,6 @@
 import numpy as np
 from impulse.random_nums import rng
+from numba import njit
 
 
 class PTSwap():
