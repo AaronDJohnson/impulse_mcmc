@@ -219,6 +219,40 @@ class PTSampler():
         [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 
+    def _setup_pool(self):
+        if self.npool > 1:
+            logger.info(f"Setting up multiproccesing pool with {self.npool} processes")
+            import multiprocessing
+
+            self.pool = multiprocessing.Pool(
+                processes=self.npool,
+                initializer=_initialize_global_variables,
+                initargs=(
+                    self.likelihood,
+                    self.priors,
+                    self._search_parameter_keys,
+                    self.use_ratio,
+                ),
+            )
+        else:
+            self.pool = None
+
+        _initialize_global_variables(
+            likelihood=self.likelihood,
+            priors=self.priors,
+            search_parameter_keys=self._search_parameter_keys,
+            use_ratio=self.use_ratio,
+        )
+
+    def _close_pool(self):
+        if getattr(self, "pool", None) is not None:
+            logger.info("Starting to close worker pool.")
+            self.pool.close()
+            self.pool.join()
+            self.pool = None
+            logger.info("Finished closing worker pool.")
+
+
     def _save_step(self):
         for ii in range(self.ntemps):
             self.saves[ii](self.chain[:, :, ii], self.lnlike_arr[:, ii], self.lnprob_arr[:, ii], self.accept_arr[:, ii])
@@ -262,6 +296,7 @@ class PTSampler():
         ray.shutdown()
         if self.ret_chain:
             return self.full_chain
+
 
 
 # # TODO: make this a class and combine these two functions with cleaner counting built in
