@@ -240,6 +240,7 @@ class PTSampler():
             self.mixes
         )
 
+
     def _close_pool(self):
         if getattr(self, "pool", None) is not None:
             self.pool.close()
@@ -250,7 +251,10 @@ class PTSampler():
 
     def _save_step(self):
         for ii in range(self.ntemps):
-            self.saves[ii](self.chain[:, :, ii], self.lnlike_arr[:, ii], self.lnprob_arr[:, ii], self.accept_arr[:, ii])
+            length = self.chain.shape[0]
+            self.saves[ii](self.chain[:, :, ii], self.lnlike_arr[:, ii], self.lnprob_arr[:, ii],
+                           np.repeat(self.ptswap.ladder[ii], length),
+                           np.repeat(np.hstack([self.ptswap.compute_accept_ratio(), 0])[ii], length))
             self.mixes[ii].recursive_update(self.sample_count, self.chain[:, :, ii])
 
 
