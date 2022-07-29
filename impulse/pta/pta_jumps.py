@@ -123,6 +123,10 @@ class ExtraProposals(object):
         self.psrnames = pta.pulsars
         self.ndim = sum(p.size or 1 for p in pta.params)
         self.plist = [p.name for p in pta.params]
+        try:
+            self.num_models = pta.num_models
+        except AttributeError:
+            pass
 
         # parameter map
         self.pmap = {}
@@ -852,7 +856,20 @@ class ExtraProposals(object):
         draw.__name__ = 'draw_from_{}_signal'.format(name_string)
         return draw
 
-    
+
+    def draw_from_nmodel_prior(self, x, U, S, groups, temp, buffer):
+        """
+        Model-index uniform distribution prior draw.
+        """
+
+        q = x.copy()
+
+        idx = list(self.pnames).index('nmodel')
+        q[idx] = np.random.uniform(-0.5, self.num_models - 0.5)
+
+        lqxy = 0
+
+        return q, float(lqxy)
 
     # def fe_jump(self, x, iter, beta):
 
