@@ -42,7 +42,7 @@ class MHSampler(object):
         self.lnprob0 = 1 / self.temp * self.lnlike_fn(x0) + self.lnprior_fn(x0)
         # print(1 / self.temp * self.lnlike_fn(x0) + self.lnprior_fn(x0))
         # print(self.lnprob0)
-        # print(np.abs(1 / self.temp * self.lnlike_fn(x0) + self.lnprior_fn(x0) - self.lnprob0) / self.lnprob0)
+        # print(np.abs(1 / self.temp * self.lnlike_fn(x0) + self.lnprior_fn(x0) - self.lnprob0) / self.lnprob0)  #TODO: check this
 
     def sample(self):
 
@@ -82,56 +82,77 @@ class MHSampler(object):
         return self.num_samples
 
 
-def mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
-                   iterations, lnprob0, chain, lnlike, lnprob,
-                   accept_rate, lnlike_kwargs={}, lnprior_kwargs={}):
-    # TODO (Aaron): Fix accept_rate
-    chain = np.copy(chain)
-    lnprob = np.copy(lnprob)
-    lnlike = np.copy(lnlike)
-    accept_rate = np.copy(accept_rate)
-    lnprob0 = np.copy(lnprob0)
-    x0 = np.copy(x0)
+# def mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
+#                    iterations, lnprob0, chain, lnlike, lnprob,
+#                    accept_rate, lnlike_kwargs={}, lnprior_kwargs={}):
+#     # TODO (Aaron): Fix accept_rate
+#     chain = np.copy(chain)
+#     lnprob = np.copy(lnprob)
+#     lnlike = np.copy(lnlike)
+#     accept_rate = np.copy(accept_rate)
+#     lnprob0 = np.copy(lnprob0)
+#     x0 = np.copy(x0)
 
-    naccept = 0
-    num_samples = 0
-    for ii in range(iterations):
-        num_samples += 1
-        # propose a move
-        x_star, factor = prop_fn(x0, temp)
-        # draw random number
-        rand_num = rng.uniform()
+#     naccept = 0
+#     num_samples = 0
+#     for ii in range(iterations):
+#         num_samples += 1
+#         # propose a move
+#         x_star, factor = prop_fn(x0, temp)
+#         # draw random number
+#         rand_num = rng.uniform()
 
-        # compute hastings ratio
-        lnprior_star = lnprior_fn(x_star, **lnprior_kwargs)
-        if np.isinf(lnprior_star):
-            lnprob_star = -np.inf
-            lnlike_star = lnlike[ii - 1]
-        else:
-            lnlike_star = lnlike_fn(x_star, **lnlike_kwargs)
-            lnprob_star = 1 / temp * lnlike_star + lnprior_star
+#         # compute hastings ratio
+#         lnprior_star = lnprior_fn(x_star, **lnprior_kwargs)
+#         if np.isinf(lnprior_star):
+#             lnprob_star = -np.inf
+#             lnlike_star = lnlike[ii - 1]
+#         else:
+#             lnlike_star = lnlike_fn(x_star, **lnlike_kwargs)
+#             lnprob_star = 1 / temp * lnlike_star + lnprior_star
 
-        hastings_ratio = lnprob_star - lnprob0 + factor
+#         hastings_ratio = lnprob_star - lnprob0 + factor
 
-        # accept/reject step
-        if np.log(rand_num) < hastings_ratio:
-            x0 = x_star
-            lnprob0 = lnprob_star
-            naccept += 1
+#         # accept/reject step
+#         if np.log(rand_num) < hastings_ratio:
+#             x0 = x_star
+#             lnprob0 = lnprob_star
+#             naccept += 1
 
-        # update chain
-        chain[ii] = x0
-        lnprob[ii] = lnprob0
-        lnlike[ii] = lnlike_star
-        accept_rate[ii] = naccept / num_samples
-    return chain, lnlike, lnprob, accept_rate
+#         # update chain
+#         chain[ii] = x0
+#         lnprob[ii] = lnprob0
+#         lnlike[ii] = lnlike_star
+#         accept_rate[ii] = naccept / num_samples
+#     return chain, lnlike, lnprob, accept_rate
 
+
+# @ray.remote
+# class GlobalFunctionActor():
+#     def __init__(self, loglikelihood, logprior, x0):
+#         self.loglike = loglikelihood
+#         self.logprior = logprior
+#         # init functions
+#         self.loglike(x0)
+#         self.logprior(x0)
+
+#     def lnlikelihood(self, x0):
+#         return self.loglike(x0)
+
+#     def lnprior(self, x0):
+#         return self.logprior(x0)
+
+
+# @ray.remote(num_cpus=1)
+# class RayMHSampler(MHSampler):
+#     def __init__(self, x0, global_functions, prop_fn, lnlike_kwargs={},
+#                  lnprior_kwargs={}, iterations=1000, init_temp=1.):
+#         self.global_functions = global_functions
+#         super().__init__(x0, lambda x0: ray.get(self.global_functions.lnlikelihood.remote(x0)),
+#                          lambda x0: ray.get(self.global_functions.lnprior.remote(x0)),
+#                          prop_fn, lnlike_kwargs=lnlike_kwargs, lnprior_kwargs=lnprior_kwargs,
+#                          iterations=iterations, init_temp=init_temp)
 
 @ray.remote(num_cpus=1)
-def parallel_mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
-                            iterations, lnprob0, chain, lnlike, lnprob,
-                            accept_rate, lnlike_kwargs={}, lnprior_kwargs={}):
-    return mh_sample_step(lnlike_fn, lnprior_fn, prop_fn, x0, temp,
-                          iterations, lnprob0, chain, lnlike, lnprob,
-                          accept_rate, lnlike_kwargs=lnlike_kwargs,
-                          lnprior_kwargs=lnprior_kwargs)
+class RayMHSampler(MHSampler):
+    pass

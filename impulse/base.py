@@ -3,11 +3,9 @@ from tqdm import tqdm
 
 from loguru import logger
 
-from multiprocess import Pool
-# from pathos.pools import ProcessPool as Pool
-# from ray.util.multiprocessing import Pool
+import ray
 
-from impulse.mhsampler import MHSampler
+from impulse.mhsampler import MHSampler, RayMHSampler # , GlobalFunctionActor
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
@@ -88,16 +86,14 @@ class PTSampler():
         self.deweight = deweight
         self.resume = resume
 
-        # if self.ncores > 1 and not ray.is_initialized():
-        #     ray.init(num_cpus=self.ncores)
-        self._close_pool()
+        if self.ncores > 1 and not ray.is_initialized():
+            ray.init(num_cpus=self.ncores)
 
         if ntemps > 1:  # PTSampler
             self._init_ptswap()
             self._init_pt_saves()
             self._init_pt_proposals()
             self._init_pt_sampler()
-            self._setup_pool()
 
         else:  # MHSampler
             self._init_mh_save()
@@ -177,8 +173,15 @@ class PTSampler():
         self.lnlike_arr = np.zeros((self.loop_iterations, self.ntemps))
         self.lnprob_arr = np.zeros((self.loop_iterations, self.ntemps))
         self.accept_arr = np.zeros((self.loop_iterations, self.ntemps))
-        self.samplers = [MHSampler(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii],
-                         iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
+        if self.ncores > 1:
+            # global_functions = GlobalFunctionActor.remote(self.lnlike, self.lnprior, self.x0[0])
+            # self.samplers = [RayMHSampler.remote(self.x0[ii], global_functions, self.mixes[ii],
+            #                  iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
+            self.samplers = [RayMHSampler.remote(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii],
+                             iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
+        else:
+            self.samplers = [MHSampler(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii],
+                             iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 
     def _pt_resume(self):
@@ -201,7 +204,8 @@ class PTSampler():
         Perform PT step
         """
         if self.ncores > 1:
-            res = self.pool.map(call_step, self.samplers)
+            # res = self.pool.map(call_step, self.samplers)
+            res = ray.get([sampler.sample.remote() for sampler in self.samplers])
         else:
             res = list(map(lambda sampler: sampler.sample(), self.samplers))
         low_idx = self.swap_tot
@@ -209,44 +213,17 @@ class PTSampler():
         self.chain, self.lnlike_arr, self.lnprob_arr, self.accept_arr = update_chains(res, self.chain, self.lnlike_arr,
                                                                                       self.lnprob_arr, self.accept_arr,
                                                                                       low_idx, high_idx)
+        self.sample_count += self.swap_count
+        swap_idx = self.sample_count % self.loop_iterations - 1
 
-        swap_idx = self.samplers[0].num_samples % self.loop_iterations - 1
         self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
         if self.adapt:
             self.ptswap.adapt_ladder()
-        self.saves[0].save_swap_data(self.ptswap)
-        [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
-
-    def _setup_pool(self):
         if self.ncores > 1:
-            logger.info(f"Setting up multiprocessing pool with {self.ncores} processes")
-
-            self.pool = Pool(
-                processes=self.ncores,
-                initializer=_initialize_global_variables,
-                initargs=(
-                    self.lnlike,
-                    self.lnprior,
-                    self.mixes
-                ),
-            )
+            [self.samplers[ii].set_x0.remote(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
         else:
-            self.pool = None
-
-        _initialize_global_variables(
-            self.lnlike,
-            self.lnprior,
-            self.mixes
-        )
-
-
-    def _close_pool(self):
-        if getattr(self, "pool", None) is not None:
-            self.pool.close()
-            self.pool.join()
-            self.pool = None
-            logger.info("Worker pool closed.")
+            [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 
     def _save_step(self):
@@ -265,7 +242,7 @@ class PTSampler():
         except AttributeError:
             self.mix.add_jump(jump, weight)
 
-    
+
     def set_ntemps(self, ntemps):
         self.ntemps = ntemps
         self._init_ptswap()
@@ -285,42 +262,12 @@ class PTSampler():
                     self.swap_tot += self.swap_count
                 self._save_step()
                 if self.ret_chain:
-                    self.full_chain[self.sample_count:self.sample_count + self.loop_iterations, :, :] = self.chain
-                self.sample_count += self.loop_iterations
+                    self.full_chain[self.sample_count - self.loop_iterations:self.sample_count, :, :] = self.chain
+                # self.sample_count += self.loop_iterations
         else:
             # MHSampler
             for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
                 self._mh_sampler_step()
 
-        self._close_pool()
         if self.ret_chain:
             return self.full_chain
-
-
-# Methods borrowed from BilbyMCMC to aid in parallelization
-
-def call_step(sampler):
-    sampler = sampler.sample()
-    return sampler
-
-
-_likelihood = None
-_priors = None
-_mixes = None
-
-
-def _initialize_global_variables(
-    likelihood,
-    priors,
-    mixes
-    ):
-    """
-    Store a global copy of the likelihood, priors, and search keys for
-    multiprocessing.
-    """
-    global _likelihood
-    global _priors
-    global _mixes
-    _likelihood = likelihood
-    _priors = priors
-    _mixes = mixes
