@@ -130,7 +130,7 @@ def save_runtime_info(pta, outdir='chains', human=None):
 def setup_sampler(pta, outdir='chains', empirical_distr=None, hypermodel=False,
                   groups=None, human=None, save_ext_dists=False, ntemps=1,
                   ncores=1, num_samples=1_000_000, ret_chain=False,
-                  prior_sample=False, resume=False, sample_nmodel=True):
+                  prior_sample=False, resume=False, sample_nmodel=True, adapt=True):
     """
     Sets up an instance of PTMCMC sampler.
 
@@ -167,7 +167,6 @@ def setup_sampler(pta, outdir='chains', empirical_distr=None, hypermodel=False,
 
     if hypermodel:
         x0 = [pta.initial_sample() for __ in range(ntemps)]
-        logger.debug(x0)
     else:
         ndim, x0 = initial_sample(pta, ntemps)
     if not len(x0) == ntemps:
@@ -180,11 +179,11 @@ def setup_sampler(pta, outdir='chains', empirical_distr=None, hypermodel=False,
         groups = pta.get_parameter_groups()
 
     if prior_sample:
-        sampler = PTSampler(pta.get_lnprior, lambda x:0, x0, num_samples=num_samples, groups=groups,
-                            ntemps=ntemps, ncores=ncores, ret_chain=ret_chain, resume=resume, cov=cov)
+        sampler = PTSampler(pta.get_lnprior, lambda x:0, x0, num_samples=num_samples, groups=groups, outdir=outdir,
+                            ntemps=ntemps, ncores=ncores, ret_chain=ret_chain, resume=resume, cov=cov, adapt=adapt)
     else:
-        sampler = PTSampler(pta.get_lnlikelihood, pta.get_lnprior, x0, num_samples=num_samples, groups=groups,
-                            ntemps=ntemps, ncores=ncores, ret_chain=ret_chain, resume=resume, cov=cov)
+        sampler = PTSampler(pta.get_lnlikelihood, pta.get_lnprior, x0, num_samples=num_samples, groups=groups, outdir=outdir,
+                            ntemps=ntemps, ncores=ncores, ret_chain=ret_chain, resume=resume, cov=cov, adapt=adapt)
 
     save_runtime_info(pta, sampler.outdir, human)
 
@@ -193,13 +192,12 @@ def setup_sampler(pta, outdir='chains', empirical_distr=None, hypermodel=False,
         jp = ExtraProposals(pta, snames=pta.snames, empirical_distr=empirical_distr, save_ext_dists=save_ext_dists, outdir=outdir)
     else:
         jp = ExtraProposals(pta, empirical_distr=empirical_distr, save_ext_dists=save_ext_dists, outdir=outdir)
-            
 
     # always add draw from prior
     sampler.add_jump(jp.draw_from_prior, 5)
 
     if sample_nmodel and hypermodel:
-        print('Adding nmodel uniform distribution draws...\n')
+        logger.info('Adding nmodel uniform distribution draws...\n')
         sampler.add_jump(jp.draw_from_nmodel_prior, 25)
 
     # try adding empirical proposals

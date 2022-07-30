@@ -79,7 +79,7 @@ class HyperModel(object):
         # only active parameters enter likelihood
         active_lnlike = self.models[nmodel].get_lnlikelihood(q)
 
-        if self.log_weights:
+        if self.log_weights is not None:
             active_lnlike += self.log_weights[nmodel]
 
         return active_lnlike
