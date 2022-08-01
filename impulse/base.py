@@ -1,4 +1,6 @@
 import numpy as np
+from impulse.random_nums import rng
+from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
 
 from loguru import logger
@@ -86,8 +88,12 @@ class PTSampler():
         self.deweight = deweight
         self.resume = resume
 
+        if ray.is_initialized():
+            ray.shutdown()
+
         if self.ncores > 1 and not ray.is_initialized():
             ray.init(num_cpus=self.ncores)
+            # ray.init(local_mode=True)
 
         if ntemps > 1:  # PTSampler
             self._init_ptswap()
@@ -177,10 +183,15 @@ class PTSampler():
             # global_functions = GlobalFunctionActor.remote(self.lnlike, self.lnprior, self.x0[0])
             # self.samplers = [RayMHSampler.remote(self.x0[ii], global_functions, self.mixes[ii],
             #                  iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
-            self.samplers = [RayMHSampler.remote(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii],
+            ss = SeedSequence()
+
+            # Spawn off ncores child SeedSequences to pass to child processes.
+            child_seeds = ss.spawn(self.ncores)
+            streams = [default_rng(s) for s in child_seeds]
+            self.samplers = [RayMHSampler.remote(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii], streams[ii],
                              iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
         else:
-            self.samplers = [MHSampler(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii],
+            self.samplers = [MHSampler(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii], rng,
                              iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
 
 
@@ -206,6 +217,7 @@ class PTSampler():
         if self.ncores > 1:
             # res = self.pool.map(call_step, self.samplers)
             res = ray.get([sampler.sample.remote() for sampler in self.samplers])
+            # logger.debug(len(res[0]))
         else:
             res = list(map(lambda sampler: sampler.sample(), self.samplers))
         low_idx = self.swap_tot
@@ -269,5 +281,7 @@ class PTSampler():
             for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
                 self._mh_sampler_step()
 
+        if ray.is_initialized():
+            ray.shutdown()
         if self.ret_chain:
             return self.full_chain

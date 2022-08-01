@@ -1,11 +1,11 @@
 import numpy as np
-from impulse.random_nums import rng
 import ray
 
 
 class MHSampler(object):
-    def __init__(self, x0, lnlike_fn, lnprior_fn, prop_fn, lnlike_kwargs={},
-                 lnprior_kwargs={}, iterations=1000, init_temp=1.):
+    def __init__(self, x0, lnlike_fn, lnprior_fn, prop_fn, rng_stream,
+                 lnlike_kwargs={}, lnprior_kwargs={}, iterations=1000,
+                 init_temp=1.):
         """
         x0: vector of length ndim
         lnlike_fn: log likelihood function
@@ -22,6 +22,7 @@ class MHSampler(object):
         self.lnprior_kwargs = lnprior_kwargs
         self.iterations = iterations
         self.num_samples = 0  # running total of all samples
+        self.rng = rng_stream
 
         # initialize chain, acceptance rate, and lnprob
         self.chain = np.zeros((self.iterations, self.ndim))
@@ -51,7 +52,7 @@ class MHSampler(object):
             # propose a move
             x_star, factor = self.prop_fn(self.x0, self.temp)
             # draw random number
-            rand_num = rng.uniform()
+            rand_num = self.rng.uniform()
 
             # compute hastings ratio
             lnprior_star = self.lnprior_fn(x_star, **self.lnprior_kwargs)

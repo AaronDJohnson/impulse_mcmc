@@ -12,7 +12,7 @@ class SaveData():
         self.swap_accept_file = outdir + tempdir + 'accept.txt'
         self.ladder_file = outdir + tempdir + 'temps.txt'
         pathlib.Path(self.outdir).mkdir(parents=True, exist_ok=True)
-        pathlib.Path(self.outdir + self.tempdir).mkdir(parents=True, exist_ok=True)
+        # pathlib.Path(self.outdir + self.tempdir).mkdir(parents=True, exist_ok=True)
         if self.exists(outdir, filename) and not resume:
             with open(self.filepath, 'w') as _:
                 pass
