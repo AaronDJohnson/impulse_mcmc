@@ -5,8 +5,8 @@
   * tests of accuracy are under way
 
 ## Currently working:
-  * `sample()`
-  * `pt_sample()`
+  * `PTSampler` with `ncores = 1`
 
 ## Currently under development:
   * Resume function
+  * Parallel processing

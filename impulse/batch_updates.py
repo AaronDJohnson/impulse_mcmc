@@ -54,6 +54,9 @@ def svd_groups(U, S, groups, cov):
     return U, S
 
 
+
+# attempts at increasing speed of svd groups updates:
+
 # @njit
 # def numba_ix(arr, rows, cols):
 #     """

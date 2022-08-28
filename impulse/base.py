@@ -7,7 +7,7 @@ from loguru import logger
 
 import ray
 
-from impulse.mhsampler import MHSampler, RayMHSampler # , GlobalFunctionActor
+from impulse.mhsampler import MHSampler, RayMHSampler  # , GlobalFunctionActor
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData

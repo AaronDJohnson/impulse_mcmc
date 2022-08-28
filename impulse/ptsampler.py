@@ -1,6 +1,5 @@
 import numpy as np
 from impulse.random_nums import rng
-from numba import njit
 
 
 class PTSwap():
@@ -43,7 +42,7 @@ class PTSwap():
 
     def adapt_ladder(self):
         """
-        Adapt temperatures according to arXiv:1501.05823 <http://arxiv.org/abs/1501.05823>.
+        Adapt temperatures according to arXiv:1501.05823 <https://arxiv.org/abs/1501.05823>.
         """
         # Modulate temperature adjustments with a hyperbolic decay.
         decay = self.adapt_t0 / (self.nswaps + self.adapt_t0)  # t0 / (t + t0)
