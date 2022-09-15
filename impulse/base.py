@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from impulse.random_nums import rng
 from numpy.random import SeedSequence, default_rng
@@ -7,16 +8,13 @@ from loguru import logger
 
 import ray
 
-from impulse.mhsampler import MHSampler, RayMHSampler  # , GlobalFunctionActor
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
 
-from numba import njit
 # from numba.typed import List
 
 
-@njit
 def update_chains(res, chain, lnlike_arr, lnprob_arr, accept_arr, low_idx, high_idx):
     for ii in np.arange(len(res)):
         (chain[low_idx:high_idx, :, ii],
@@ -285,3 +283,70 @@ class PTSampler():
             ray.shutdown()
         if self.ret_chain:
             return self.full_chain
+
+
+
+class PTSampler():
+    def __init__(self,
+        ndim,
+        logl,
+        logp,
+        ncores=1,
+        ntemps=1,
+        buf_size=50_000,
+        mean=None,
+        cov=None,
+        groups=None,
+        loglargs=[],
+        loglkwargs={},
+        logpargs=[],
+        logpkwargs={},
+        cov_update=1000,
+        save_freq=1000,
+        SCAMweight=30,
+        AMweight=15,
+        DEweight=50,
+        outdir="./chains",
+        resume=False):
+
+        # setup loglikelihood and logprior functions
+        self.logl = _function_wrapper(logl, loglargs, loglkwargs)
+        self.logp = _function_wrapper(logp, logpargs, logpkwargs)
+
+        # setup jump proposals
+        self.jp = JumpProposals(ndim, buf_size=buf_size, groups=groups, cov=cov, mean=mean)
+        self.jp.add_jump(scam, SCAMweight)
+        self.jp.add_jump(am, AMweight)
+        self.jp.add_jump(de, DEweight)
+
+        self.outdir = outdir
+        self.resume = resume
+        self.ncores = ncores
+        self.ndim = ndim
+        self.ntemps = ntemps
+
+        # sample counter
+        self.counter = 0
+
+        
+
+        
+
+class _function_wrapper(object):
+
+    """
+    This is a hack to make the likelihood function pickleable when ``args``
+    or ``kwargs`` are also included.
+    """
+
+    def __init__(self, f, args, kwargs):
+        self.f = f
+        self.args = args
+        self.kwargs = kwargs
+
+    def __call__(self, x):
+        return self.f(x, *self.args, **self.kwargs)
+
+
+
+
