@@ -6,12 +6,12 @@ from tqdm import tqdm
 
 from loguru import logger
 
-import ray
-
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
 from impulse.mhsampler import mh_step
+
+# from multiprocessing.pool import Pool
 
 # from numba.typed import List
 
@@ -125,7 +125,6 @@ class PTSampler():
         self.lnlike_arr = np.zeros((self.save_freq, self.ntemps))
         self.lnprob_arr = np.zeros((self.save_freq, self.ntemps))
         self.accept_arr = np.zeros((self.save_freq, self.ntemps))
-        
 
         for ii in tqdm(range(num_samples)):
             kk = ii % self.save_freq
@@ -166,10 +165,10 @@ class PTSampler():
                 self.saves[0].save_swap_data(self.ptswap)
                 # output a pickle to resume from
                 self.save_state()
-            
+
             if ret_chain:
                 full_chain[ii, :, :] = self.chain[kk, :, :]
-            
+
         if ret_chain:
             return full_chain
 
