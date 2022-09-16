@@ -23,19 +23,15 @@ class SaveData():
             with open(self.ladder_file, 'w') as _:
                 pass
 
-
     def set_filepath(self, outdir, filename):
         self.filepath = outdir + filename
-
 
     def __call__(self, *args):
         with open(self.filepath, 'a+') as f:
             np.savetxt(f, np.column_stack((args))[::self.thin])
 
-
     def exists(self, outdir, filename):
         return pathlib.Path(outdir + filename).exists()
-
 
     def save_swap_data(self, ptswap):
         """

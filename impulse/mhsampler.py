@@ -52,7 +52,7 @@ def mh_step(x0, lnlike0, lnprob0, lnlike_fn, lnprior_fn,
     # compute hastings ratio
     lnprior_star = lnprior_fn(x_star)
 
-    if np.isinf(lnprior_star):
+    if lnprior_star == -np.inf:  # if outside the prior, reject
         lnprob_star = -np.inf
     else:
         lnlike_star = lnlike_fn(x_star)

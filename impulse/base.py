@@ -91,23 +91,30 @@ class PTSampler():
             self.mixes[ii].add_jump(scam, SCAMweight)
             self.mixes[ii].add_jump(de, DEweight)
 
-        # setup parallel tempering
-        self.ptswap = PTSwap(self.ndim, self.ntemps, tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
-                             tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, ladder=self.ladder)
-
         # setup random number generator
         stream = SeedSequence(seed)
-        seeds = stream.generate_state(ntemps)
+        seeds = stream.generate_state(ntemps + 1)
         self.rng = [default_rng(s) for s in seeds]
+
+        # setup parallel tempering
+        self.ptswap = PTSwap(self.ndim, self.ntemps, self.rng[-1], tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
+                             tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, ladder=self.ladder)
 
     def save_state(self):
         pass
 
-    def sample(self, x0, num_samples, thin=1):
+    def load_state(self):
+        pass
+
+    def sample(self, x0, num_samples, thin=1, ret_chain=False):
+        if ret_chain:
+            full_chain = np.zeros((num_samples, self.ndim, self.ntemps))
+
         # initial sample
         self.x0 = np.array(x0)  # (ntemps, ndim)
         self.lnlike0 = np.array([self.logl(self.x0[jj]) for jj in range(self.ntemps)])
         self.lnprob0 = np.array([self.logp(self.x0[jj]) + self.lnlike0[jj] for jj in range(self.ntemps)])
+        self.accept = np.zeros(self.ntemps)
 
         # setup saves
         self.filenames = ['/chain_{}.txt'.format(ii + 1) for ii in range(self.ntemps)]  # temps change (label by chain number)
@@ -118,33 +125,32 @@ class PTSampler():
         self.lnlike_arr = np.zeros((self.save_freq, self.ntemps))
         self.lnprob_arr = np.zeros((self.save_freq, self.ntemps))
         self.accept_arr = np.zeros((self.save_freq, self.ntemps))
+        
 
-        self.lnlike0 = np.zeros(self.ntemps)
-        self.lnprob0 = np.zeros(self.ntemps)
-        self.accept = np.zeros(self.ntemps)
-
-        for ii in range(num_samples):
+        for ii in tqdm(range(num_samples)):
+            kk = ii % self.save_freq
             self.counter += 1
 
             # metropolis hastings step + update chains
             for jj in range(self.ntemps):
                 self.x0[jj], self.lnlike0[jj], self.lnprob0[jj], self.accept[jj] = mh_step(self.x0[jj], self.lnlike0[jj], self.lnprob0[jj], self.logl,
-                                                                                           self.logp, self.mixes[ii], self.rng[ii], self.ptswap.ladder[ii])
-                self.chain[ii, :, jj] = self.x0[jj]
-                self.lnlike_arr[ii, jj] = self.lnlike0[jj]
-                self.lnprob_arr[ii, jj] = self.lnprob0[jj]
-                self.accept_arr[ii, jj] = self.accept[jj]
+                                                                                           self.logp, self.mixes[jj], self.rng[jj], self.ptswap.ladder[jj])
+                self.chain[kk, :, jj] = self.x0[jj]
+                self.lnlike_arr[kk, jj] = self.lnlike0[jj]
+                self.lnprob_arr[kk, jj] = self.lnprob0[jj]
+                self.accept_arr[kk, jj] = self.accept[jj]
 
             # swap sometimes
             if self.counter % self.swap_steps == 0 and self.counter > 1:
-                self.x0s, self.lnlike0s = self.ptswap.swap(self.chain[ii, :, :], self.lnlike_arr[ii, :])
+                self.x0s, self.lnlike0s = self.ptswap.swap(self.chain[kk, :, :], self.lnlike_arr[kk, :])
                 for jj in range(self.ntemps):
                     self.x0[jj] = self.x0s[jj]
                     self.lnlike0[jj] = self.lnlike0s[jj]
                     self.lnprob0[jj] = self.logp(self.x0[jj]) + self.lnlike0[jj]
-                self.chain[ii, :, :], self.lnlike_arr[ii, :] = self.x0s, self.lnlike0s
-                self.lnprob0 = 1 / self.ptswap.ladder * self.lnlike0 + self.logp(self.x0)
-                self.lnprob_arr[ii, :] = self.lnprob0
+
+                    self.chain[kk, :, jj], self.lnlike_arr[kk, jj] = self.x0s[jj], self.lnlike0s[jj]
+                    self.lnprob0[jj] = 1 / self.ptswap.ladder[jj] * self.lnlike0[jj] + self.logp(self.x0[jj])
+                    self.lnprob_arr[kk, jj] = self.lnprob0[jj]
 
             # update covariance matrix
             if self.counter % self.cov_update == 0 and self.counter > 1:
@@ -157,8 +163,15 @@ class PTSampler():
             if self.counter % self.save_freq == 0 and self.counter > 1:
                 [self.saves[jj](self.chain[:, :, jj], self.lnlike_arr[:, jj],
                                 self.lnprob_arr[:, jj], self.accept_arr[:, jj]) for jj in range(self.ntemps)]
+                self.saves[0].save_swap_data(self.ptswap)
                 # output a pickle to resume from
                 self.save_state()
+            
+            if ret_chain:
+                full_chain[ii, :, :] = self.chain[kk, :, :]
+            
+        if ret_chain:
+            return full_chain
 
 
 class _function_wrapper(object):
@@ -175,7 +188,3 @@ class _function_wrapper(object):
 
     def __call__(self, x):
         return self.f(x, *self.args, **self.kwargs)
-
-
-
-
