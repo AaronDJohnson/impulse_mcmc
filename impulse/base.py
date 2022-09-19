@@ -1,9 +1,6 @@
-import os
 import numpy as np
-from impulse.random_nums import rng
 from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
-
 from loguru import logger
 
 from impulse.ptsampler import PTSwap
@@ -12,17 +9,6 @@ from impulse.save_data import SaveData
 from impulse.mhsampler import mh_step
 
 # from multiprocessing.pool import Pool
-
-# from numba.typed import List
-
-
-def update_chains(res, chain, lnlike_arr, lnprob_arr, accept_arr, low_idx, high_idx):
-    for ii in np.arange(len(res)):
-        (chain[low_idx:high_idx, :, ii],
-         lnlike_arr[low_idx:high_idx, ii],
-         lnprob_arr[low_idx:high_idx, ii],
-         accept_arr[low_idx:high_idx, ii]) = res[ii]
-    return chain, lnlike_arr, lnprob_arr, accept_arr
 
 
 class PTSampler():
