@@ -71,9 +71,9 @@ class Sampler():
 
         # setup samplers:
         self.samplers = [PTSampler.remote(self.ndim, logl, logp, chain_num=ii, temperature=self.ptswap.ladder[ii], buf_size=buf_size, mean=mean,
-                                     cov=cov, groups=groups, loglargs=loglargs, loglkwargs=loglkwargs, logpargs=logpargs, logpkwargs=logpkwargs,
-                                     cov_update=cov_update, save_freq=save_freq, SCAMweight=SCAMweight, AMweight=AMweight, DEweight=DEweight,
-                                     outdir=outdir, rng=self.rng[ii], ptswap=self.ptswap) for ii in range(self.ntemps)]
+                                          cov=cov, groups=groups, loglargs=loglargs, loglkwargs=loglkwargs, logpargs=logpargs, logpkwargs=logpkwargs,
+                                          cov_update=cov_update, save_freq=save_freq, SCAMweight=SCAMweight, AMweight=AMweight, DEweight=DEweight,
+                                          outdir=outdir, rng=self.rng[ii], ptswap=self.ptswap) for ii in range(self.ntemps)]
 
 
     def sample(self, x0, num_samples, thin=1, ret_chain=False):
