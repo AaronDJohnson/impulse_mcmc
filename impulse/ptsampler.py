@@ -121,7 +121,7 @@ class PTSwap():
             p0s[jj] = p0s[swap_map[jj]]
             log_Ls[jj] = log_Ls[swap_map[jj]]
 
-        return p0s.T, log_Ls
+        return p0s, log_Ls
 
     # def __call__(self, chain, lnlike, lnprob, swap_idx):  # propose swaps!
     #     self.nswaps += 1

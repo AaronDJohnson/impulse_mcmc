@@ -83,13 +83,15 @@ class Sampler():
         self.lnlike0 = np.zeros((self.ntemps, self.swap_steps))
         self.lnprior0 = np.zeros((self.ntemps, self.swap_steps))
         self.accept = np.zeros((self.ntemps, self.swap_steps))
+        self.counter = 0  # counter for iterations
 
     def sample(self, x0, num_samples, ret_chain=False):
+        self.x0[:, 0, :] = x0
         if ret_chain:
             full_chain = np.zeros((self.ntemps, num_samples, self.ndim))
 
         for ii in tqdm(range(num_samples // self.swap_steps)):
-            res = ray.get([sampler.sample.remote(x0[jj], self.swap_steps, ret_chain=True) for (jj, sampler) in zip(range(self.ntemps), self.samplers)])
+            res = ray.get([sampler.sample.remote(self.x0[jj, self.counter % self.swap_steps, :], self.swap_steps, ret_chain=True) for (jj, sampler) in zip(range(self.ntemps), self.samplers)])
             for jj in range(self.ntemps):
                 self.x0[jj] = res[jj][0]
                 self.lnlike0[jj] = res[jj][1]
@@ -97,16 +99,20 @@ class Sampler():
                 self.accept[jj] = res[jj][3]
 
             # PT swap
-            self.ptswap.swap.remote(self.x0[:, -1, :], self.lnlike0[:, -1])
-            if self.adapt:
-                self.ptswap.adapt_ladder.remote()
+            if self.counter % self.swap_steps == 0 and self.counter > 1 and self.ntemps > 1:
+                print(self.x0[:, self.counter % self.swap_steps, :])
+                self.x0[:, -1, :], self.lnlike0[:, -1] = ray.get(self.ptswap.swap.remote(self.x0[:, self.counter % self.swap_steps, :], self.lnlike0[:, -1]))
+                if self.adapt:
+                    self.ptswap.adapt_ladder.remote()
 
             if ret_chain:
-                full_chain[:, ii:ii + self.swap_steps, :] = self.x0
+                full_chain[:, ii * self.swap_steps:(ii + 1) * self.swap_steps, :] = self.x0
+
+            self.counter += 1
 
         ray.shutdown()
         if ret_chain:
-            return res
+            return full_chain
 
         # # swap sometimes
         # if self.counter % self.swap_steps == 0 and self.counter > 1:
@@ -218,7 +224,7 @@ class PTSampler():
 
         # start sampling!
         for ii in range(num_samples):
-            kk = ii % self.save_freq
+            kk = self.counter % self.save_freq
             self.counter += 1
 
             # metropolis hastings step + update chains
