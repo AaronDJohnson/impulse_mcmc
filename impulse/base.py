@@ -68,9 +68,10 @@ class Sampler():
         self.ptswap = PTSwap.remote(self.ndim, self.ntemps, self.rng[-1], tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
                                     tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, swap_steps=self.swap_steps,
                                     ladder=self.ladder)
+        self.ladder = ray.get(self.ptswap.get_temp_ladder.remote())
 
         # setup samplers:
-        self.samplers = [PTSampler.remote(self.ndim, logl, logp, chain_num=ii, temperature=self.ptswap.ladder[ii], buf_size=buf_size, mean=mean,
+        self.samplers = [PTSampler.remote(self.ndim, logl, logp, chain_num=ii, temperature=self.ladder[ii], buf_size=buf_size, mean=mean,
                                           cov=cov, groups=groups, loglargs=loglargs, loglkwargs=loglkwargs, logpargs=logpargs, logpkwargs=logpkwargs,
                                           cov_update=cov_update, save_freq=save_freq, SCAMweight=SCAMweight, AMweight=AMweight, DEweight=DEweight,
                                           outdir=outdir, rng=self.rng[ii], ptswap=self.ptswap) for ii in range(self.ntemps)]
@@ -160,6 +161,11 @@ class PTSampler():
         self.mix.add_jump(am, AMweight)
         self.mix.add_jump(de, DEweight)
 
+        if ptswap is not None:
+            self.swap_steps = ray.get(ptswap.get_swap_steps.remote())
+        else:
+            self.swap_steps = 1e80  # never swap
+
     def update(self, x0, lnlike0, lnprob0):
         self.x0 = x0
         self.lnlike0 = lnlike0
@@ -196,6 +202,11 @@ class PTSampler():
             self.lnlike_arr[kk] = self.lnlike0
             self.lnprob_arr[kk] = self.lnprob0
             self.accept_arr[kk] = self.accept
+
+            # PT swap!
+            if self.counter % self.swap_steps == 0 and self.counter > 1:
+                self.x0, self.lnlike0 = ray.get(self.ptswap.swap.remote(self.chain[kk, :], self.lnlike_arr[kk]))
+                self.lnprob0 = self.logp(self.x0) + self.lnlike0
 
             # update covariance matrix
             if self.counter % self.cov_update == 0 and self.counter > 1:

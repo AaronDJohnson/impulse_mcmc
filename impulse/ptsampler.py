@@ -1,6 +1,25 @@
 import numpy as np
 import ray
-from ray.util.collective import reducescatter, allgather
+
+
+@ray.remote
+class Collection():
+    def __init__(self):
+        self.p0s = []
+        self.log_Ls = []
+
+    def append_p0(self, item):
+        self.p0s.append(item)
+
+    def append_log_L(self, item):
+        self.log_Ls.append(item)
+
+    def get_all(self):
+        return self.p0s, self.log_Ls
+
+    def clear(self):
+        self.p0s = []
+        self.log_Ls = []
 
 
 @ray.remote
@@ -28,6 +47,8 @@ class PTSwap():
         self.adapt_nu = adapt_nu
         self.nswaps = 0
 
+        self.collection = Collection.remote()
+
     def temp_ladder(self):
         """
         Method to compute temperature ladder. At the moment this uses
@@ -41,6 +62,12 @@ class PTSwap():
         ii = np.arange(self.ntemps)
         ladder = self.tmin * self.tstep**ii
         return ladder
+
+    def get_temp_ladder(self):
+        return self.ladder
+
+    def get_swap_steps(self):
+        return self.swap_steps
 
     def adapt_ladder(self):
         """
@@ -64,20 +91,25 @@ class PTSwap():
         """
         Repurposed from Neil Cornish/Bence Becsy's code:
         """
+        self.collection.append_p0.remote(p0)
+        self.collection.append_log_L.remote(log_L)
+        p0s, log_Ls = ray.get(self.collection.get_all.remote())
+
         Ts = self.ladder
-        p0s = allgather(p0)
-        log_Ls = allgather(log_L)
 
         # set up map to help keep track of swaps
         swap_map = list(range(self.ntemps))
 
+        print(p0s)
+        print(log_Ls)
+
         # loop through and propose a swap at each chain (starting from hottest chain and going down in T)
         # and keep track of results in swap_map
         for swap_chain in reversed(range(self.ntemps - 1)):
-            log_acc_ratio = -log_L[swap_map[swap_chain]] / Ts[swap_chain]
-            log_acc_ratio += -log_L[swap_map[swap_chain + 1]] / Ts[swap_chain + 1]
-            log_acc_ratio += log_L[swap_map[swap_chain + 1]] / Ts[swap_chain]
-            log_acc_ratio += log_L[swap_map[swap_chain]] / Ts[swap_chain + 1]
+            log_acc_ratio = -log_Ls[swap_map[swap_chain]] / Ts[swap_chain]
+            log_acc_ratio += -log_Ls[swap_map[swap_chain + 1]] / Ts[swap_chain + 1]
+            log_acc_ratio += log_Ls[swap_map[swap_chain + 1]] / Ts[swap_chain]
+            log_acc_ratio += log_Ls[swap_map[swap_chain]] / Ts[swap_chain + 1]
 
             acc_ratio = np.exp(log_acc_ratio)
             if self.rng.uniform() <= acc_ratio:
@@ -86,11 +118,6 @@ class PTSwap():
                 self.nswaps += 1
             else:
                 self.nswaps += 1
-
-        p0 = reducescatter(p0s)
-        log_L = reducescatter(log_Ls)
-
-        print(p0, log_L)
 
         # loop through the chains and record the new samples and log_Ls
         for jj in range(self.ntemps):
