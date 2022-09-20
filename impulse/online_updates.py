@@ -1,10 +1,7 @@
 import numpy as np
 from loguru import logger
-from numba import njit
-# from numba.typed import List
 
 
-@njit
 def update_mean(old_length, x_avg, x_new):
     """
     Batch update the mean
@@ -21,10 +18,9 @@ def update_mean(old_length, x_avg, x_new):
     return x_avg + x_wgt / (n + m)
 
 
-@njit
 def update_covariance(old_length, x_cov, x_avg, x_new):
     """
-    Batch update covariance matrix
+    Batch update sample covariance matrix
     Input:
         old_length (int): number of values in array up to now
         x_cov (array): covariance of the array columns up to now
@@ -52,47 +48,3 @@ def svd_groups(U, S, groups, cov):
                 covgroup[ii, jj] = cov[group[ii], group[jj]]
         U[ct], S[ct], __ = np.linalg.svd(covgroup)
     return U, S
-
-
-
-# attempts at increasing speed of svd groups updates:
-
-# @njit
-# def numba_ix(arr, rows, cols):
-#     """
-#     Numba compatible implementation of arr[np.ix_(rows, cols)] for 2D arrays.
-#     :param arr: 2D array to be indexed
-#     :param rows: Row indices
-#     :param cols: Column indices
-#     :return: 2D array with the given rows and columns of the input array
-#     """
-#     one_d_index = np.zeros(len(rows) * len(cols), dtype=np.int32)
-#     for i, r in enumerate(rows):
-#         start = i * len(cols)
-#         one_d_index[start: start + len(cols)] = cols + arr.shape[1] * r
-
-#     arr_1d = arr.reshape((arr.shape[0] * arr.shape[1], 1))
-#     slice_1d = np.take(arr_1d, one_d_index)
-#     return slice_1d.reshape((len(rows), len(cols)))
-
-
-# def svd_groups(U, S, groups, cov):
-#     # do svd on parameter groups
-#     for ct, group in enumerate(groups):
-#         U[ct], S[ct], __ = np.linalg.svd(numba_ix(cov, group, group))
-#     return U, S
-
-# @njit
-# def svd_groups(groups, cov):
-#     Ul = List()
-#     Sl = List()
-#     # do svd on parameter groups
-#     for ct, group in enumerate(groups):
-#         covgroup = np.zeros((len(group), len(group)))
-#         for ii in range(len(group)):
-#             for jj in range(len(group)):
-#                 covgroup[ii, jj] = cov[group[ii], group[jj]]
-#         U, S, __ = np.linalg.svd(covgroup)
-#         Ul.append(U)
-#         Sl.append(S)
-#     return Ul, Sl

@@ -1,6 +1,6 @@
 import numpy as np
 
-from impulse.batch_updates import update_covariance, svd_groups
+from impulse.online_updates import update_covariance, svd_groups
 from impulse.random_nums import rng
 from loguru import logger
 
@@ -43,11 +43,9 @@ class JumpProposals():
             self.cov = np.identity(ndim)
         self.U = [[]] * len(self.groups)
         self.S = [[]] * len(self.groups)
-        # logger.debug('groups: {}'.format(self.groups))
 
         # do SVD on param groups
         self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
-        # self.U, self.S = svd_groups(self.groups, self.cov)
 
         self.mean = mean
         if mean is None:
@@ -255,3 +253,7 @@ def de(x, U, S, groups, temp, buffer):
         q[groups[jumpind][ii]] += scale * sigma
 
     return q, qxy
+
+
+
+

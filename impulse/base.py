@@ -1,287 +1,256 @@
 import numpy as np
-from impulse.random_nums import rng
 from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
-
 from loguru import logger
-
 import ray
 
-from impulse.mhsampler import MHSampler, RayMHSampler  # , GlobalFunctionActor
 from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, am, scam, de
 from impulse.save_data import SaveData
+from impulse.mhsampler import mh_step
 
-from numba import njit
-# from numba.typed import List
+class Sampler():
+    def __init__(self,
+                 ndim,
+                 logl,
+                 logp,
+                 ncores=1,
+                 ntemps=1,
+                 tmin=1,
+                 tmax=None,
+                 tstep=None,
+                 tinf=False,
+                 adapt=False,
+                 adapt_t0=100,
+                 adapt_nu=10,
+                 ladder=None,
+                 swap_steps=100,
+                 seed=None,
+                 buf_size=50_000,
+                 mean=None,
+                 cov=None,
+                 groups=None,
+                 loglargs=[],
+                 loglkwargs={},
+                 logpargs=[],
+                 logpkwargs={},
+                 cov_update=1000,
+                 save_freq=1000,
+                 SCAMweight=30,
+                 AMweight=15,
+                 DEweight=50,
+                 thin=1,
+                 outdir="./chains"):
 
-
-@njit
-def update_chains(res, chain, lnlike_arr, lnprob_arr, accept_arr, low_idx, high_idx):
-    for ii in np.arange(len(res)):
-        (chain[low_idx:high_idx, :, ii],
-         lnlike_arr[low_idx:high_idx, ii],
-         lnprob_arr[low_idx:high_idx, ii],
-         accept_arr[low_idx:high_idx, ii]) = res[ii]
-    return chain, lnlike_arr, lnprob_arr, accept_arr
-
-
-class PTSampler():
-    def __init__(self, lnlike, lnprior, x0, num_samples=1_000_000, buf_size=50_000, ntemps=8, ncores=1,
-                 tmin=1, tmax=None, tstep=None, swap_count=100, ladder=None, tinf=False, adapt=True, thin=10,
-                 amweight=30, scamweight=15, deweight=50, adapt_t0=100, adapt_nu=10, loop_iterations=1000,
-                 groups=None, cov=None, outdir='./chains', temp_dir=None, ret_chain=False, resume=False):
-        """
-        :param lnlike: log-likelihood function
-        :param lnprior: log-prior function
-        :param x0: initial position
-        :param buf_size: size of buffer [multiple of 10_000 >> ACL]
-        :param ntemps: number of temperatures
-        :param ncores: number of cores
-        :param tmin: minimum temperature
-        :param tmax: maximum temperature
-        :param tstep: temperature step
-        :param swap_count: number of iterations between swap proposals chains
-        :param ladder: temperature ladder
-        :param tinf: if True, ladder is set to infinite temperature
-        :param adapt: if True, temperature ladder is adapted
-        :param adapt_t0: initial temperature
-        :param adapt_nu: temperature adaptation rate
-        :param loop_iterations: number of iterations between loops
-        :param groups: list of groups of parameters to be considered as independent
-        :param cov: sample covariance matrix of the parameters
-        :param outdir: output directory
-        :param temp_dir: temperature directory
-        :param ret_chain: if True, return chain
-        :param resume: if True, resume from previous run
-        """
-        self.lnlike = lnlike
-        self.lnprior = lnprior
-        self.x0 = x0
-        self.num_samples = int(num_samples)
-        if ncores > 1:
-            self.ndim = len(x0[0])
-        else:
-            self.ndim = len(x0) if type(x0) != list else len(x0[0])
-        self.buf_size = buf_size
-        self.ntemps = ntemps
+        self.ndim = ndim
         self.ncores = ncores
+        self.ntemps = ntemps
         self.tmin = tmin
         self.tmax = tmax
         self.tstep = tstep
-        self.swap_count = swap_count
-        self.ladder = ladder
         self.tinf = tinf
         self.adapt = adapt
-        self.thin = thin
         self.adapt_t0 = adapt_t0
         self.adapt_nu = adapt_nu
-        self.loop_iterations = loop_iterations
-        self.groups = groups
-        self.cov = cov
+        self.ladder = ladder
+        self.swap_steps = swap_steps
+        self.thin = thin
+
+        # initialize ray
+        if ray.is_initialized():
+            ray.shutdown()
+        ray.init(num_cpus=ncores)
+
+        # setup random number generator
+        stream = SeedSequence(seed)
+        seeds = stream.generate_state(ntemps + 1)
+        self.rng = [default_rng(s) for s in seeds]
+
+        # setup parallel tempering
+        self.ptswap = PTSwap.remote(self.ndim, self.ntemps, self.rng[-1], tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
+                                    tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, swap_steps=self.swap_steps,
+                                    ladder=self.ladder)
+        self.ladder = ray.get(self.ptswap.get_temp_ladder.remote())
+
+        # setup samplers:
+        self.samplers = [PTSampler.remote(self.ndim, logl, logp, chain_num=ii, temperature=self.ladder[ii], buf_size=buf_size, mean=mean,
+                                          cov=cov, groups=groups, loglargs=loglargs, loglkwargs=loglkwargs, logpargs=logpargs, logpkwargs=logpkwargs,
+                                          cov_update=cov_update, save_freq=save_freq, SCAMweight=SCAMweight, AMweight=AMweight, DEweight=DEweight,
+                                          outdir=outdir, rng=self.rng[ii], ptswap=self.ptswap, thin=self.thin) for ii in range(self.ntemps)]
+
+        # initialize chains
+        self.x0 = np.zeros((self.ntemps, self.swap_steps, self.ndim))
+        self.lnlike0 = np.zeros((self.ntemps, self.swap_steps))
+        self.lnprior0 = np.zeros((self.ntemps, self.swap_steps))
+        self.accept = np.zeros((self.ntemps, self.swap_steps))
+        self.counter = 0  # counter for iterations
+
+    def sample(self, x0, num_samples, ret_chain=False):
+        self.x0[:, 0, :] = x0
+        if ret_chain:
+            full_chain = np.zeros((self.ntemps, num_samples, self.ndim))
+
+        for ii in tqdm(range(num_samples // self.swap_steps)):
+            res = ray.get([sampler.sample.remote(self.x0[jj, self.counter % self.swap_steps, :], self.swap_steps, ret_chain=True) for (jj, sampler) in enumerate(self.samplers)])
+            for jj in range(self.ntemps):
+                self.x0[jj] = res[jj][0]
+                self.lnlike0[jj] = res[jj][1]
+                self.lnprior0[jj] = res[jj][2]
+                self.accept[jj] = res[jj][3]
+
+            # PT swap
+            if self.counter > 1 and self.ntemps > 1:
+                self.x0[:, -1, :], self.lnlike0[:, -1] = ray.get(self.ptswap.swap.remote(self.x0[:, self.counter % self.swap_steps, :], self.lnlike0[:, -1]))
+                if self.adapt:
+                    self.ptswap.adapt_ladder.remote()
+
+            if ret_chain:
+                full_chain[:, ii * self.swap_steps:(ii + 1) * self.swap_steps, :] = self.x0
+
+            self.counter += 1
+
+        ray.shutdown()
+        if ret_chain:
+            return full_chain
+
+    def save_state(self):
+        pass
+
+    def load_state(self):
+        pass
+        
+
+@ray.remote(num_cpus=1)
+class PTSampler():
+    def __init__(self,
+                 ndim,
+                 logl,
+                 logp,
+                 chain_num=1,
+                 temperature=1,
+                 buf_size=50_000,
+                 mean=None,
+                 cov=None,
+                 groups=None,
+                 loglargs=[],
+                 loglkwargs={},
+                 logpargs=[],
+                 logpkwargs={},
+                 cov_update=1000,
+                 save_freq=1000,
+                 SCAMweight=30,
+                 AMweight=15,
+                 DEweight=50,
+                 thin=1,
+                 outdir="./chains",
+                 rng=np.random.default_rng(),
+                 ptswap=None):
+
+        # setup loglikelihood and logprior functions
+        self.logl = _function_wrapper(logl, loglargs, loglkwargs)
+        self.logp = _function_wrapper(logp, logpargs, logpkwargs)
+
+        # PTSwap parameters
+        self.chain_num = chain_num  # number of this chain
+        self.temp = temperature  # temperature of this chain
+
+        # other important bits
         self.outdir = outdir
-        self.temp_dir = temp_dir
-        self.ret_chain = ret_chain
-        self.sample_count = 0
-        self.amweight = amweight
-        self.scamweight = scamweight
-        self.deweight = deweight
-        self.resume = resume
+        self.ndim = ndim
+        self.cov_update = cov_update
+        self.save_freq = save_freq
+        self.rng = rng
+        self.ptswap = ptswap
+        self.thin = thin
 
-        if ray.is_initialized():
-            ray.shutdown()
+        # sample counter
+        self.counter = 0
 
-        if self.ncores > 1 and not ray.is_initialized():
-            ray.init(num_cpus=self.ncores)
-            # ray.init(local_mode=True)
+        # setup standard jump proposals
+        self.mix = JumpProposals(self.ndim, buf_size=buf_size, groups=groups, cov=cov, mean=mean)
+        self.mix.add_jump(scam, SCAMweight)
+        self.mix.add_jump(am, AMweight)
+        self.mix.add_jump(de, DEweight)
 
-        if ntemps > 1:  # PTSampler
-            self._init_ptswap()
-            self._init_pt_saves()
-            self._init_pt_proposals()
-            self._init_pt_sampler()
-
-        else:  # MHSampler
-            self._init_mh_save()
-            self._init_mh_jumps()
-            self._init_mh_sampler()
-
-        # resume from previous run
-        if resume and all([self.saves[ii].exists() for ii in range(self.ntemps)]):
-            self._pt_resume()
-        elif not resume:
-            pass
+        if ptswap is not None:
+            self.swap_steps = ray.get(ptswap.get_swap_steps.remote())
         else:
-            logger.exception('One or more chain files were not found. Starting from scratch.')
+            self.swap_steps = 1e80  # never swap
+
+        # setup save
+        self.filename = '/chain_{}.txt'.format(self.chain_num) # temps change (label by chain number)
+        self.save = SaveData(outdir=self.outdir, filename=self.filename, thin=thin)
+
+        # setup arrays
+        self.chain = np.zeros((self.save_freq, self.ndim))
+        self.lnlike_arr = np.zeros(self.save_freq)
+        self.lnprob_arr = np.zeros(self.save_freq)
+        self.accept_arr = np.zeros(self.save_freq)
+
+    def update(self, x0, lnlike0, lnprob0):
+        self.x0 = x0
+        self.lnlike0 = lnlike0
+        self.lnprob0 = lnprob0
+
+    def sample(self, x0, num_samples, ret_chain=False):
+        if ret_chain:
+            full_chain = np.zeros((num_samples, self.ndim))
+            full_like = np.zeros(num_samples)
+            full_prob = np.zeros(num_samples)
+            full_accept = np.zeros(num_samples)
+
+        # initial sample
+        self.x0 = np.array(x0)  # (ntemps, ndim)
+        self.lnlike0 = self.logl(self.x0)
+        self.lnprob0 = self.logp(self.x0) + self.lnlike0
+
+        # start sampling!
+        for ii in range(num_samples):
+            kk = self.counter % self.save_freq
+            self.counter += 1
+
+            # metropolis hastings step + update chains
+            self.x0, self.lnlike0, self.lnprob0, self.accept = mh_step(self.x0, self.lnlike0, self.lnprob0, self.logl,
+                                                                       self.logp, self.mix, self.rng, self.temp)
+            self.chain[kk, :] = self.x0
+            self.lnlike_arr[kk] = self.lnlike0
+            self.lnprob_arr[kk] = self.lnprob0
+            self.accept_arr[kk] = self.accept
+
+            # PT swap!
+            # if self.counter % self.swap_steps == 0 and self.counter > 1:
+            #     self.x0, self.lnlike0 = ray.get(self.ptswap.swap.remote(self.chain[kk, :], self.lnlike_arr[kk]))
+            #     self.lnprob0 = self.logp(self.x0) + self.lnlike0
+
+            # update covariance matrix
+            if self.counter % self.cov_update == 0 and self.counter > 1:
+                self.mix.recursive_update(self.counter, self.chain)
+
+            # save and save state of PTSampler
+            if self.counter % self.save_freq == 0 and self.counter > 1:
+                self.save(self.chain, self.lnlike_arr, self.lnprob_arr, self.accept_arr)
+
+            if ret_chain:
+                full_chain[ii] = self.x0
+                full_like[ii] = self.lnlike0
+                full_prob[ii] = self.lnprob0
+                full_accept[ii] = self.accept
+
+        if ret_chain:
+            return full_chain, full_like, full_prob, full_accept
 
 
-    def _init_mh_save(self):
-        self.save = SaveData(outdir=self.outdir, filename='/chain_1.txt')
+class _function_wrapper(object):
 
+    """
+    This is a hack to make the likelihood function pickleable when ``args``
+    or ``kwargs`` are also included.
+    """
 
-    def _init_mh_jumps(self):
-        self.mix = JumpProposals(self.ndim, buf_size=self.buf_size)
-        self.mix.add_jump(am, self.amweight)
-        self.mix.add_jump(scam, self.scamweight)
-        self.mix.add_jump(de, self.deweight)
+    def __init__(self, f, args, kwargs):
+        self.f = f
+        self.args = args
+        self.kwargs = kwargs
 
-
-    def _init_mh_sampler(self):
-        if self.ret_chain:
-            self.full_chain = np.zeros((self.num_samples, self.ndim))
-        self.sampler = MHSampler(self.x0, self.lnlike, self.lnprior, self.mix, iterations=self.loop_iterations)
-
-
-    def _mh_sampler_step(self):
-        self.chain, self.like, self.prob, self.accept = self.sampler.sample()
-        self.save(self.chain, self.like, self.prob, self.accept)
-        if self.ret_chain:
-            self.full_chain[self.sample_count:self.sample_count + self.loop_iterations, :] = self.chain
-        self.mix.recursive_update(self.sample_count, self.chain)
-        self.sample_count += self.loop_iterations
-
-
-    def _init_ptswap(self):
-        """
-        Initialize PTSwap
-        """
-        self.ptswap = PTSwap(self.ndim, self.ntemps, tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
-                             tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, ladder=self.ladder)
-
-
-    def _init_pt_saves(self):
-        """
-        Initialize save objects
-        """
-        self.filenames = ['/chain_{}.txt'.format(ii + 1) for ii in range(self.ntemps)]  # temps change (label by chain number)
-        self.saves = [SaveData(outdir=self.outdir, filename=self.filenames[ii], resume=self.resume, thin=self.thin) for ii in range(self.ntemps)]
-
-
-    def _init_pt_proposals(self):
-        """
-        Initialize JumpProposals (one for each temperature)
-        """
-        self.mixes = []
-        for ii in range(self.ntemps):
-            self.mixes.append(JumpProposals(self.ndim, buf_size=self.buf_size, groups=self.groups, cov=self.cov))
-            self.mixes[ii].add_jump(am, self.amweight)
-            self.mixes[ii].add_jump(scam, self.scamweight)
-            self.mixes[ii].add_jump(de, self.deweight)
-
-
-    def _init_pt_sampler(self):
-        """
-        Initialize sampler (one for each temperature) and chains
-        """
-        if self.ret_chain:
-            self.full_chain = np.zeros((self.num_samples, self.ndim, self.ntemps))
-        self.chain = np.zeros((self.loop_iterations, self.ndim, self.ntemps))
-        self.lnlike_arr = np.zeros((self.loop_iterations, self.ntemps))
-        self.lnprob_arr = np.zeros((self.loop_iterations, self.ntemps))
-        self.accept_arr = np.zeros((self.loop_iterations, self.ntemps))
-        if self.ncores > 1:
-            # global_functions = GlobalFunctionActor.remote(self.lnlike, self.lnprior, self.x0[0])
-            # self.samplers = [RayMHSampler.remote(self.x0[ii], global_functions, self.mixes[ii],
-            #                  iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
-            ss = SeedSequence()
-
-            # Spawn off ncores child SeedSequences to pass to child processes.
-            child_seeds = ss.spawn(self.ncores)
-            streams = [default_rng(s) for s in child_seeds]
-            self.samplers = [RayMHSampler.remote(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii], streams[ii],
-                             iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
-        else:
-            self.samplers = [MHSampler(self.x0[ii], self.lnlike, self.lnprior, self.mixes[ii], rng,
-                             iterations=self.swap_count, init_temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
-
-
-    def _pt_resume(self):
-        """
-        Resume from previous run
-        """
-        logger.info("Resuming from previous run.")
-        with open(self.outdir + '/chain_0.txt', 'r') as f:
-            full_chain = np.loadtxt(f)
-        self.sample_count = full_chain.shape[0]
-        self.sample_count = self.sample_count - self.sample_count % self.loop_iterations
-        full_chain_cut = full_chain[self.sample_count:, :, :]
-
-        for ii in range(self.ntemps):
-            self.mixes[ii].recursive_update(self.sample_count, full_chain_cut[:, :, ii])
-
-
-    def _ptstep(self):
-        """
-        Perform PT step
-        """
-        if self.ncores > 1:
-            # res = self.pool.map(call_step, self.samplers)
-            res = ray.get([sampler.sample.remote() for sampler in self.samplers])
-            # logger.debug(len(res[0]))
-        else:
-            res = list(map(lambda sampler: sampler.sample(), self.samplers))
-        low_idx = self.swap_tot
-        high_idx = self.swap_tot + self.swap_count
-        self.chain, self.lnlike_arr, self.lnprob_arr, self.accept_arr = update_chains(res, self.chain, self.lnlike_arr,
-                                                                                      self.lnprob_arr, self.accept_arr,
-                                                                                      low_idx, high_idx)
-        self.sample_count += self.swap_count
-        swap_idx = self.sample_count % self.loop_iterations - 1
-
-        self.chain, self.lnlike_arr, self.logprob_arr = self.ptswap(self.chain, self.lnlike_arr, self.lnprob_arr, swap_idx)
-        if self.adapt:
-            self.ptswap.adapt_ladder()
-
-        if self.ncores > 1:
-            [self.samplers[ii].set_x0.remote(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
-        else:
-            [self.samplers[ii].set_x0(self.chain[swap_idx, :, ii], self.logprob_arr[swap_idx, ii], temp=self.ptswap.ladder[ii]) for ii in range(self.ntemps)]
-
-
-    def _save_step(self):
-        for ii in range(self.ntemps):
-            length = self.chain.shape[0]
-            self.saves[ii](self.chain[:, :, ii], self.lnlike_arr[:, ii], self.lnprob_arr[:, ii],
-                           np.repeat(self.ptswap.ladder[ii], length),
-                           np.repeat(np.hstack([self.ptswap.compute_accept_ratio(), 0])[ii], length))
-            self.mixes[ii].recursive_update(self.sample_count, self.chain[:, :, ii])
-
-
-    def add_jump(self, jump, weight):
-        try:
-            for ii in range(self.ntemps):
-                self.mixes[ii].add_jump(jump, weight)
-        except AttributeError:
-            self.mix.add_jump(jump, weight)
-
-
-    def set_ntemps(self, ntemps):
-        self.ntemps = ntemps
-        self._init_ptswap()
-        self._init_pt_saves()
-        self._init_pt_proposals()
-        self._init_pt_sampler()
-
-
-    def sample(self):
-        # set up count and iterations between loops
-        if self.ntemps > 1:
-            # PTSampler
-            for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
-                self.swap_tot = 0  # count the samples between swaps
-                for _ in range(self.loop_iterations // self.swap_count):  # swap loops
-                    self._ptstep()
-                    self.swap_tot += self.swap_count
-                self._save_step()
-                if self.ret_chain:
-                    self.full_chain[self.sample_count - self.loop_iterations:self.sample_count, :, :] = self.chain
-                # self.sample_count += self.loop_iterations
-        else:
-            # MHSampler
-            for _ in tqdm(range(0, int(self.num_samples), self.loop_iterations)):
-                self._mh_sampler_step()
-
-        if ray.is_initialized():
-            ray.shutdown()
-        if self.ret_chain:
-            return self.full_chain
+    def __call__(self, x):
+        return self.f(x, *self.args, **self.kwargs)
