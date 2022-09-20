@@ -1,10 +1,12 @@
 import numpy as np
+import ray
 
 
+@ray.remote
 class PTSwap():
 
     def __init__(self, ndim, ntemps, rng, tmin=1, tmax=None, tstep=None,
-                 tinf=False, adapt_t0=100, adapt_nu=10,
+                 tinf=False, adapt_t0=100, adapt_nu=10, swap_steps=100,
                  ladder=None):
         self.ndim = ndim
         self.ntemps = ntemps
@@ -19,6 +21,7 @@ class PTSwap():
             self.ntemps = len(ladder)
         if tinf:
             self.ladder[-1] = np.inf
+        self.swap_steps = swap_steps
         self.swap_accept = np.zeros(ntemps - 1)  # swap acceptance between chains
         self.adapt_t0 = adapt_t0
         self.adapt_nu = adapt_nu

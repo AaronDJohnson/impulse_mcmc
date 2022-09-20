@@ -24,6 +24,7 @@ class Sampler():
                  adapt_t0=100,
                  adapt_nu=10,
                  ladder=None,
+                 swap_steps=100,
                  seed=None,
                  buf_size=50_000,
                  mean=None,
@@ -51,6 +52,12 @@ class Sampler():
         self.adapt_t0 = adapt_t0
         self.adapt_nu = adapt_nu
         self.ladder = ladder
+        self.swap_steps = swap_steps
+
+        # initialize ray
+        if ray.is_initialized():
+            ray.shutdown()
+        ray.init(num_cpus=ncores)
 
         # setup random number generator
         stream = SeedSequence(seed)
@@ -58,17 +65,26 @@ class Sampler():
         self.rng = [default_rng(s) for s in seeds]
 
         # setup parallel tempering
-        self.ptswap = PTSwap(self.ndim, self.ntemps, self.rng[-1], tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
-                             tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, ladder=self.ladder)
+        self.ptswap = PTSwap.remote(self.ndim, self.ntemps, self.rng[-1], tmin=self.tmin, tmax=self.tmax, tstep=self.tstep,
+                                    tinf=self.tinf, adapt_t0=self.adapt_t0, adapt_nu=self.adapt_nu, swap_steps=self.swap_steps,
+                                    ladder=self.ladder)
 
         # setup samplers:
-        samplers = [PTSampler.remote(self.ndim, logl, logp, ii, self.ptswap.ladder[ii], buf_size, mean, cov, groups,
-                                     loglargs, loglkwargs, logpargs, logpkwargs, cov_update, save_freq, SCAMweight,
-                                     AMweight, DEweight, outdir, self.rng[ii], self.ptswap) for ii in range(self.ntemps)]
+        self.samplers = [PTSampler.remote(self.ndim, logl, logp, chain_num=ii, temperature=self.ptswap.ladder[ii], buf_size=buf_size, mean=mean,
+                                     cov=cov, groups=groups, loglargs=loglargs, loglkwargs=loglkwargs, logpargs=logpargs, logpkwargs=logpkwargs,
+                                     cov_update=cov_update, save_freq=save_freq, SCAMweight=SCAMweight, AMweight=AMweight, DEweight=DEweight,
+                                     outdir=outdir, rng=self.rng[ii], ptswap=self.ptswap) for ii in range(self.ntemps)]
 
 
-        def sample(x0, num_samples, thin=1, resume=False):
-            [sampler.sample.remote(x0, num_samples, thin=thin) for sampler in samplers]
+    def sample(self, x0, num_samples, thin=1, ret_chain=False):
+        if ret_chain:
+            res = ray.get([sampler.sample.remote(x0, num_samples, thin=thin, ret_chain=ret_chain) for sampler in self.samplers])
+        else:
+            [sampler.sample.remote(x0, num_samples, thin=thin) for sampler in self.samplers]
+
+        ray.shutdown()
+        if ret_chain:
+            return res
 
         # # swap sometimes
         # if self.counter % self.swap_steps == 0 and self.counter > 1:
@@ -87,11 +103,11 @@ class Sampler():
         #     self.ptswap.adapt_ladder()
         #     self.save.save_swap_data(self.ptswap)
 
-        def save_state(self):
-            pass
+    def save_state(self):
+        pass
 
-        def load_state(self):
-            pass
+    def load_state(self):
+        pass
         
 
 @ray.remote(num_cpus=1)
@@ -116,7 +132,8 @@ class PTSampler():
                  AMweight=15,
                  DEweight=50,
                  outdir="./chains",
-                 rng=np.random.default_rng(),):
+                 rng=np.random.default_rng(),
+                 ptswap=None):
 
         # setup loglikelihood and logprior functions
         self.logl = _function_wrapper(logl, loglargs, loglkwargs)
@@ -132,18 +149,25 @@ class PTSampler():
         self.cov_update = cov_update
         self.save_freq = save_freq
         self.rng = rng
+        self.ptswap = ptswap
 
         # sample counter
         self.counter = 0
 
         # setup standard jump proposals
         self.mix = JumpProposals(self.ndim, buf_size=buf_size, groups=groups, cov=cov, mean=mean)
-        self.mix.add_proposal(scam, SCAMweight)
-        self.mix.add_proposal(am, AMweight)
-        self.mix.add_proposal(de, DEweight)
+        self.mix.add_jump(scam, SCAMweight)
+        self.mix.add_jump(am, AMweight)
+        self.mix.add_jump(de, DEweight)
 
+    def update(self, x0, lnlike0, lnprob0):
+        self.x0 = x0
+        self.lnlike0 = lnlike0
+        self.lnprob0 = lnprob0
 
-    def sample(self, x0, num_samples, thin=1):
+    def sample(self, x0, num_samples, thin=1, ret_chain=False):
+        if ret_chain:
+            full_chain = np.zeros((num_samples, self.ndim))
 
         # initial sample
         self.x0 = np.array(x0)  # (ntemps, ndim)
@@ -180,6 +204,12 @@ class PTSampler():
             # save and save state of PTSampler
             if self.counter % self.save_freq == 0 and self.counter > 1:
                 self.save(self.chain, self.lnlike_arr, self.lnprob_arr, self.accept_arr)
+
+            if ret_chain:
+                full_chain[ii] = self.x0
+
+        if ret_chain:
+            return full_chain
 
 
 class _function_wrapper(object):
