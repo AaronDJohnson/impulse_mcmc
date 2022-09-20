@@ -91,7 +91,7 @@ class Sampler():
             full_chain = np.zeros((self.ntemps, num_samples, self.ndim))
 
         for ii in tqdm(range(num_samples // self.swap_steps)):
-            res = ray.get([sampler.sample.remote(self.x0[jj, self.counter % self.swap_steps, :], self.swap_steps, ret_chain=True) for (jj, sampler) in zip(range(self.ntemps), self.samplers)])
+            res = ray.get([sampler.sample.remote(self.x0[jj, self.counter % self.swap_steps, :], self.swap_steps, ret_chain=True) for (jj, sampler) in enumerate(self.samplers)])
             for jj in range(self.ntemps):
                 self.x0[jj] = res[jj][0]
                 self.lnlike0[jj] = res[jj][1]
@@ -99,8 +99,7 @@ class Sampler():
                 self.accept[jj] = res[jj][3]
 
             # PT swap
-            if self.counter % self.swap_steps == 0 and self.counter > 1 and self.ntemps > 1:
-                print(self.x0[:, self.counter % self.swap_steps, :])
+            if self.counter > 1 and self.ntemps > 1:
                 self.x0[:, -1, :], self.lnlike0[:, -1] = ray.get(self.ptswap.swap.remote(self.x0[:, self.counter % self.swap_steps, :], self.lnlike0[:, -1]))
                 if self.adapt:
                     self.ptswap.adapt_ladder.remote()
@@ -113,23 +112,6 @@ class Sampler():
         ray.shutdown()
         if ret_chain:
             return full_chain
-
-        # # swap sometimes
-        # if self.counter % self.swap_steps == 0 and self.counter > 1:
-        #     self.x0s, self.lnlike0s = self.ptswap.swap(self.chain[kk, :, :], self.lnlike_arr[kk, :])
-        #     for jj in range(self.ntemps):
-        #         self.x0[jj] = self.x0s[jj]
-        #         self.lnlike0[jj] = self.lnlike0s[jj]
-        #         self.lnprob0[jj] = self.logp(self.x0[jj]) + self.lnlike0[jj]
-
-        #         self.chain[kk, :, jj], self.lnlike_arr[kk, jj] = self.x0s[jj], self.lnlike0s[jj]
-        #         self.lnprob0[jj] = 1 / self.ptswap.ladder[jj] * self.lnlike0[jj] + self.logp(self.x0[jj])
-        #         self.lnprob_arr[kk, jj] = self.lnprob0[jj]
-
-        # # adaptive temperature spacing
-        # if self.adapt:
-        #     self.ptswap.adapt_ladder()
-        #     self.save.save_swap_data(self.ptswap)
 
     def save_state(self):
         pass
