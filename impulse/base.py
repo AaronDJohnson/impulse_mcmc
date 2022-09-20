@@ -39,6 +39,7 @@ class Sampler():
                  SCAMweight=30,
                  AMweight=15,
                  DEweight=50,
+                 thin=1,
                  outdir="./chains"):
 
         self.ndim = ndim
@@ -53,6 +54,7 @@ class Sampler():
         self.adapt_nu = adapt_nu
         self.ladder = ladder
         self.swap_steps = swap_steps
+        self.thin = thin
 
         # initialize ray
         if ray.is_initialized():
@@ -74,14 +76,33 @@ class Sampler():
         self.samplers = [PTSampler.remote(self.ndim, logl, logp, chain_num=ii, temperature=self.ladder[ii], buf_size=buf_size, mean=mean,
                                           cov=cov, groups=groups, loglargs=loglargs, loglkwargs=loglkwargs, logpargs=logpargs, logpkwargs=logpkwargs,
                                           cov_update=cov_update, save_freq=save_freq, SCAMweight=SCAMweight, AMweight=AMweight, DEweight=DEweight,
-                                          outdir=outdir, rng=self.rng[ii], ptswap=self.ptswap) for ii in range(self.ntemps)]
+                                          outdir=outdir, rng=self.rng[ii], ptswap=self.ptswap, thin=self.thin) for ii in range(self.ntemps)]
 
+        # initialize chains
+        self.x0 = np.zeros((self.ntemps, self.swap_steps, self.ndim))
+        self.lnlike0 = np.zeros((self.ntemps, self.swap_steps))
+        self.lnprior0 = np.zeros((self.ntemps, self.swap_steps))
+        self.accept = np.zeros((self.ntemps, self.swap_steps))
 
-    def sample(self, x0, num_samples, thin=1, ret_chain=False):
+    def sample(self, x0, num_samples, ret_chain=False):
         if ret_chain:
-            res = ray.get([sampler.sample.remote(x0, num_samples, thin=thin, ret_chain=ret_chain) for sampler in self.samplers])
-        else:
-            [sampler.sample.remote(x0, num_samples, thin=thin) for sampler in self.samplers]
+            full_chain = np.zeros((self.ntemps, num_samples, self.ndim))
+
+        for ii in tqdm(range(num_samples // self.swap_steps)):
+            res = ray.get([sampler.sample.remote(x0[jj], self.swap_steps, ret_chain=True) for (jj, sampler) in zip(range(self.ntemps), self.samplers)])
+            for jj in range(self.ntemps):
+                self.x0[jj] = res[jj][0]
+                self.lnlike0[jj] = res[jj][1]
+                self.lnprior0[jj] = res[jj][2]
+                self.accept[jj] = res[jj][3]
+
+            # PT swap
+            self.ptswap.swap.remote(self.x0[:, -1, :], self.lnlike0[:, -1])
+            if self.adapt:
+                self.ptswap.adapt_ladder.remote()
+
+            if ret_chain:
+                full_chain[:, ii:ii + self.swap_steps, :] = self.x0
 
         ray.shutdown()
         if ret_chain:
@@ -132,6 +153,7 @@ class PTSampler():
                  SCAMweight=30,
                  AMweight=15,
                  DEweight=50,
+                 thin=1,
                  outdir="./chains",
                  rng=np.random.default_rng(),
                  ptswap=None):
@@ -151,6 +173,7 @@ class PTSampler():
         self.save_freq = save_freq
         self.rng = rng
         self.ptswap = ptswap
+        self.thin = thin
 
         # sample counter
         self.counter = 0
@@ -166,20 +189,6 @@ class PTSampler():
         else:
             self.swap_steps = 1e80  # never swap
 
-    def update(self, x0, lnlike0, lnprob0):
-        self.x0 = x0
-        self.lnlike0 = lnlike0
-        self.lnprob0 = lnprob0
-
-    def sample(self, x0, num_samples, thin=1, ret_chain=False):
-        if ret_chain:
-            full_chain = np.zeros((num_samples, self.ndim))
-
-        # initial sample
-        self.x0 = np.array(x0)  # (ntemps, ndim)
-        self.lnlike0 = self.logl(self.x0)
-        self.lnprob0 = self.logp(self.x0) + self.lnlike0
-
         # setup save
         self.filename = '/chain_{}.txt'.format(self.chain_num) # temps change (label by chain number)
         self.save = SaveData(outdir=self.outdir, filename=self.filename, thin=thin)
@@ -190,8 +199,25 @@ class PTSampler():
         self.lnprob_arr = np.zeros(self.save_freq)
         self.accept_arr = np.zeros(self.save_freq)
 
+    def update(self, x0, lnlike0, lnprob0):
+        self.x0 = x0
+        self.lnlike0 = lnlike0
+        self.lnprob0 = lnprob0
+
+    def sample(self, x0, num_samples, ret_chain=False):
+        if ret_chain:
+            full_chain = np.zeros((num_samples, self.ndim))
+            full_like = np.zeros(num_samples)
+            full_prob = np.zeros(num_samples)
+            full_accept = np.zeros(num_samples)
+
+        # initial sample
+        self.x0 = np.array(x0)  # (ntemps, ndim)
+        self.lnlike0 = self.logl(self.x0)
+        self.lnprob0 = self.logp(self.x0) + self.lnlike0
+
         # start sampling!
-        for ii in tqdm(range(num_samples)):
+        for ii in range(num_samples):
             kk = ii % self.save_freq
             self.counter += 1
 
@@ -204,9 +230,9 @@ class PTSampler():
             self.accept_arr[kk] = self.accept
 
             # PT swap!
-            if self.counter % self.swap_steps == 0 and self.counter > 1:
-                self.x0, self.lnlike0 = ray.get(self.ptswap.swap.remote(self.chain[kk, :], self.lnlike_arr[kk]))
-                self.lnprob0 = self.logp(self.x0) + self.lnlike0
+            # if self.counter % self.swap_steps == 0 and self.counter > 1:
+            #     self.x0, self.lnlike0 = ray.get(self.ptswap.swap.remote(self.chain[kk, :], self.lnlike_arr[kk]))
+            #     self.lnprob0 = self.logp(self.x0) + self.lnlike0
 
             # update covariance matrix
             if self.counter % self.cov_update == 0 and self.counter > 1:
@@ -218,9 +244,12 @@ class PTSampler():
 
             if ret_chain:
                 full_chain[ii] = self.x0
+                full_like[ii] = self.lnlike0
+                full_prob[ii] = self.lnprob0
+                full_accept[ii] = self.accept
 
         if ret_chain:
-            return full_chain
+            return full_chain, full_like, full_prob, full_accept
 
 
 class _function_wrapper(object):

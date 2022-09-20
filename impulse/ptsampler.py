@@ -87,21 +87,18 @@ class PTSwap():
     def compute_accept_ratio(self):
         return self.swap_accept / self.nswaps
 
-    def swap(self, p0, log_L):
+    def swap(self, p0s, log_Ls):
         """
         Repurposed from Neil Cornish/Bence Becsy's code:
         """
-        self.collection.append_p0.remote(p0)
-        self.collection.append_log_L.remote(log_L)
-        p0s, log_Ls = ray.get(self.collection.get_all.remote())
+        # self.collection.append_p0.remote(p0)
+        # self.collection.append_log_L.remote(log_L)
+        # p0s, log_Ls = ray.get(self.collection.get_all.remote())
 
         Ts = self.ladder
 
         # set up map to help keep track of swaps
         swap_map = list(range(self.ntemps))
-
-        print(p0s)
-        print(log_Ls)
 
         # loop through and propose a swap at each chain (starting from hottest chain and going down in T)
         # and keep track of results in swap_map
@@ -121,7 +118,7 @@ class PTSwap():
 
         # loop through the chains and record the new samples and log_Ls
         for jj in range(self.ntemps):
-            p0s[:, jj] = p0s[:, swap_map[jj]]
+            p0s[jj] = p0s[swap_map[jj]]
             log_Ls[jj] = log_Ls[swap_map[jj]]
 
         return p0s.T, log_Ls
