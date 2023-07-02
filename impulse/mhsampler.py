@@ -1,4 +1,13 @@
+from dataclasses import dataclass
 import numpy as np
+
+@dataclass
+class MHState():
+    position: np.ndarray
+    lnlike: float
+    lnprior: float
+
+
 
 
 def mh_step(x0, lnlike0, lnprob0, lnlike_fn, lnprior_fn,
