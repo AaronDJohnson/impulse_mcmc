@@ -51,3 +51,12 @@ def svd_groups(U, S, groups, cov):
                 covgroup[ii, jj] = cov[group[ii], group[jj]]
         U[ct], S[ct], __ = np.linalg.svd(covgroup)
     return U, S
+
+
+# try this one:
+# def svd_groups(U, S, groups, cov):
+#     # do svd on parameter groups
+#     for ct, group in enumerate(groups):
+#         covgroup = cov[group][:, group]
+#         U[ct], S[ct], __ = np.linalg.svd(covgroup)
+#     return U, S

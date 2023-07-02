@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Callable
 import numpy as np
 
 @dataclass
@@ -6,21 +7,21 @@ class MHState():
     position: np.ndarray
     lnlike: float
     lnprior: float
+    accepted: int = 0
 
-
-
-
-def mh_step(x0, lnlike0, lnprob0, lnlike_fn, lnprior_fn,
-            prop_fn, rng, temp=1.):
+def mh_kernel(
+    state: MHState,
+    prop_fn: Callable,
+    lnlike_fn: Callable,
+    lnprior_fn: Callable,
+    rng: np.random.Generator,
+    temp: float = 1.0,
+    ) -> MHState:
     """
-    Parallel tempered Metropolis Hastings step (temp=1 => standard MH step).
-
-    x0: vector of length ndim
-    lnlike_fn: log likelihood function
-    lnprior_fn: log prior function
+    Generate a MH kernel step
     """
     # propose a move
-    x_star, qxy = prop_fn(x0, temp)
+    x_star, qxy = prop_fn(state.position, temp)
 
     # compute hastings ratio
     lnprior_star = lnprior_fn(x_star)
@@ -30,13 +31,11 @@ def mh_step(x0, lnlike0, lnprob0, lnlike_fn, lnprior_fn,
     else:
         lnlike_star = lnlike_fn(x_star)
         lnprob_star = 1 / temp * lnlike_star + lnprior_star
-
-    hastings_ratio = lnprob_star - lnprob0 + qxy
+    
+    hastings_ratio = lnprob_star - state.lnprior + qxy
     rand_num = rng.uniform()
     # accept/reject step
     if np.log(rand_num) < hastings_ratio:
-        accepted = 1
-        return x_star, lnlike_star, lnprob_star, accepted
+        return MHState(x_star, lnlike_star, lnprob_star, accepted=1)
     else:
-        accepted = 0
-        return x0, lnlike0, lnprob0, accepted
+        return MHState(state.position, state.lnlike, state.lnprior, accepted=0)
