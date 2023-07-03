@@ -3,11 +3,12 @@ from typing import Callable
 import numpy as np
 
 @dataclass
-class MHState():
+class MHState:
     position: np.ndarray
     lnlike: float
     lnprior: float
-    accepted: int = 0
+    accepted: int = 1
+    temp: float = 1.0
 
 def mh_kernel(
     state: MHState,
@@ -15,13 +16,12 @@ def mh_kernel(
     lnlike_fn: Callable,
     lnprior_fn: Callable,
     rng: np.random.Generator,
-    temp: float = 1.0,
     ) -> MHState:
     """
     Generate a MH kernel step
     """
     # propose a move
-    x_star, qxy = prop_fn(state.position, temp)
+    x_star, qxy = prop_fn(state.position, state.temp)
 
     # compute hastings ratio
     lnprior_star = lnprior_fn(x_star)
@@ -30,7 +30,7 @@ def mh_kernel(
         lnprob_star = -np.inf
     else:
         lnlike_star = lnlike_fn(x_star)
-        lnprob_star = 1 / temp * lnlike_star + lnprior_star
+        lnprob_star = 1 / state.temp * lnlike_star + lnprior_star
     
     hastings_ratio = lnprob_star - state.lnprior + qxy
     rand_num = rng.uniform()

@@ -1,12 +1,11 @@
 import numpy as np
 from loguru import logger
+from typing import Tuple
 
-
-def update_mean(
-    old_arr_length: int,
-    old_arr_avg: float,
-    new_arr: np.ndarray,
-    ) -> float:
+def update_mean(old_arr_length: int,
+                old_arr_avg: float,
+                new_arr: np.ndarray,
+                ) -> float:
     """
     Batch update the mean
     Input:
@@ -19,28 +18,30 @@ def update_mean(
     weight = np.sum(new_arr - old_arr_avg, axis=0)
     return old_arr_avg + weight / (old_arr_length + len(new_arr))
 
-
-# TODO(Aaron): fix variable names on the following two functions:
-def update_covariance(old_length, x_cov, x_avg, x_new):
+def update_covariance(old_arr_length: int,
+                      old_arr_cov: np.ndarray,
+                      old_arr_avg: float,
+                      new_arr: np.ndarray
+                      ) -> Tuple(float, np.ndarray):
     """
     Batch update sample covariance matrix
     Input:
         old_length (int): number of values in array up to now
-        x_cov (array): covariance of the array columns up to now
-        x_avg (array): average of the array columns up to now
-        x_new (array): new array to update with
+        old_arr_cov (array): covariance of the array columns up to now
+        old_arr_avg (array): average of the array columns up to now
+        new_arr (array): new array to update with
     Return:
         x_cov (array): new covariance of array columns
     """
-    n = old_length
-    m = len(x_new)
-    x_avgnew = update_mean(n, x_avg, x_new)
-    y = x_new - x_avgnew
-    z = x_new - x_avg
-    cov = ((n - 1) * x_cov + np.dot(y.T, z)) / (n + m - 1)
+    n = old_arr_length
+    m = len(new_arr)
+    x_avgnew = update_mean(n, old_arr_avg, new_arr)
+    y = new_arr - x_avgnew
+    z = new_arr - old_arr_avg
+    cov = ((n - 1) * old_arr_cov + np.dot(y.T, z)) / (n + m - 1)
     return x_avgnew, cov
 
-
+# TODO(Aaron): fix variable names on the following function:
 def svd_groups(U, S, groups, cov):
     # do svd on parameter groups
     # TODO(Aaron): Speed this up using broadcasting/jit?
