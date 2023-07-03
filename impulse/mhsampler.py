@@ -1,22 +1,28 @@
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Dict
 import numpy as np
+
+# Use MHState for everything:
+# We can swap between different MHStates for parallel tempering
+# 
 
 @dataclass
 class MHState:
+    """
+    Metropolis-Hastings State
+    """
     position: np.ndarray
-    lnlike: float
-    lnprior: float
+    lnlike: float = 0
+    lnprior: float = 0
     accepted: int = 1
     temp: float = 1.0
 
-def mh_kernel(
-    state: MHState,
-    prop_fn: Callable,
-    lnlike_fn: Callable,
-    lnprior_fn: Callable,
-    rng: np.random.Generator,
-    ) -> MHState:
+def mh_kernel(state: MHState,
+              prop_fn: Callable,
+              lnlike_fn: Callable,
+              lnprior_fn: Callable,
+              rng: np.random.Generator,
+              ) -> MHState:
     """
     Generate a MH kernel step
     """

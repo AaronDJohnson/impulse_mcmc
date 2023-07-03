@@ -41,8 +41,7 @@ def update_covariance(old_arr_length: int,
     cov = ((n - 1) * old_arr_cov + np.dot(y.T, z)) / (n + m - 1)
     return x_avgnew, cov
 
-# TODO(Aaron): fix variable names on the following function:
-def svd_groups(U, S, groups, cov):
+def svd_groups(svd_U, svd_S, groups, cov):
     # do svd on parameter groups
     # TODO(Aaron): Speed this up using broadcasting/jit?
     for ct, group in enumerate(groups):
@@ -50,9 +49,8 @@ def svd_groups(U, S, groups, cov):
         for ii in range(len(group)):
             for jj in range(len(group)):
                 covgroup[ii, jj] = cov[group[ii], group[jj]]
-        U[ct], S[ct], __ = np.linalg.svd(covgroup)
-    return U, S
-
+        svd_U[ct], svd_S[ct], __ = np.linalg.svd(covgroup)
+    return svd_U, svd_S
 
 # try this one:
 # def svd_groups(U, S, groups, cov):
