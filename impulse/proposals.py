@@ -1,6 +1,6 @@
 import numpy as np
 from dataclasses import dataclass
-from typing import Callable, Tuple
+from typing import Callable
 from impulse.mhsampler import MHState
 
 from impulse.online_updates import update_covariance, svd_groups
@@ -30,20 +30,36 @@ class ChainData:
     Data to be used to propose new samples
     """
     ndim: int
-    groups: list = [np.arange(0, ndim)]
-    sample_cov: np.ndarray = np.identity(ndim)
-    svd_U: list = [[]] * len(groups)  # U in the standard SVD of samples
-    svd_S: list = [[]] * len(groups)  # Sigma in the standard SVD of samples
-    sample_mean: float = 0
-    temp: float = 1
-    current_sample: np.ndarray = None
     rng: np.random.Generator
+    groups: list = None
+    sample_cov: np.ndarray = None
+    svd_U: list = None  # U in the standard SVD of samples
+    svd_S: list = None  # Sigma in the standard SVD of samples
+    sample_mean: np.ndarray = None
+    temp: float = 1.0
+    current_sample: np.ndarray = None
 
     # DEBuffer pieces:
     sample_total: int = 0
     buffer_size: int = 50_000
-    _buffer: np.ndarray = np.zeros((buffer_size, ndim))
+    _buffer: np.ndarray = None
     buffer_full: bool = False
+
+    def __post_init__(self):
+        if self.sample_cov is None:
+            self.sample_cov = np.identity(self.ndim)
+        if self.sample_mean is None:
+            self.sample_mean = np.zeros(self.ndim)
+        if self.groups is None:
+            self.groups = [np.arange(0, self.ndim)]
+        if self.svd_U is None:
+            self.svd_U = [[]] * len(self.groups)
+        if self.svd_S is None:
+            self.svd_S = [[]] * len(self.groups)
+        if self._buffer is None:
+            self._buffer = np.zeros((self.buffer_size, self.ndim))
+        
+        self.svd_U, self.svd_S = svd_groups(self.svd_U, self.svd_S, self.groups, self.sample_cov)
 
     def update_buffer(self,
                       new_samples: np.ndarray
@@ -74,15 +90,19 @@ class ChainData:
                     state: MHState):
         self.temp = state.temp
 
-@dataclass
 class JumpProposals:
     """
     Called to get a proposal distribution based on weights
     """
-    proposal_list: list
-    proposal_weights: list
-    proposal_probs: np.ndarray
-    chain_data: ChainData
+    def __init__(self,
+                 chain_data: ChainData,
+                 proposal_list: list = [],
+                 proposal_weights: list = [],
+                 proposal_probs: np.ndarray = None):
+        self.chain_data = chain_data
+        self.proposal_list = proposal_list
+        self.proposal_weights = proposal_weights
+        self.proposal_probs = proposal_probs
 
     def add_jump(self,
                  jump: Callable,
@@ -104,7 +124,7 @@ class JumpProposals:
         new_sample = proposal(self.chain_data)
         return new_sample
 
-def am(chain_data: ChainData) -> Tuple(np.ndarray, float):
+def am(chain_data: ChainData) -> tuple[np.ndarray, float]:
     """
     Adaptive Jump Proposal. This function will occasionally
     use different jump sizes to ensure proper mixing.
@@ -160,7 +180,7 @@ def am(chain_data: ChainData) -> Tuple(np.ndarray, float):
     return q, qxy
 
 
-def scam(chain_data: ChainData) -> Tuple(np.ndarray, float):
+def scam(chain_data: ChainData) -> tuple[np.ndarray, float]:
     """
     Single Component Adaptive Jump Proposal. This function will occasionally
     jump in more than 1 parameter. It will also occasionally use different
@@ -225,7 +245,7 @@ def scam(chain_data: ChainData) -> Tuple(np.ndarray, float):
     return q, qxy
 
 
-def de(chain_data:ChainData) -> Tuple(np.ndarray, float):
+def de(chain_data:ChainData) -> tuple[np.ndarray, float]:
     """
     Differential Evolution Jump. This function will  occasionally
     use different jump sizes to ensure proper mixing.

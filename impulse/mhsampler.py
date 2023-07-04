@@ -27,7 +27,7 @@ def mh_kernel(state: MHState,
     Generate a MH kernel step
     """
     # propose a move
-    x_star, qxy = prop_fn(state.position, state.temp)
+    x_star, qxy = prop_fn(state)
 
     # compute hastings ratio
     lnprior_star = lnprior_fn(x_star)
@@ -37,11 +37,14 @@ def mh_kernel(state: MHState,
     else:
         lnlike_star = lnlike_fn(x_star)
         lnprob_star = 1 / state.temp * lnlike_star + lnprior_star
-    
+
     hastings_ratio = lnprob_star - state.lnprior + qxy
     rand_num = rng.uniform()
+    print(np.log(rand_num))
+    print(hastings_ratio)
     # accept/reject step
     if np.log(rand_num) < hastings_ratio:
+        print('accepted!')
         return MHState(x_star, lnlike_star, lnprob_star, accepted=1)
     else:
         return MHState(state.position, state.lnlike, state.lnprior, accepted=0)

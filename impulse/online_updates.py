@@ -1,11 +1,10 @@
 import numpy as np
 from loguru import logger
-from typing import Tuple
 
 def update_mean(old_arr_length: int,
-                old_arr_avg: float,
+                old_arr_avg: np.ndarray,
                 new_arr: np.ndarray,
-                ) -> float:
+                ) -> np.ndarray:
     """
     Batch update the mean
     Input:
@@ -20,9 +19,9 @@ def update_mean(old_arr_length: int,
 
 def update_covariance(old_arr_length: int,
                       old_arr_cov: np.ndarray,
-                      old_arr_avg: float,
+                      old_arr_avg: np.ndarray,
                       new_arr: np.ndarray
-                      ) -> Tuple(float, np.ndarray):
+                      ) -> tuple[np.ndarray, np.ndarray]:
     """
     Batch update sample covariance matrix
     Input:
@@ -41,7 +40,11 @@ def update_covariance(old_arr_length: int,
     cov = ((n - 1) * old_arr_cov + np.dot(y.T, z)) / (n + m - 1)
     return x_avgnew, cov
 
-def svd_groups(svd_U, svd_S, groups, cov):
+def svd_groups(svd_U: list,
+               svd_S: list,
+               groups: list,
+               cov: np.ndarray
+               ) -> tuple[list, list]:
     # do svd on parameter groups
     # TODO(Aaron): Speed this up using broadcasting/jit?
     for ct, group in enumerate(groups):

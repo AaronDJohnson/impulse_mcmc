@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import os, pathlib
 from typing import Callable
 import numpy as np
-from numpy.random import SeedSequence, default_rng
+# from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
 from loguru import logger
 # import ray
@@ -11,40 +11,37 @@ from loguru import logger
 from impulse.proposals import JumpProposals, ChainData, am, scam, de
 from impulse.mhsampler import MHState, mh_kernel
 
-
+@dataclass
 class ShortChain:
     """
     class to hold a short chain of save_freq iterations
     """
-    def __init__(self,
-                 ndim: int,
-                 short_iters: int,  # max iterations in the short chain
-                 iteration: int = 0,
-                 outdir: str ='./chains/',
-                 filename: str = 'chain_1.txt',
-                 resume: bool = False,
-                 thin: int = 1):
+    ndim: int
+    short_iters: int
+    iteration: int = 1
+    outdir: str = './chains/'
+    filename: str = 'chain_1.txt'
+    resume: bool = False
+    thin: int = 1
 
-        if thin > short_iters:
+    def __post_init__(self):
+        if self.thin > self.short_iters:
             raise ValueError("There are not enough samples to thin. Increase save_freq.")
+        self.samples = np.zeros((self.short_iters, self.ndim))
+        self.lnprob = np.zeros((self.short_iters))
+        self.lnlike = np.zeros((self.short_iters))
+        self.accept = np.zeros((self.short_iters))
 
-        self.samples = np.zeros((short_iters, ndim))
-        self.lnprob = np.zeros((short_iters))
-        self.lnlike = np.zeros((short_iters))
-        self.accept = np.zeros((short_iters))
-        self.iteration = iteration
-        self.outdir = outdir
-        self.filename = filename
-        self.resume = resume
-        self.thin = thin
+        self.filepath = os.path.join(self.outdir, self.filename)
+
         pathlib.Path(self.outdir).mkdir(parents=True, exist_ok=True)
-        if self.exists(outdir, filename) and not resume:
+        if self.exists(self.outdir, self.filename) and not self.resume:
             with open(self.filepath, 'w') as _:
                 pass
 
     def add_state(self,
                   new_state: MHState):
-        self.samples[self.iteration % self.iteration] = new_state.position
+        self.samples[self.iteration % self.short_iters] = new_state.position
         self.iteration += 1
 
     def set_filepath(self, outdir, filename):
@@ -85,9 +82,9 @@ class TestSampler:
         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs)
         self.rng = np.random.default_rng(seed)  # change this to seedsequence later on!
 
-        self.chain_data = ChainData(ndim, groups=groups, sample_cov=sample_cov,
+        self.chain_data = ChainData(ndim, self.rng, groups=groups, sample_cov=sample_cov,
                                     sample_mean=sample_mean, buffer_size=buffer_size)
-        self.jumps = JumpProposals([], [], np.array(), self.chain_data)
+        self.jumps = JumpProposals(self.chain_data)
         self.jumps.add_jump(am, am_weight)
         self.jumps.add_jump(scam, scam_weight)
         self.jumps.add_jump(de, de_weight)
@@ -97,19 +94,21 @@ class TestSampler:
         self.outdir = outdir
 
     def sample(self,
-               initial_sample: dict[str, float],
+               initial_sample: np.ndarray,
                num_iterations: int,
                thin: int = 1):
 
-        short_chain = ShortChain(self.save_freq, thin=thin)  # keep save_freq samples
-        initial_state = MHState(initial_sample)
+        short_chain = ShortChain(self.ndim, self.save_freq, thin=thin)  # keep save_freq samples
+        initial_state = MHState(np.array(initial_sample, dtype=np.float64))
+
         state = mh_kernel(initial_state, self.jumps, self.lnlike,
                           self.lnprior, self.rng)
         short_chain.add_state(state)
-        for jj in range(num_iterations - 1):
+        for jj in tqdm(range(1, num_iterations)):
             state = mh_kernel(state, self.jumps, self.lnlike, self.lnprior, self.rng)
             short_chain.add_state(state)
             if jj % self.cov_update == 0:
+                logger.debug('update mean/cov')
                 self.chain_data.recursive_update(self.chain_data.sample_total, short_chain.samples)
             if jj % self.save_freq == 0:
                 short_chain.save_chain()
@@ -126,18 +125,6 @@ class _function_wrapper(object):
 
     def __call__(self, x):
         return self.f(x, *self.args, **self.kwargs)
-
-
-
-
-
-
-
-
-
-
-
-
 
 # class Sampler():
 #     def __init__(self,
