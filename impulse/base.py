@@ -99,8 +99,18 @@ class TestSampler:
                thin: int = 1):
 
         short_chain = ShortChain(self.ndim, self.save_freq, thin=thin)  # keep save_freq samples
-        initial_state = MHState(np.array(initial_sample, dtype=np.float64))
 
+        # set up initial state here:
+        x0 = np.array(initial_sample, dtype=np.float64)
+        lnlike0 = self.lnlike(x0)
+        lnprior0 = self.lnprior(x0)
+        initial_state = MHState(x0,
+                                lnlike0,
+                                lnprior0,
+                                lnlike0 + lnprior0
+                                )
+
+        # initial sample and go!
         state = mh_kernel(initial_state, self.jumps, self.lnlike,
                           self.lnprior, self.rng)
         short_chain.add_state(state)
@@ -108,7 +118,6 @@ class TestSampler:
             state = mh_kernel(state, self.jumps, self.lnlike, self.lnprior, self.rng)
             short_chain.add_state(state)
             if jj % self.cov_update == 0:
-                logger.debug('update mean/cov')
                 self.chain_data.recursive_update(self.chain_data.sample_total, short_chain.samples)
             if jj % self.save_freq == 0:
                 short_chain.save_chain()

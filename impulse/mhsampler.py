@@ -12,8 +12,9 @@ class MHState:
     Metropolis-Hastings State
     """
     position: np.ndarray
-    lnlike: float = 0
-    lnprior: float = 0
+    lnlike: float = 0.0
+    lnprior: float = 0.0
+    lnprob: float = 0.0
     accepted: int = 1
     temp: float = 1.0
 
@@ -38,13 +39,10 @@ def mh_kernel(state: MHState,
         lnlike_star = lnlike_fn(x_star)
         lnprob_star = 1 / state.temp * lnlike_star + lnprior_star
 
-    hastings_ratio = lnprob_star - state.lnprior + qxy
+    hastings_ratio = lnprob_star - (state.lnprob) + qxy
     rand_num = rng.uniform()
-    print(np.log(rand_num))
-    print(hastings_ratio)
     # accept/reject step
     if np.log(rand_num) < hastings_ratio:
-        print('accepted!')
-        return MHState(x_star, lnlike_star, lnprob_star, accepted=1)
+        return MHState(x_star, lnlike_star, lnprior_star, lnlike_star + lnprior_star, accepted=1)
     else:
-        return MHState(state.position, state.lnlike, state.lnprior, accepted=0)
+        return MHState(state.position, state.lnlike, state.lnprior, state.lnprob, accepted=0)
