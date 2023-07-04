@@ -4,7 +4,7 @@ from typing import Callable
 import numpy as np
 # from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
-from loguru import logger
+# from loguru import logger
 # import ray
 
 # from impulse.ptsampler import PTSwap

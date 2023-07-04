@@ -12,9 +12,9 @@ class MHState:
     Metropolis-Hastings State
     """
     position: np.ndarray
-    lnlike: float = 0.0
-    lnprior: float = 0.0
-    lnprob: float = 0.0
+    lnlike: float
+    lnprior: float
+    lnprob: float
     accepted: int = 1
     temp: float = 1.0
 
