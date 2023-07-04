@@ -68,7 +68,7 @@ class TestSampler:
                  loglkwargs: dict = {},
                  logpargs: list = [],
                  logpkwargs: dict = {},
-                 cov_update: int = 1000,
+                 cov_update: int = 100,
                  save_freq: int = 1000,
                  scam_weight: float = 30,
                  am_weight: float = 15,
