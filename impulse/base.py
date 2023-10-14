@@ -8,7 +8,7 @@ from tqdm import tqdm
 # import ray
 
 # from impulse.ptsampler import PTSwap
-from impulse.proposals import JumpProposals, ChainData, am, scam, de
+from impulse.proposals import JumpProposals, ChainStats, am, scam, de
 from impulse.mhsampler import MHState, mh_kernel
 
 @dataclass
@@ -82,9 +82,9 @@ class TestSampler:
         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs)
         self.rng = np.random.default_rng(seed)  # change this to seedsequence later on!
 
-        self.chain_data = ChainData(ndim, self.rng, groups=groups, sample_cov=sample_cov,
+        self.chain_stats = ChainStats(ndim, self.rng, groups=groups, sample_cov=sample_cov,
                                     sample_mean=sample_mean, buffer_size=buffer_size)
-        self.jumps = JumpProposals(self.chain_data)
+        self.jumps = JumpProposals(self.chain_stats)
         self.jumps.add_jump(am, am_weight)
         self.jumps.add_jump(scam, scam_weight)
         self.jumps.add_jump(de, de_weight)
@@ -118,7 +118,7 @@ class TestSampler:
             state = mh_kernel(state, self.jumps, self.lnlike, self.lnprior, self.rng)
             short_chain.add_state(state)
             if jj % self.cov_update == 0:
-                self.chain_data.recursive_update(self.chain_data.sample_total, short_chain.samples)
+                self.chain_stats.recursive_update(self.chain_stats.sample_total, short_chain.samples)
             if jj % self.save_freq == 0:
                 short_chain.save_chain()
 

@@ -25,7 +25,7 @@ def shift_array(arr: np.ndarray,
     return result
 
 @dataclass
-class ChainData:
+class ChainStats:
     """
     Data to be used to propose new samples
     """
@@ -95,11 +95,11 @@ class JumpProposals:
     Called to get a proposal distribution based on weights
     """
     def __init__(self,
-                 chain_data: ChainData,
+                 chain_stats: ChainStats,
                  proposal_list: list = [],
                  proposal_weights: list = [],
                  proposal_probs: np.ndarray = None):
-        self.chain_data = chain_data
+        self.chain_stats = chain_stats
         self.proposal_list = proposal_list
         self.proposal_weights = proposal_weights
         self.proposal_probs = proposal_probs
@@ -115,16 +115,16 @@ class JumpProposals:
     def __call__(self,
                  old_sample: np.ndarray,
                  ) -> np.ndarray:
-        self.chain_data.update_sample(old_sample)
-        rng = self.chain_data.rng
+        self.chain_stats.update_sample(old_sample)
+        rng = self.chain_stats.rng
         proposal = rng.choice(self.proposal_list, p=self.proposal_probs)
         # don't let DE jumps happen until after buffer is full
-        while proposal.__name__ == 'de' and self.chain_data.buffer_full == False:
+        while proposal.__name__ == 'de' and self.chain_stats.buffer_full == False:
             proposal = rng.choice(self.proposal_list, p=self.proposal_probs)
-        new_sample = proposal(self.chain_data)
+        new_sample = proposal(self.chain_stats)
         return new_sample
 
-def am(chain_data: ChainData) -> tuple[np.ndarray, float]:
+def am(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     """
     Adaptive Jump Proposal. This function will occasionally
     use different jump sizes to ensure proper mixing.
@@ -134,12 +134,12 @@ def am(chain_data: ChainData) -> tuple[np.ndarray, float]:
     @return: q: New position in parameter space
     @return: qxy: Forward-Backward jump probability
     """
-    rng = chain_data.rng
-    q = chain_data.current_sample.copy()
+    rng = chain_stats.rng
+    q = chain_stats.current_sample.copy()
     qxy = 0
 
     # choose group
-    jumpind = rng.integers(0, len(chain_data.groups))
+    jumpind = rng.integers(0, len(chain_stats.groups))
     # jumpind = np.random.randint(0, len(groups))
 
     # adjust step size
@@ -163,24 +163,24 @@ def am(chain_data: ChainData) -> tuple[np.ndarray, float]:
         scale = 1.0
 
     # adjust scale based on temperature
-    if chain_data.temp <= 100:
-        scale *= np.sqrt(chain_data.temp)
+    if chain_stats.temp <= 100:
+        scale *= np.sqrt(chain_stats.temp)
 
     # get parmeters in new diagonalized basis
-    y = np.dot(chain_data.svd_U[jumpind].T, chain_data.current_sample[chain_data.groups[jumpind]])
+    y = np.dot(chain_stats.svd_U[jumpind].T, chain_stats.current_sample[chain_stats.groups[jumpind]])
 
     # make correlated componentwise adaptive jump
-    ind = np.arange(len(chain_data.groups[jumpind]))
+    ind = np.arange(len(chain_stats.groups[jumpind]))
     neff = len(ind)
     cd = 2.4 / np.sqrt(2 * neff) * scale
 
-    y[ind] = y[ind] + rng.standard_normal(neff) * cd * np.sqrt(chain_data.svd_S[jumpind][ind])
-    q[chain_data.groups[jumpind]] = np.dot(chain_data.svd_U[jumpind], y)
+    y[ind] = y[ind] + rng.standard_normal(neff) * cd * np.sqrt(chain_stats.svd_S[jumpind][ind])
+    q[chain_stats.groups[jumpind]] = np.dot(chain_stats.svd_U[jumpind], y)
 
     return q, qxy
 
 
-def scam(chain_data: ChainData) -> tuple[np.ndarray, float]:
+def scam(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     """
     Single Component Adaptive Jump Proposal. This function will occasionally
     jump in more than 1 parameter. It will also occasionally use different
@@ -193,13 +193,13 @@ def scam(chain_data: ChainData) -> tuple[np.ndarray, float]:
     @return: q: New position in parameter space
     @return: qxy: Forward-Backward jump probability
     """
-    rng = chain_data.rng
-    q = chain_data.current_sample.copy()
+    rng = chain_stats.rng
+    q = chain_stats.current_sample.copy()
     qxy = 0
 
     # choose group
-    jumpind = rng.integers(0, len(chain_data.groups))
-    ndim = len(chain_data.groups[jumpind])
+    jumpind = rng.integers(0, len(chain_stats.groups))
+    ndim = len(chain_stats.groups[jumpind])
 
     # adjust step size
     # prob = np.random.rand()
@@ -223,8 +223,8 @@ def scam(chain_data: ChainData) -> tuple[np.ndarray, float]:
     # scale = np.random.uniform(0.5, 10)
 
     # adjust scale based on temperature
-    if chain_data.temp <= 100:
-        scale *= np.sqrt(chain_data.temp)
+    if chain_stats.temp <= 100:
+        scale *= np.sqrt(chain_stats.temp)
 
     # get parmeters in new diagonalized basis
     # y = np.dot(self.U.T, x[self.covinds])
@@ -238,14 +238,14 @@ def scam(chain_data: ChainData) -> tuple[np.ndarray, float]:
 
     # y[ind] = y[ind] + np.random.randn(neff) * cd * np.sqrt(self.S[ind])
     # q[self.covinds] = np.dot(self.U, y)
-    q[chain_data.groups[jumpind]] += (
-        rng.standard_normal() * cd * np.sqrt(chain_data.svd_S[jumpind][ind]) * chain_data.svd_U[jumpind][:, ind].flatten()
+    q[chain_stats.groups[jumpind]] += (
+        rng.standard_normal() * cd * np.sqrt(chain_stats.svd_S[jumpind][ind]) * chain_stats.svd_U[jumpind][:, ind].flatten()
     )
 
     return q, qxy
 
 
-def de(chain_data:ChainData) -> tuple[np.ndarray, float]:
+def de(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     """
     Differential Evolution Jump. This function will  occasionally
     use different jump sizes to ensure proper mixing.
@@ -257,16 +257,16 @@ def de(chain_data:ChainData) -> tuple[np.ndarray, float]:
     @return: q: New position in parameter space
     @return: qxy: Forward-Backward jump probability
     """
-    rng = chain_data.rng
+    rng = chain_stats.rng
     # get old parameters
-    q = chain_data.current_sample.copy()
+    q = chain_stats.current_sample.copy()
     qxy = 0
 
     # choose group
-    jumpind = np.random.randint(0, len(chain_data.groups))
-    ndim = len(chain_data.groups[jumpind])
+    jumpind = np.random.randint(0, len(chain_stats.groups))
+    ndim = len(chain_stats.groups[jumpind])
 
-    bufsize = chain_data.buffer_size
+    bufsize = chain_stats.buffer_size
 
     # draw a random integer from 0 - iter
     mm = rng.integers(0, bufsize)
@@ -284,16 +284,16 @@ def de(chain_data:ChainData) -> tuple[np.ndarray, float]:
         scale = 1.0
 
     else:
-        scale = np.random.rand() * 2.4 / np.sqrt(2 * ndim) * np.sqrt(chain_data.temp)
+        scale = np.random.rand() * 2.4 / np.sqrt(2 * ndim) * np.sqrt(chain_stats.temp)
 
     for ii in range(ndim):
 
         # jump size
-        sigma = (chain_data._buffer[mm, chain_data.groups[jumpind][ii]] -
-                 chain_data._buffer[nn, chain_data.groups[jumpind][ii]])
+        sigma = (chain_stats._buffer[mm, chain_stats.groups[jumpind][ii]] -
+                 chain_stats._buffer[nn, chain_stats.groups[jumpind][ii]])
 
         # jump
-        q[chain_data.groups[jumpind][ii]] += scale * sigma
+        q[chain_stats.groups[jumpind][ii]] += scale * sigma
 
     return q, qxy
 
