@@ -1,5 +1,12 @@
 import numpy as np
+from dataclasses import dataclass
+from typing import Callable
 import ray
+
+
+@dataclass
+class PTState():
+    pass
 
 
 @ray.remote
@@ -53,7 +60,8 @@ class PTSwap():
         """
         Method to compute temperature ladder. At the moment this uses
         a geometrically spaced temperature ladder with a temperature
-        spacing designed to give 25 % temperature swap acceptance rate.
+        spacing designed to give 25 % temperature swap acceptance rate
+        in a multi-variate Gaussian.
         """
         if self.tstep is None and self.tmax is None:
             self.tstep = 1 + np.sqrt(2 / self.ndim)

@@ -1,11 +1,18 @@
 import numpy as np
+from dataclasses import dataclass
+from typing import Callable
+from impulse.mhsampler import MHState
 
 from impulse.online_updates import update_covariance, svd_groups
-from impulse.random_nums import rng
 from loguru import logger
 
-
-def shift_array(arr, num, fill_value=0.):
+def shift_array(arr: np.ndarray,
+                num: int,
+                fill_value: float = 0
+                ) -> np.ndarray:
+    """
+    Shift an array (arr) by to the left (negative num) or the right (positive num)
+    """
     result = np.empty_like(arr)
     if num > 0:
         result[:num] = fill_value
@@ -17,67 +24,107 @@ def shift_array(arr, num, fill_value=0.):
         result[:] = arr
     return result
 
+@dataclass
+class ChainStats:
+    """
+    Data to be used to propose new samples
+    """
+    ndim: int
+    rng: np.random.Generator
+    groups: list = None
+    sample_cov: np.ndarray = None
+    svd_U: list = None  # U in the standard SVD of samples
+    svd_S: list = None  # Sigma in the standard SVD of samples
+    sample_mean: np.ndarray = None
+    temp: float = 1.0
+    current_sample: np.ndarray = None
 
-class JumpProposals():
-    def __init__(self, ndim, buf_size=50000, groups=None, cov=None,
-                 mean=None):
-        """
-        ndim (int): number of dimensions in the parameter space
-        """
-        self.nsamples = 0  # sample count
-        self.buf_size = buf_size
-        self.prop_list = []
-        self.prop_weights = []
-        self.prop_probs = []
-        self.ndim = ndim
-        self._buffer = np.zeros((buf_size, ndim))
+    # DEBuffer pieces:
+    sample_total: int = 0
+    buffer_size: int = 50_000
+    _buffer: np.ndarray = None
+    buffer_full: bool = False
 
-        # setup sampling groups
-        self.groups = groups
-        if groups is None:
+    def __post_init__(self):
+        if self.sample_cov is None:
+            self.sample_cov = np.identity(self.ndim)
+        if self.sample_mean is None:
+            self.sample_mean = np.zeros(self.ndim)
+        if self.groups is None:
             self.groups = [np.arange(0, self.ndim)]
+        if self.svd_U is None:
+            self.svd_U = [[]] * len(self.groups)
+        if self.svd_S is None:
+            self.svd_S = [[]] * len(self.groups)
+        if self._buffer is None:
+            self._buffer = np.zeros((self.buffer_size, self.ndim))
+        
+        self.svd_U, self.svd_S = svd_groups(self.svd_U, self.svd_S, self.groups, self.sample_cov)
 
-        # set up sample covariance matrix
-        self.cov = cov
-        if cov is None:
-            self.cov = np.identity(ndim)
-        self.U = [[]] * len(self.groups)
-        self.S = [[]] * len(self.groups)
+    def update_buffer(self,
+                      new_samples: np.ndarray
+                      ) -> None:
+        self._buffer = shift_array(self._buffer, -len(new_samples))
+        self._buffer[-len(new_samples):] = new_samples
+        if not self.buffer_full:
+            if self.sample_total > self.buffer_size:
+                self.buffer_full = True
 
-        # do SVD on param groups
-        self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
-
-        self.mean = mean
-        if mean is None:
-            self.mean = 0
-
-    def add_jump(self, jump, weight):
-        self.prop_list.append(jump)
-        self.prop_weights.append(weight)
-        self.prop_probs = np.array(self.prop_weights) / sum(self.prop_weights)  # normalize probabilities
-
-    def recursive_update(self, sample_num, new_chain):
+    def recursive_update(self,
+                         sample_num: int,
+                         new_samples: np.ndarray
+                         ) -> None:
         # update buffer
-        self._buffer = shift_array(self._buffer, -len(new_chain))
-        self._buffer[-len(new_chain):] = new_chain
-
+        self.sample_total += len(new_samples)
+        self.update_buffer(new_samples)
         # get new sample mean and covariance
-        self.mean, self.cov = update_covariance(sample_num, self.cov, self.mean, self._buffer)
-
+        self.sample_mean, self.sample_cov = update_covariance(sample_num, self.sample_cov, self.sample_mean, self._buffer)
         # new SVD on groups
-        self.U, self.S = svd_groups(self.U, self.S, self.groups, self.cov)
-        # self.U, self.S = svd_groups(self.groups, self.cov)
+        self.svd_U, self.svd_S = svd_groups(self.svd_U, self.svd_S, self.groups, self.sample_cov)
 
-    def __call__(self, x, temp=1.):
-        self.nsamples += 1
-        proposal = rng.choice(self.prop_list, p=self.prop_probs)
+    def update_sample(self,
+                      state: MHState):
+        self.current_sample = state.position
+
+    def update_temp(self,
+                    state: MHState):
+        self.temp = state.temp
+
+class JumpProposals:
+    """
+    Called to get a proposal distribution based on weights
+    """
+    def __init__(self,
+                 chain_stats: ChainStats,
+                 proposal_list: list = [],
+                 proposal_weights: list = [],
+                 proposal_probs: np.ndarray = None):
+        self.chain_stats = chain_stats
+        self.proposal_list = proposal_list
+        self.proposal_weights = proposal_weights
+        self.proposal_probs = proposal_probs
+
+    def add_jump(self,
+                 jump: Callable,
+                 weight: float
+                 ) -> None:
+        self.proposal_list.append(jump)
+        self.proposal_weights.append(weight)
+        self.proposal_probs = np.array(self.proposal_weights) / sum(self.proposal_weights)  # normalize probabilities
+
+    def __call__(self,
+                 old_sample: np.ndarray,
+                 ) -> np.ndarray:
+        self.chain_stats.update_sample(old_sample)
+        rng = self.chain_stats.rng
+        proposal = rng.choice(self.proposal_list, p=self.proposal_probs)
         # don't let DE jumps happen until after buffer is full
-        while proposal.__name__ == 'de' and self.nsamples < self.buf_size:
-            proposal = rng.choice(self.prop_list, p=self.prop_probs)
-        return proposal(x, self.U, self.S, self.groups, temp, self._buffer)
+        while proposal.__name__ == 'de' and self.chain_stats.buffer_full == False:
+            proposal = rng.choice(self.proposal_list, p=self.proposal_probs)
+        new_sample = proposal(self.chain_stats)
+        return new_sample
 
-
-def am(x, U, S, groups, temp, buffer):
+def am(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     """
     Adaptive Jump Proposal. This function will occasionally
     use different jump sizes to ensure proper mixing.
@@ -86,14 +133,13 @@ def am(x, U, S, groups, temp, buffer):
 
     @return: q: New position in parameter space
     @return: qxy: Forward-Backward jump probability
-
     """
-
-    q = x.copy()
+    rng = chain_stats.rng
+    q = chain_stats.current_sample.copy()
     qxy = 0
 
     # choose group
-    jumpind = rng.integers(0, len(groups))
+    jumpind = rng.integers(0, len(chain_stats.groups))
     # jumpind = np.random.randint(0, len(groups))
 
     # adjust step size
@@ -117,24 +163,24 @@ def am(x, U, S, groups, temp, buffer):
         scale = 1.0
 
     # adjust scale based on temperature
-    if temp <= 100:
-        scale *= np.sqrt(temp)
+    if chain_stats.temp <= 100:
+        scale *= np.sqrt(chain_stats.temp)
 
     # get parmeters in new diagonalized basis
-    y = np.dot(U[jumpind].T, x[groups[jumpind]])
+    y = np.dot(chain_stats.svd_U[jumpind].T, chain_stats.current_sample[chain_stats.groups[jumpind]])
 
     # make correlated componentwise adaptive jump
-    ind = np.arange(len(groups[jumpind]))
+    ind = np.arange(len(chain_stats.groups[jumpind]))
     neff = len(ind)
     cd = 2.4 / np.sqrt(2 * neff) * scale
 
-    y[ind] = y[ind] + rng.standard_normal(neff) * cd * np.sqrt(S[jumpind][ind])
-    q[groups[jumpind]] = np.dot(U[jumpind], y)
+    y[ind] = y[ind] + rng.standard_normal(neff) * cd * np.sqrt(chain_stats.svd_S[jumpind][ind])
+    q[chain_stats.groups[jumpind]] = np.dot(chain_stats.svd_U[jumpind], y)
 
     return q, qxy
 
 
-def scam(x, U, S, groups, temp, buffer):
+def scam(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     """
     Single Component Adaptive Jump Proposal. This function will occasionally
     jump in more than 1 parameter. It will also occasionally use different
@@ -146,15 +192,14 @@ def scam(x, U, S, groups, temp, buffer):
 
     @return: q: New position in parameter space
     @return: qxy: Forward-Backward jump probability
-
     """
-
-    q = x.copy()
+    rng = chain_stats.rng
+    q = chain_stats.current_sample.copy()
     qxy = 0
 
     # choose group
-    jumpind = rng.integers(0, len(groups))
-    ndim = len(groups[jumpind])
+    jumpind = rng.integers(0, len(chain_stats.groups))
+    ndim = len(chain_stats.groups[jumpind])
 
     # adjust step size
     # prob = np.random.rand()
@@ -178,8 +223,8 @@ def scam(x, U, S, groups, temp, buffer):
     # scale = np.random.uniform(0.5, 10)
 
     # adjust scale based on temperature
-    if temp <= 100:
-        scale *= np.sqrt(temp)
+    if chain_stats.temp <= 100:
+        scale *= np.sqrt(chain_stats.temp)
 
     # get parmeters in new diagonalized basis
     # y = np.dot(self.U.T, x[self.covinds])
@@ -193,14 +238,14 @@ def scam(x, U, S, groups, temp, buffer):
 
     # y[ind] = y[ind] + np.random.randn(neff) * cd * np.sqrt(self.S[ind])
     # q[self.covinds] = np.dot(self.U, y)
-    q[groups[jumpind]] += (
-        rng.standard_normal() * cd * np.sqrt(S[jumpind][ind]) * U[jumpind][:, ind].flatten()
+    q[chain_stats.groups[jumpind]] += (
+        rng.standard_normal() * cd * np.sqrt(chain_stats.svd_S[jumpind][ind]) * chain_stats.svd_U[jumpind][:, ind].flatten()
     )
 
     return q, qxy
 
 
-def de(x, U, S, groups, temp, buffer):
+def de(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     """
     Differential Evolution Jump. This function will  occasionally
     use different jump sizes to ensure proper mixing.
@@ -211,22 +256,19 @@ def de(x, U, S, groups, temp, buffer):
 
     @return: q: New position in parameter space
     @return: qxy: Forward-Backward jump probability
-
     """
-
+    rng = chain_stats.rng
     # get old parameters
-    q = x.copy()
+    q = chain_stats.current_sample.copy()
     qxy = 0
 
     # choose group
-    jumpind = np.random.randint(0, len(groups))
-    ndim = len(groups[jumpind])
+    jumpind = np.random.randint(0, len(chain_stats.groups))
+    ndim = len(chain_stats.groups[jumpind])
 
-    bufsize = len(buffer)
+    bufsize = chain_stats.buffer_size
 
     # draw a random integer from 0 - iter
-    # mm = np.random.randint(0, bufsize)
-    # nn = np.random.randint(0, bufsize)
     mm = rng.integers(0, bufsize)
     nn = rng.integers(0, bufsize)
 
@@ -242,15 +284,16 @@ def de(x, U, S, groups, temp, buffer):
         scale = 1.0
 
     else:
-        scale = np.random.rand() * 2.4 / np.sqrt(2 * ndim) * np.sqrt(temp)
+        scale = np.random.rand() * 2.4 / np.sqrt(2 * ndim) * np.sqrt(chain_stats.temp)
 
     for ii in range(ndim):
 
         # jump size
-        sigma = buffer[mm, groups[jumpind][ii]] - buffer[nn, groups[jumpind][ii]]
+        sigma = (chain_stats._buffer[mm, chain_stats.groups[jumpind][ii]] -
+                 chain_stats._buffer[nn, chain_stats.groups[jumpind][ii]])
 
         # jump
-        q[groups[jumpind][ii]] += scale * sigma
+        q[chain_stats.groups[jumpind][ii]] += scale * sigma
 
     return q, qxy
 
