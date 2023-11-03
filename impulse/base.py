@@ -114,7 +114,7 @@ class TestSampler:
         state = mh_kernel(initial_state, self.jumps, self.lnlike,
                           self.lnprior, self.rng)
         short_chain.add_state(state)
-        for jj in tqdm(range(1, num_iterations)):
+        for jj in tqdm(range(1, num_iterations), initial=1, total=num_iterations):
             state = mh_kernel(state, self.jumps, self.lnlike, self.lnprior, self.rng)
             short_chain.add_state(state)
             if jj % self.cov_update == 0:
