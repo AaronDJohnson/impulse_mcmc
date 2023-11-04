@@ -150,8 +150,8 @@ class PTTestSampler:
         self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs)
         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs)
         sequence = np.random.SeedSequence(seed)
-        sequence.spawn(num_temps)
-        self.rngs = [np.random.default_rng(s) for s in sequence]
+        seeds = sequence.spawn(num_temps)
+        self.rngs = [np.random.default_rng(s) for s in seeds]
 
         self.chain_stats = ChainStats(ndim, self.rng, groups=groups, sample_cov=sample_cov,
                                       sample_mean=sample_mean, buffer_size=buffer_size)
