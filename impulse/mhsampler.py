@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Callable, Dict
+from typing import Callable
 import numpy as np
 
 # Use MHState for everything:

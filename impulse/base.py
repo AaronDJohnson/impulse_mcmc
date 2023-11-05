@@ -131,11 +131,11 @@ class PTTestSampler:
         lnlike0 = self.lnlike(x0)
         lnprior0 = self.lnprior(x0)
         initial_states = [MHState(x0,
-                                lnlike0,
-                                lnprior0,
-                                1/self.ptstate.ladder[ii] * (lnlike0) + lnprior0,
-                                temp=self.ptstate.ladder[ii]
-                                 ) for ii in range(self.ntemps)]
+                                  lnlike0,
+                                  lnprior0,
+                                  1/self.ptstate.ladder[ii] * (lnlike0) + lnprior0,
+                                  temp=self.ptstate.ladder[ii]
+                                  ) for ii in range(self.ntemps)]
 
         # initial sample and go!
         states = [mh_kernel(initial_states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
@@ -147,7 +147,7 @@ class PTTestSampler:
             if jj % self.swap_steps == 0 and self.ntemps > 1:
                 states = pt_kernel(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
                 [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
-                # self.ptstate.adapt_ladder()
+                self.ptstate.adapt_ladder()
             if jj % self.cov_update == 0:
                 [self.chain_stats[ii].recursive_update(self.chain_stats[ii].sample_total, short_chains[ii].samples) for ii in range(self.ntemps)]
             if jj % self.save_freq == 0:

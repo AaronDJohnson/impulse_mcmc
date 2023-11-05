@@ -68,29 +68,6 @@ class PTState():
         delta_temps *= np.exp(dscaled_accept)
         self.ladder[1:-1] = (np.cumsum(delta_temps) + self.ladder[0])
 
-# def pt_kernel(mhstates: list[MHState],
-#               ptstate: PTState,
-#               lnlike_fn: Callable,
-#               lnprior_fn: Callable,
-#               rng: np.random.Generator
-#               ) -> MHState:
-#     ladder = ptstate.ladder
-#     swap_idx = np.sort(rng.choice(len(ladder - 1), replace=False))
-#     swap_idxs = np.array([swap_idx, swap_idx + 1])
-
-#     log_likes = [mhstates[idx].lnlike for idx in swap_idxs]
-#     positions = [mhstates[idx].position for idx in swap_idxs]
-
-#     log_acc_ratio = (ladder[swap_idxs[1]] - ladder[swap_idxs[0]]) * (log_likes[0] - log_likes[1])
-#     if np.log(rng.uniform()) < log_acc_ratio:
-#         positions[0], positions[1] = positions[1], positions[0]
-#         log_likes[0], log_likes[1] = log_likes[1], log_likes[0]
-#         ptstate.swap_accept[swap_idx] += 1
-#         ptstate.nswaps += 1
-
-#     else:
-#         ptstate.nswaps += 1
-
 
 def pt_kernel(mhstates: list[MHState],
               ptstate: PTState,
@@ -103,7 +80,6 @@ def pt_kernel(mhstates: list[MHState],
     swap_map = list(range(len(ladder)))
     log_likes = [mhstates[ii].lnlike for ii in range(len(ladder))]
     positions = [mhstates[ii].position for ii in range(len(ladder))]
-    new_states = []
 
     # loop through and propose a swap at each chain (starting from hottest chain and going down in T)
     # and keep track of results in swap_map
@@ -118,9 +94,9 @@ def pt_kernel(mhstates: list[MHState],
             ptstate.swap_accept[swap_chain] += 1
             ptstate.nswaps += 1
 
-
         else:
             ptstate.nswaps += 1
+
     new_states = []
     # loop through the chains and record the new samples and log_Ls
     for ii in range(len(ladder)):
