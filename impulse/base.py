@@ -3,12 +3,9 @@ import os
 import pathlib
 from typing import Callable
 import numpy as np
-# from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
-# from loguru import logger
 # import ray
 
-# from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, ChainStats, am, scam, de
 from impulse.mhsampler import MHState, mh_kernel
 from impulse.ptsampler import PTState, pt_kernel
