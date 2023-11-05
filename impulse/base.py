@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-import os, pathlib
+import os
+import pathlib
 from typing import Callable
 import numpy as np
 # from numpy.random import SeedSequence, default_rng
@@ -110,7 +111,7 @@ class PTTestSampler:
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
-                               temp_step=temp_step, ladder=None, inf_temp=False, adapt_t0=100, adapt_nu=10)
+                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=100, adapt_nu=10)
 
         self.cov_update = cov_update
         self.save_freq = save_freq
@@ -146,7 +147,7 @@ class PTTestSampler:
             if jj % self.swap_steps == 0 and self.ntemps > 1:
                 states = pt_kernel(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
                 [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
-                self.ptstate.adapt_ladder()
+                # self.ptstate.adapt_ladder()
             if jj % self.cov_update == 0:
                 [self.chain_stats[ii].recursive_update(self.chain_stats[ii].sample_total, short_chains[ii].samples) for ii in range(self.ntemps)]
             if jj % self.save_freq == 0:

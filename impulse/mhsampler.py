@@ -43,6 +43,6 @@ def mh_kernel(state: MHState,
     rand_num = rng.uniform()
     # accept/reject step
     if np.log(rand_num) < hastings_ratio:
-        return MHState(x_star, lnlike_star, lnprior_star, lnlike_star + lnprior_star, accepted=1, temp=state.temp)
+        return MHState(x_star, lnlike_star, lnprior_star, 1 / state.temp * lnlike_star + lnprior_star, accepted=1, temp=state.temp)
     else:
         return MHState(state.position, state.lnlike, state.lnprior, state.lnprob, accepted=0, temp=state.temp)
