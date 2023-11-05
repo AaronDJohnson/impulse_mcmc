@@ -10,6 +10,7 @@ from tqdm import tqdm
 # from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, ChainStats, am, scam, de
 from impulse.mhsampler import MHState, mh_kernel
+from impulse.ptsampler import PTState, pt_kernel
 
 @dataclass
 class ShortChain:
@@ -20,10 +21,9 @@ class ShortChain:
     short_iters: int
     iteration: int = 1
     outdir: str = './chains/'
-    filename: str = 'chain_.txt'
     resume: bool = False
     thin: int = 1
-    temp: float = 1.0
+    nchain: float = 1
 
     def __post_init__(self):
         if self.thin > self.short_iters:
@@ -32,8 +32,9 @@ class ShortChain:
         self.lnprob = np.zeros((self.short_iters))
         self.lnlike = np.zeros((self.short_iters))
         self.accept = np.zeros((self.short_iters))
+        self.var_temp = np.zeros((self.short_iters))
+        self.filename = f'chain_{self.nchain}.txt'
         self.filepath = os.path.join(self.outdir, self.filename)
-        self.filepath = os.path.join(self.filepath, str(self.temp))
 
         pathlib.Path(self.outdir).mkdir(parents=True, exist_ok=True)
         if self.exists(self.outdir, self.filename) and not self.resume:
@@ -43,6 +44,10 @@ class ShortChain:
     def add_state(self,
                   new_state: MHState):
         self.samples[self.iteration % self.short_iters] = new_state.position
+        self.lnprob[self.iteration % self.short_iters] = new_state.lnprob
+        self.lnlike[self.iteration % self.short_iters] = new_state.lnlike
+        self.accept[self.iteration % self.short_iters] = new_state.accepted
+        self.var_temp[self.iteration % self.short_iters] = new_state.temp
         self.iteration += 1
 
     def set_filepath(self, outdir, filename):
@@ -52,76 +57,9 @@ class ShortChain:
         return pathlib.Path(os.path.join(outdir, filename)).exists()
 
     def save_chain(self):
-        to_save = np.column_stack([self.samples, self.lnlike, self.lnprob, self.accept])[::self.thin]
+        to_save = np.column_stack([self.samples, self.lnlike, self.lnprob, self.accept, self.var_temp])[::self.thin]
         with open(self.filepath, 'a+') as f:
             np.savetxt(f, to_save)
-
-# class TestSampler:
-#     def __init__(self,
-#                  ndim: int,
-#                  lnlike: Callable,
-#                  lnprior: Callable,
-#                  buffer_size: int = 50_000,
-#                  sample_mean: float = None,
-#                  sample_cov: np.ndarray = None,
-#                  groups: list = None,
-#                  loglargs: list = [],
-#                  loglkwargs: dict = {},
-#                  logpargs: list = [],
-#                  logpkwargs: dict = {},
-#                  cov_update: int = 100,
-#                  save_freq: int = 1000,
-#                  scam_weight: float = 30,
-#                  am_weight: float = 15,
-#                  de_weight: float = 50,
-#                  seed: int = None,
-#                  outdir: str = './chains'
-#                  ) -> None:
-
-#         self.ndim = ndim
-#         self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs)
-#         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs)
-#         self.rng = np.random.default_rng(seed)  # change this to seedsequence later on!
-
-#         self.chain_stats = ChainStats(ndim, self.rng, groups=groups, sample_cov=sample_cov,
-#                                     sample_mean=sample_mean, buffer_size=buffer_size)
-#         self.jumps = JumpProposals(self.chain_stats)
-#         self.jumps.add_jump(am, am_weight)
-#         self.jumps.add_jump(scam, scam_weight)
-#         self.jumps.add_jump(de, de_weight)
-
-#         self.cov_update = cov_update
-#         self.save_freq = save_freq
-#         self.outdir = outdir
-
-#     def sample(self,
-#                initial_sample: np.ndarray,
-#                num_iterations: int,
-#                thin: int = 1):
-
-#         short_chain = ShortChain(self.ndim, self.save_freq, thin=thin)  # keep save_freq samples
-
-#         # set up initial state here:
-#         x0 = np.array(initial_sample, dtype=np.float64)
-#         lnlike0 = self.lnlike(x0)
-#         lnprior0 = self.lnprior(x0)
-#         initial_state = MHState(x0,
-#                                 lnlike0,
-#                                 lnprior0,
-#                                 lnlike0 + lnprior0
-#                                 )
-
-#         # initial sample and go!
-#         state = mh_kernel(initial_state, self.jumps, self.lnlike,
-#                           self.lnprior, self.rng)
-#         short_chain.add_state(state)
-#         for jj in tqdm(range(1, num_iterations), initial=1, total=num_iterations):
-#             state = mh_kernel(state, self.jumps, self.lnlike, self.lnprior, self.rng)
-#             short_chain.add_state(state)
-#             if jj % self.cov_update == 0:
-#                 self.chain_stats.recursive_update(self.chain_stats.sample_total, short_chain.samples)
-#             if jj % self.save_freq == 0:
-#                 short_chain.save_chain()
 
 class PTTestSampler:
     def __init__(self,
@@ -143,22 +81,36 @@ class PTTestSampler:
                  de_weight: float = 50,
                  seed: int = None,
                  outdir: str = './chains',
-                 num_temps: int = 2
+                 ntemps: int = 2,
+                 swap_steps: int = 100,
+                 min_temp: float = 1.0,
+                 max_temp: float = None,
+                 temp_step: float = None,
+                 ladder: list = None,
+                 inf_temp: bool = False,
+                 adapt_t0: int = 100,
+                 adapt_nu: int = 10
                  ) -> None:
 
         self.ndim = ndim
+        self.ntemps = ntemps
+        self.swap_steps = swap_steps
         self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs)
         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs)
-        sequence = np.random.SeedSequence(seed)
-        seeds = sequence.spawn(num_temps)
-        self.rngs = [np.random.default_rng(s) for s in seeds]
 
-        self.chain_stats = ChainStats(ndim, self.rng, groups=groups, sample_cov=sample_cov,
-                                      sample_mean=sample_mean, buffer_size=buffer_size)
-        self.jumps = JumpProposals(self.chain_stats)
-        self.jumps.add_jump(am, am_weight)
-        self.jumps.add_jump(scam, scam_weight)
-        self.jumps.add_jump(de, de_weight)
+        # set up pieces for each temperature
+        sequence = np.random.SeedSequence(seed)
+        seeds = sequence.spawn(ntemps + 1)  # extra one for the ptswaps
+        self.rngs = [np.random.default_rng(s) for s in seeds]
+        self.chain_stats = [ChainStats(ndim, self.rngs[ii], groups=groups, sample_cov=sample_cov,
+                                       sample_mean=sample_mean, buffer_size=buffer_size) for ii in range(ntemps)]
+        self.jumps = [JumpProposals(self.chain_stats[ii]) for ii in range(ntemps)]
+        for ii in range(ntemps):
+            self.jumps[ii].add_jump(am, am_weight)
+            self.jumps[ii].add_jump(scam, scam_weight)
+            self.jumps[ii].add_jump(de, de_weight)
+        self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
+                               temp_step=temp_step, ladder=None, inf_temp=False, adapt_t0=100, adapt_nu=10)
 
         self.cov_update = cov_update
         self.save_freq = save_freq
@@ -170,30 +122,35 @@ class PTTestSampler:
                thin: int = 1):
 
         # set up temperatures
-        short_chain = ShortChain(self.ndim, self.save_freq, thin=thin)  # keep save_freq samples
+        short_chains = [ShortChain(self.ndim, self.save_freq, thin=thin,
+                        nchain=ii) for ii in range(self.ntemps)]  # keep save_freq samples
 
         # set up initial state here:
         x0 = np.array(initial_sample, dtype=np.float64)
         lnlike0 = self.lnlike(x0)
         lnprior0 = self.lnprior(x0)
-        initial_state = MHState(x0,
+        initial_states = [MHState(x0,
                                 lnlike0,
                                 lnprior0,
-                                lnlike0 + lnprior0
-                                )
+                                1/self.ptstate.ladder[ii] * (lnlike0) + lnprior0,
+                                temp=self.ptstate.ladder[ii]
+                                 ) for ii in range(self.ntemps)]
 
         # initial sample and go!
-        state = mh_kernel(initial_state, self.jumps, self.lnlike,
-                          self.lnprior, self.rng)
-        short_chain.add_state(state)
+        states = [mh_kernel(initial_states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
+        [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
+
         for jj in tqdm(range(1, num_iterations), initial=1, total=num_iterations):
-            for ii in range(1, ntemps):
-                state = mh_kernel(state, self.jumps, self.lnlike, self.lnprior, self.rng)
-            short_chain.add_state(state)
+            states = [mh_kernel(states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
+            [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
+            if jj % self.swap_steps == 0 and self.ntemps > 1:
+                states = pt_kernel(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
+                [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
+                self.ptstate.adapt_ladder()
             if jj % self.cov_update == 0:
-                self.chain_stats.recursive_update(self.chain_stats.sample_total, short_chain.samples)
+                [self.chain_stats[ii].recursive_update(self.chain_stats[ii].sample_total, short_chains[ii].samples) for ii in range(self.ntemps)]
             if jj % self.save_freq == 0:
-                short_chain.save_chain()
+                [short_chains[ii].save_chain() for ii in range(self.ntemps)]
 
 class _function_wrapper(object):
     """

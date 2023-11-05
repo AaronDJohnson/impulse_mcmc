@@ -108,9 +108,13 @@ class JumpProposals:
                  jump: Callable,
                  weight: float
                  ) -> None:
-        self.proposal_list.append(jump)
-        self.proposal_weights.append(weight)
-        self.proposal_probs = np.array(self.proposal_weights) / sum(self.proposal_weights)  # normalize probabilities
+        if jump not in self.proposal_list:
+            self.proposal_list.append(jump)
+            self.proposal_weights.append(weight)
+            self.proposal_probs = np.array(self.proposal_weights) / sum(self.proposal_weights)  # normalize probabilities
+        elif weight != self.proposal_weights[self.proposal_list.index(jump)]:
+            self.proposal_weights[self.proposal_list.index(jump)] = weight
+            self.proposal_probs = np.array(self.proposal_weights) / sum(self.proposal_weights)
 
     def __call__(self,
                  old_sample: np.ndarray,
@@ -119,7 +123,7 @@ class JumpProposals:
         rng = self.chain_stats.rng
         proposal = rng.choice(self.proposal_list, p=self.proposal_probs)
         # don't let DE jumps happen until after buffer is full
-        while proposal.__name__ == 'de' and self.chain_stats.buffer_full == False:
+        while proposal.__name__ == 'de' and self.chain_stats.buffer_full is False:
             proposal = rng.choice(self.proposal_list, p=self.proposal_probs)
         new_sample = proposal(self.chain_stats)
         return new_sample
