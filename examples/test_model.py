@@ -1,6 +1,5 @@
 import numpy as np
 
-
 def make_sin_data(num_pts):
     rng = np.random.default_rng()
 
@@ -11,7 +10,6 @@ def make_sin_data(num_pts):
     x = np.linspace(0, 2*np.pi, num_pts)
     data = rng.standard_normal(num_pts) + a_real * np.sin(omega_real * x + phi_real)
     return x, data, omega_real, a_real, phi_real
-
 
 # standard least squares likelihood
 class LnLikelihood():
@@ -30,7 +28,6 @@ class LnLikelihood():
             return result
         else:
             return -np.inf
-
 
 # uniform prior
 class LnPrior():

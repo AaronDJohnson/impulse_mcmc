@@ -93,6 +93,15 @@ class PTTestSampler:
                  adapt_nu: int = 10
                  ) -> None:
 
+        if loglargs is None:
+            loglargs = []
+        if loglkwargs is None:
+            loglkwargs = {}
+        if logpargs is None:
+            logpargs = []
+        if logpkwargs is None:
+            logpkwargs = {}
+
         self.ndim = ndim
         self.ntemps = ntemps
         self.swap_steps = swap_steps
@@ -152,6 +161,7 @@ class PTTestSampler:
                 [self.chain_stats[ii].recursive_update(self.chain_stats[ii].sample_total, short_chains[ii].samples) for ii in range(self.ntemps)]
             if jj % self.save_freq == 0:
                 [short_chains[ii].save_chain() for ii in range(self.ntemps)]
+        [short_chains[ii].save_chain() for ii in range(self.ntemps)]
 
 class _function_wrapper(object):
     """
