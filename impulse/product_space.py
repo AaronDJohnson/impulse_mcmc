@@ -13,19 +13,19 @@ class ProductSpace:
         self.nmodels = np.arange(self.num_models)
 
         # get unique parameters for output
-        all_params = []
-        for param_list in param_names:
+        self.all_params = []
+        for jj, param_list in enumerate(param_names):
             for i in range(len(param_list)):
-                all_params.append(param_list[i])
-        all_params.append('nmodel')
+                self.all_params.append(param_list[i] + '_' + model_names[jj])
+        self.all_params.append('nmodel')
         self.ndim = len(self.all_params)
 
         # get indices for each model
         self.model_params = []
         for i in range(self.num_models):
             self.model_params.append([])
-            for j in range(len(param_names[i])):
-                self.model_params[i].append(all_params.index(param_names[i][j]))
+            for param in param_names[i]:
+                self.model_params[i].append(self.all_params.index(param + '_' + model_names[i]))
 
     def loglikelihood(self, x):
         # find model index variable
