@@ -4,7 +4,6 @@ from typing import Callable
 from impulse.mhsampler import MHState
 
 from impulse.online_updates import update_covariance, svd_groups
-from loguru import logger
 
 def shift_array(arr: np.ndarray,
                 num: int,
@@ -29,7 +28,7 @@ class ChainStats:
     """
     Data to be used to propose new samples
     """
-    ndim: int
+    model_params: int
     rng: np.random.Generator
     groups: list = None
     sample_cov: np.ndarray = None
@@ -46,6 +45,7 @@ class ChainStats:
     buffer_full: bool = False
 
     def __post_init__(self):
+        self.ndim = len(self.model_params)
         if self.sample_cov is None:
             self.sample_cov = np.identity(self.ndim)
         if self.sample_mean is None:
@@ -96,9 +96,15 @@ class JumpProposals:
     """
     def __init__(self,
                  chain_stats: ChainStats,
-                 proposal_list: list = [],
-                 proposal_weights: list = [],
+                 proposal_list: list = None,
+                 proposal_weights: list = None,
                  proposal_probs: np.ndarray = None):
+
+        if proposal_list is None:
+            proposal_list = []
+        if proposal_weights is None:
+            proposal_weights = []
+
         self.chain_stats = chain_stats
         self.proposal_list = proposal_list
         self.proposal_weights = proposal_weights
@@ -112,12 +118,12 @@ class JumpProposals:
             self.proposal_list.append(jump)
             self.proposal_weights.append(weight)
             self.proposal_probs = np.array(self.proposal_weights) / sum(self.proposal_weights)  # normalize probabilities
-        elif weight != self.proposal_weights[self.proposal_list.index(jump)]:
+        elif jump in self.proposal_list and weight != self.proposal_weights[self.proposal_list.index(jump)]:
             self.proposal_weights[self.proposal_list.index(jump)] = weight
             self.proposal_probs = np.array(self.proposal_weights) / sum(self.proposal_weights)
 
     def __call__(self,
-                 old_sample: np.ndarray,
+                 old_sample: MHState,
                  ) -> np.ndarray:
         self.chain_stats.update_sample(old_sample)
         rng = self.chain_stats.rng
