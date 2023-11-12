@@ -62,7 +62,7 @@ class ShortChain:
         with open(self.filepath, 'a+') as f:
             np.savetxt(f, to_save)
 
-@ray.remote(num_cpus=1)
+@ray.remote
 class PTTestSampler:
     def __init__(self,
                  ndim: int,
