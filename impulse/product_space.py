@@ -34,7 +34,6 @@ class ProductSpace:
         self.model_ndims = [len(self.model_params[i]) for i in range(self.num_models)]
 
     def loglikelihood(self, x):
-
         # find model index variable
         idx = list(self.unique_params).index('nmodel')
         nmodel = int(np.rint(x[idx]))
@@ -44,7 +43,6 @@ class ProductSpace:
         return active_lnlike(x[self.model_params[nmodel]])
 
     def logprior(self, x):
-        
         # find model index variable
         idx = list(self.unique_params).index('nmodel')
         nmodel = int(np.rint(x[idx]))
@@ -54,4 +52,3 @@ class ProductSpace:
 
         active_lnprior = self.logpriors[nmodel]
         return active_lnprior(x[self.model_params[nmodel]])
-

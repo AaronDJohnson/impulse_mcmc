@@ -29,6 +29,7 @@ class ChainStats:
     Data to be used to propose new samples
     """
     model_params: int
+    total_unique_params: int
     rng: np.random.Generator
     groups: list = None
     sample_cov: np.ndarray = None
@@ -47,18 +48,19 @@ class ChainStats:
     def __post_init__(self):
         self.ndim = len(self.model_params)
         if self.sample_cov is None:
-            self.sample_cov = np.identity(self.ndim)
+            self.sample_cov = np.identity(self.total_unique_params)
         if self.sample_mean is None:
-            self.sample_mean = np.zeros(self.ndim)
+            self.sample_mean = np.zeros(self.total_unique_params)
         if self.groups is None:
-            self.groups = [np.arange(0, self.ndim)]
+            # self.groups = [np.arange(0, self.ndim)]
+            self.groups = [np.array(self.model_params)]
         if self.svd_U is None:
             self.svd_U = [[]] * len(self.groups)
         if self.svd_S is None:
             self.svd_S = [[]] * len(self.groups)
         if self._buffer is None:
-            self._buffer = np.zeros((self.buffer_size, self.ndim))
-        
+            self._buffer = np.zeros((self.buffer_size, self.total_unique_params))
+
         self.svd_U, self.svd_S = svd_groups(self.svd_U, self.svd_S, self.groups, self.sample_cov)
 
     def update_buffer(self,
@@ -85,10 +87,7 @@ class ChainStats:
     def update_sample(self,
                       state: MHState):
         self.current_sample = state.position
-
-    def update_temp(self,
-                    state: MHState):
-        self.temp = state.temp
+        # self.temp = state.temp
 
 class JumpProposals:
     """

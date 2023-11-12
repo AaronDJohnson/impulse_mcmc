@@ -207,6 +207,7 @@ class PTPSTestSampler:
         self.outdir = outdir
 
         self.pspace = product_space_model
+        self.model_params = self.pspace.model_params
         self.num_models = self.pspace.num_models
         self.ndim = self.pspace.ndim
         self.model_ndim = self.pspace.model_ndims
@@ -217,21 +218,22 @@ class PTPSTestSampler:
 
         # set up rng for each temperature plus one for the ptswaps
         sequence = np.random.SeedSequence(seed)
-        seeds = sequence.spawn(ntemps * self.num_models + 1)  # extra one for the ptswaps
+        seeds = sequence.spawn(ntemps * self.num_models + 2)  # extra one for the ptswaps and nmodel draws
         self.rngs = [np.random.default_rng(s) for s in seeds]
 
         # set up stats and jumps for each temperature and model combo
+        # TODO: make this simpler
         self.chain_stats = []
-        for ii in range(self.ntemps):
-            for jj in range(self.num_models):
-                self.chain_stats.append(ChainStats(self.model_ndim[jj], self.rngs[ii + jj], groups=groups, sample_cov=sample_cov,
+        for ii in range(self.num_models):
+            for jj in range(self.ntemps):
+                self.chain_stats.append(ChainStats(self.model_params[ii], self.ndim, self.rngs[ii + jj], groups=groups, sample_cov=sample_cov,
                                                    sample_mean=sample_mean, buffer_size=buffer_size))
         self.jumps = [JumpProposals(self.chain_stats[ii]) for ii in range(ntemps * self.num_models)]
         for ii in range(ntemps * self.num_models):
             self.jumps[ii].add_jump(am, am_weight)
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
-        
+
         # set up pt state
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
                                temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
@@ -241,9 +243,8 @@ class PTPSTestSampler:
                num_iterations: int,
                thin: int = 1):
 
-        # set up temperatures
         short_chains = [ShortChain(self.ndim, self.save_freq, thin=thin,
-                        nchain=ii) for ii in range(self.ntemps)]  # keep save_freq samples
+                                   nchain=ii) for ii in range(self.ntemps)]  # keep save_freq samples
 
         # set up initial state here:
         x0 = np.array(initial_sample, dtype=np.float64)
@@ -257,18 +258,21 @@ class PTPSTestSampler:
                                   ) for ii in range(self.ntemps)]
 
         # initial sample and go!
-        states = [mh_kernel(initial_states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
-        [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
+        nmodel = np.rint(self.rngs[-2].uniform(-0.5, self.num_models - 0.5, size=num_iterations)).astype(int)
+        states = [mh_kernel(initial_states[ii], self.jumps[nmodel[0] * self.ntemps + ii], self.lnlike, self.lnprior,
+                            self.rngs[nmodel[0] * self.ntemps + ii]) for ii in range(self.ntemps)]
+        [short_chains[nmodel[0] * self.ntemps + ii].add_state(states[ii]) for ii in range(self.ntemps)]
 
         for jj in tqdm(range(1, num_iterations), initial=1, total=num_iterations):
-            states = [mh_kernel(states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
+            states = [mh_kernel(states[ii], self.jumps[nmodel[jj] * self.ntemps + ii], self.lnlike, self.lnprior, self.rngs[nmodel[jj] * self.ntemps + ii]) for ii in range(self.ntemps)]
             [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
             if jj % self.swap_steps == 0 and self.ntemps > 1:
                 states = pt_kernel(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
                 [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
                 self.ptstate.adapt_ladder()
             if jj % self.cov_update == 0:
-                [self.chain_stats[ii].recursive_update(self.chain_stats[ii].sample_total, short_chains[ii].samples) for ii in range(self.ntemps)]
+                [self.chain_stats[ii].recursive_update(self.chain_stats[ii].sample_total,
+                                                       short_chains[ii % self.num_models].samples) for ii in range(self.ntemps * self.num_models)]
             if jj % self.save_freq == 0:
                 [short_chains[ii].save_chain() for ii in range(self.ntemps)]
         [short_chains[ii].save_chain() for ii in range(self.ntemps)]
