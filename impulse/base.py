@@ -6,7 +6,7 @@ import numpy as np
 # from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
 # from loguru import logger
-# import ray
+import ray
 
 # from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, ChainStats, am, scam, de
@@ -62,6 +62,7 @@ class ShortChain:
         with open(self.filepath, 'a+') as f:
             np.savetxt(f, to_save)
 
+@ray.remote(num_cpus=1)
 class PTTestSampler:
     def __init__(self,
                  ndim: int,
@@ -120,7 +121,7 @@ class PTTestSampler:
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
-                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=100, adapt_nu=10)
+                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
 
         self.cov_update = cov_update
         self.save_freq = save_freq
