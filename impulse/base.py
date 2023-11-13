@@ -133,7 +133,7 @@ class PTTestSampler:
 
         # set up temperatures
         short_chains = [ShortChain(self.ndim, self.save_freq, thin=thin,
-                        nchain=ii) for ii in range(self.ntemps)]  # keep save_freq samples
+                        nchain=ii, outdir=self.outdir) for ii in range(self.ntemps)]  # keep save_freq samples
 
         # set up initial state here:
         x0 = np.array(initial_sample, dtype=np.float64)
