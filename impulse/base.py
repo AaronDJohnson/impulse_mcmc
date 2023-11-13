@@ -3,12 +3,9 @@ import os
 import pathlib
 from typing import Callable
 import numpy as np
-# from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
-# from loguru import logger
-# import ray
+from mpi4py import MPI
 
-# from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, ChainStats, am, scam, de
 from impulse.mhsampler import MHState, mh_kernel
 from impulse.ptsampler import PTState, pt_kernel
@@ -92,6 +89,10 @@ class PTTestSampler:
                  adapt_t0: int = 100,
                  adapt_nu: int = 10
                  ) -> None:
+
+        mpi_comm = MPI.COMM_WORLD
+        mpi_rank = mpi_comm.Get_rank()
+        mpi_size = mpi_comm.Get_size()
 
         if loglargs is None:
             loglargs = []
