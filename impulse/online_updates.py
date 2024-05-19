@@ -1,5 +1,4 @@
 import numpy as np
-from loguru import logger
 
 def update_mean(old_arr_length: int,
                 old_arr_avg: np.ndarray,

@@ -1,6 +1,3 @@
-from dataclasses import dataclass
-import os
-import pathlib
 from typing import Callable
 import numpy as np
 # from numpy.random import SeedSequence, default_rng
@@ -13,68 +10,62 @@ from impulse.proposals import JumpProposals, ChainStats, am, scam, de
 from impulse.mhsampler import MHState, mh_kernel
 from impulse.ptsampler import PTState, pt_kernel
 
-@dataclass
-class ShortChain:
+class TemperedLogPosterior:
     """
-    class to hold a short chain of save_freq iterations
+    Make the tempered logposterior
     """
-    ndim: int
-    short_iters: int
-    iteration: int = 1
-    outdir: str = './chains/'
-    resume: bool = False
-    thin: int = 1
-    nchain: float = 1
-
-    def __post_init__(self):
-        if self.thin > self.short_iters:
-            raise ValueError("There are not enough samples to thin. Increase save_freq.")
-        self.samples = np.zeros((self.short_iters, self.ndim))
-        self.lnprob = np.zeros((self.short_iters))
-        self.lnlike = np.zeros((self.short_iters))
-        self.accept = np.zeros((self.short_iters))
-        self.var_temp = np.zeros((self.short_iters))
-        self.filename = f'chain_{self.nchain}.txt'
-        self.filepath = os.path.join(self.outdir, self.filename)
-
-        pathlib.Path(self.outdir).mkdir(parents=True, exist_ok=True)
-        if self.exists(self.outdir, self.filename) and not self.resume:
-            with open(self.filepath, 'w') as _:
-                pass
-
-    def add_state(self,
-                  new_state: MHState):
-        self.samples[self.iteration % self.short_iters] = new_state.position
-        self.lnprob[self.iteration % self.short_iters] = new_state.lnprob
-        self.lnlike[self.iteration % self.short_iters] = new_state.lnlike
-        self.accept[self.iteration % self.short_iters] = new_state.accepted
-        self.var_temp[self.iteration % self.short_iters] = new_state.temp
-        self.iteration += 1
-
-    def set_filepath(self, outdir, filename):
-        self.filepath = os.path.join(outdir, filename)
-
-    def exists(self, outdir, filename):
-        return pathlib.Path(os.path.join(outdir, filename)).exists()
-
-    def save_chain(self):
-        to_save = np.column_stack([self.samples, self.lnlike, self.lnprob, self.accept, self.var_temp])[::self.thin]
-        with open(self.filepath, 'a+') as f:
-            np.savetxt(f, to_save)
-
-class PTTestSampler:
     def __init__(self,
-                 ndim: int,
-                 lnlike: Callable,
-                 lnprior: Callable,
-                 buffer_size: int = 50_000,
-                 sample_mean: float = None,
-                 sample_cov: np.ndarray = None,
-                 groups: list = None,
+                 loglikelihood: Callable,
+                 logprior: Callable,
                  loglargs: list = None,
                  loglkwargs: dict = None,
                  logpargs: list = None,
                  logpkwargs: dict = None,
+                 temperature: float = 1.0
+                 ):
+        self.temperature = temperature
+
+        if loglargs is None:
+            loglargs = []
+        if loglkwargs is None:
+            loglkwargs = {}
+        if logpargs is None:
+            logpargs = []
+        if logpkwargs is None:
+            logpkwargs = {}
+
+        self.loglikelihood = loglikelihood
+        self.logprior = logprior
+
+    def set_temperature(self, temperature: float):
+        self.temperature = temperature
+
+    def get_tempered_logposterior(self, params: np.ndarray) -> float:
+        return 1 / self.temperature * self.loglikelihood(params, *self.loglargs, **self.loglkwargs) + self.logprior(params, *self.logpargs, **self.logpkwargs)
+    
+    def get_loglikelihood(self, params: np.ndarray) -> float:
+        return self.loglikelihood(params, *self.loglargs, **self.loglkwargs)
+    
+    def get_logprior(self, params: np.ndarray) -> float:
+        return self.logprior(params, *self.logpargs, **self.logpkwargs)
+
+
+def make_rng_seeds(seed: int, ntemps: int):
+    # set up pieces for each temperature
+    sequence = np.random.SeedSequence(seed)
+    seeds = sequence.spawn(ntemps + 1)  # extra one for the ptswaps
+    rngs = [np.random.default_rng(s) for s in seeds]
+    return rngs
+
+
+class PTTestSampler:
+    def __init__(self,
+                 ndim: int,
+                 tlposterior: TemperedLogPosterior,
+                 buffer_size: int = 50_000,
+                 sample_mean: float = None,
+                 sample_cov: np.ndarray = None,
+                 groups: list = None,
                  cov_update: int = 100,
                  save_freq: int = 1000,
                  scam_weight: float = 30,
@@ -93,25 +84,12 @@ class PTTestSampler:
                  adapt_nu: int = 10
                  ) -> None:
 
-        if loglargs is None:
-            loglargs = []
-        if loglkwargs is None:
-            loglkwargs = {}
-        if logpargs is None:
-            logpargs = []
-        if logpkwargs is None:
-            logpkwargs = {}
+        self.rngs = make_rng_seeds(seed, ntemps)
 
         self.ndim = ndim
         self.ntemps = ntemps
         self.swap_steps = swap_steps
-        self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs)
-        self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs)
-
-        # set up pieces for each temperature
-        sequence = np.random.SeedSequence(seed)
-        seeds = sequence.spawn(ntemps + 1)  # extra one for the ptswaps
-        self.rngs = [np.random.default_rng(s) for s in seeds]
+        
         self.chain_stats = [ChainStats(ndim, self.rngs[ii], groups=groups, sample_cov=sample_cov,
                                        sample_mean=sample_mean, buffer_size=buffer_size) for ii in range(ntemps)]
         self.jumps = [JumpProposals(self.chain_stats[ii]) for ii in range(ntemps)]
@@ -120,7 +98,7 @@ class PTTestSampler:
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
-                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=100, adapt_nu=10)
+                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
 
         self.cov_update = cov_update
         self.save_freq = save_freq
@@ -162,16 +140,3 @@ class PTTestSampler:
             if jj % self.save_freq == 0:
                 [short_chains[ii].save_chain() for ii in range(self.ntemps)]
         [short_chains[ii].save_chain() for ii in range(self.ntemps)]
-
-class _function_wrapper(object):
-    """
-    This is a hack to make the likelihood function pickleable when ``args``
-    or ``kwargs`` are also included.
-    """
-    def __init__(self, f, args, kwargs):
-        self.f = f
-        self.args = args
-        self.kwargs = kwargs
-
-    def __call__(self, x):
-        return self.f(x, *self.args, **self.kwargs)
