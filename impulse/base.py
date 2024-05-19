@@ -9,7 +9,7 @@ from tqdm import tqdm
 # import ray
 
 # from impulse.ptsampler import PTSwap
-from impulse.proposals import JumpProposals, ChainStats, am, scam, de
+from impulse.proposals import JumpProposals, ChainStats, am, scam, de, gaussian
 from impulse.mhsampler import MHState, mh_kernel
 from impulse.ptsampler import PTState, pt_kernel
 
@@ -80,6 +80,7 @@ class PTTestSampler:
                  scam_weight: float = 30,
                  am_weight: float = 15,
                  de_weight: float = 50,
+                 gaussian_weight: float = 10,
                  seed: int = None,
                  outdir: str = './chains',
                  ntemps: int = 2,
@@ -119,8 +120,9 @@ class PTTestSampler:
             self.jumps[ii].add_jump(am, am_weight)
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
+            self.jumps[ii].add_jump(gaussian, gaussian_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
-                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=100, adapt_nu=10)
+                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
 
         self.cov_update = cov_update
         self.save_freq = save_freq

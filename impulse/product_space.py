@@ -1,4 +1,5 @@
 import numpy as np
+from typing import Callable
 
 class ProductSpace:
     def __init__(self,
@@ -49,3 +50,48 @@ class ProductSpace:
 
         active_lnprior = self.logpriors[nmodel]
         return active_lnprior(x[self.model_params[nmodel]])
+
+
+class NestedProductSpace:
+    """
+    Product space for nested models. The likelihood and prior functions are capable of taking variable number of sources.
+
+    Parameters
+    ----------
+    loglikelihood : Callable
+        Loglikelihood function
+
+    logprior : Callable
+        Logprior function
+
+    num_sources : int
+        Number of sources
+
+    num_params : int
+        Number of parameters for each source
+    """
+    def __init__(self,
+                 loglikelihood: Callable,
+                 logprior: Callable,
+                 num_sources: int,
+                 num_params: int):
+
+        self.loglikelihood = loglikelihood
+        self.logprior = logprior
+        self.num_models = num_sources
+        self.nmodels = np.arange(self.num_models)
+        self.num_params = num_params
+        # number of parameters for each source + 1 for model index
+        self.ndim = num_sources * num_params + 1
+
+    def get_loglikelihood(self, params):
+        # only active parameters enter the likelihood (the lowest nmodel parameters are used)
+        nmodel = int(np.rint(params[-1]))
+        return self.loglikelihood(params[:nmodel * self.num_params])
+
+    def get_logprior(self, params):
+        nmodel = int(np.rint(params[-1]))
+        if nmodel not in self.nmodels:
+            return -np.inf
+        
+        return self.logprior(params)

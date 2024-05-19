@@ -4,7 +4,6 @@ from typing import Callable
 from impulse.mhsampler import MHState
 
 from impulse.online_updates import update_covariance, svd_groups
-from loguru import logger
 
 def shift_array(arr: np.ndarray,
                 num: int,
@@ -301,6 +300,39 @@ def de(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
 
     return q, qxy
 
+def gaussian(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
+    """
+    Gaussian Jump. This function will occasionally
+    use different jump sizes to ensure proper mixing.
 
+    @param x: Parameter vector at current position
+    @param iter: Iteration of sampler
+    @param beta: Inverse temperature of chain
+
+    @return: q: New position in parameter space
+    @return: qxy: Forward-Backward jump probability
+    """
+    rng = chain_stats.rng
+    q = chain_stats.current_sample.copy()
+    qxy = 0
+
+    # choose group
+    jumpind = rng.integers(0, len(chain_stats.groups))
+    ndim = len(chain_stats.groups[jumpind])
+
+    # get jump scale size
+    prob = rng.random()
+
+    # mode jump
+    if prob > 0.5:
+        scale = 1.0
+
+    else:
+        scale = rng.random() * 2.4 / np.sqrt(2 * ndim) * np.sqrt(chain_stats.temp)
+
+    # make jump
+    q[chain_stats.groups[jumpind]] += rng.standard_normal(ndim) * scale
+
+    return q, qxy
 
 
