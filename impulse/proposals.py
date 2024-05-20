@@ -4,7 +4,6 @@ from typing import Callable
 from impulse.mhsampler import MHState
 
 from impulse.online_updates import update_covariance, svd_groups
-from loguru import logger
 
 def shift_array(arr: np.ndarray,
                 num: int,
