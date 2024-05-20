@@ -25,16 +25,25 @@ class ShortChain:
     resume: bool = False
     thin: int = 1
     nchain: float = 1
+    max_num_models: int = 1
 
     def __post_init__(self):
         if self.thin > self.short_iters:
             raise ValueError("There are not enough samples to thin. Increase save_freq.")
-        self.samples = np.zeros((self.short_iters, self.ndim))
-        self.lnprob = np.zeros((self.short_iters))
-        self.lnlike = np.zeros((self.short_iters))
-        self.accept = np.zeros((self.short_iters))
-        self.var_temp = np.zeros((self.short_iters))
-        self.filename = f'chain_{self.nchain}.txt'
+        self.model_number = 0
+        self.samples = {}  # np.zeros((self.short_iters, self.ndim))
+        self.lnprob = {}  # np.zeros((self.short_iters))
+        self.lnlike = {}  # np.zeros((self.short_iters))
+        self.accept = {}  # np.zeros((self.short_iters))
+        self.var_temp = {}  # np.zeros((self.short_iters))
+        # set up the model samples
+        for i in range(self.max_num_models):
+            self.samples[i] = []
+            self.lnprob[i] = []
+            self.lnlike[i] = []
+            self.accept[i] = []
+            self.var_temp[i] = []
+        self.filename = f'chain_model_{0}_temp_{self.nchain}.txt'
         self.filepath = os.path.join(self.outdir, self.filename)
 
         pathlib.Path(self.outdir).mkdir(parents=True, exist_ok=True)
@@ -43,12 +52,13 @@ class ShortChain:
                 pass
 
     def add_state(self,
-                  new_state: MHState):
-        self.samples[self.iteration % self.short_iters] = new_state.position
-        self.lnprob[self.iteration % self.short_iters] = new_state.lnprob
-        self.lnlike[self.iteration % self.short_iters] = new_state.lnlike
-        self.accept[self.iteration % self.short_iters] = new_state.accepted
-        self.var_temp[self.iteration % self.short_iters] = new_state.temp
+                  new_state: MHState,
+                  model_number: int = 0):
+        self.samples[model_number].append(new_state.position)
+        self.lnprob[model_number].append(new_state.lnprob)
+        self.lnlike[model_number].append(new_state.lnlike)
+        self.accept[model_number].append(new_state.accepted)
+        self.var_temp[model_number].append(new_state.temp)
         self.iteration += 1
 
     def set_filepath(self, outdir, filename):
@@ -58,11 +68,19 @@ class ShortChain:
         return pathlib.Path(os.path.join(outdir, filename)).exists()
 
     def save_chain(self):
-        to_save = np.column_stack([self.samples, self.lnlike, self.lnprob, self.accept, self.var_temp])[::self.thin]
-        with open(self.filepath, 'a+') as f:
-            np.savetxt(f, to_save)
+        for i in range(self.max_num_models):
+            self.set_filepath(self.outdir, f'chain_model_{i}_temp_{self.nchain}.txt')
+            to_save = np.column_stack([self.samples[i], self.lnlike[i], self.lnprob[i], self.accept[i], self.var_temp[i]])[::self.thin]
+            with open(self.filepath, 'a+') as f:
+                np.savetxt(f, to_save)
+            # reset the buffer!
+            self.samples[i] = []
+            self.lnprob[i] = []
+            self.lnlike[i] = []
+            self.accept[i] = []
+            self.var_temp[i] = []
 
-class PTTestSampler:
+class RJPTTestSampler:
     def __init__(self,
                  ndim: int,
                  lnlike: Callable,
@@ -90,7 +108,8 @@ class PTTestSampler:
                  ladder: list = None,
                  inf_temp: bool = False,
                  adapt_t0: int = 100,
-                 adapt_nu: int = 10
+                 adapt_nu: int = 10,
+                 initial_model_number: int = 0
                  ) -> None:
 
         if loglargs is None:
@@ -108,6 +127,8 @@ class PTTestSampler:
         self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs)
         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs)
 
+        self.model_number = initial_model_number
+
         # set up pieces for each temperature
         sequence = np.random.SeedSequence(seed)
         seeds = sequence.spawn(ntemps + 1)  # extra one for the ptswaps
@@ -120,7 +141,7 @@ class PTTestSampler:
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
-                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=100, adapt_nu=10)
+                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
 
         self.cov_update = cov_update
         self.save_freq = save_freq
