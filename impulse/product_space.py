@@ -87,11 +87,12 @@ class NestedProductSpace:
     def get_loglikelihood(self, params):
         # only active parameters enter the likelihood (the lowest nmodel parameters are used)
         nmodel = int(np.rint(params[-1]))
-        return self.loglikelihood(params[:nmodel * self.num_params])
+
+        return self.loglikelihood(params[:(nmodel + 1) * self.num_params])
 
     def get_logprior(self, params):
         nmodel = int(np.rint(params[-1]))
         if nmodel not in self.nmodels:
             return -np.inf
-        
-        return self.logprior(params)
+
+        return self.logprior(params[:-1])
