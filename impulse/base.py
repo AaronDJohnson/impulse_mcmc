@@ -120,7 +120,7 @@ class PTTestSampler:
             self.jumps[ii].add_jump(am, am_weight)
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
-            self.jumps[ii].add_jump(gaussian, gaussian_weight)
+            # self.jumps[ii].add_jump(gaussian, gaussian_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
                                temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
 
