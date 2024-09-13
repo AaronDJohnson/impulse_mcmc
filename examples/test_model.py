@@ -11,21 +11,6 @@ def make_sin_data(num_pts):
     data = rng.standard_normal(num_pts) + a_real * np.sin(omega_real * x + phi_real)
     return x, data, omega_real, a_real, phi_real
 
-def make_multiple_sin_data(num_pts, num_signals):
-    rng = np.random.default_rng()
-
-    omega_real = 3 * rng.uniform(0, 1, size=num_signals)
-    a_real = 5 * rng.uniform(0, 1, size=num_signals)
-    phi_real = np.pi * rng.uniform(0, 1, size=num_signals)
-    for ii in range(num_signals):
-        if ii == 0:
-            x = np.linspace(0, 2*np.pi, num_pts)
-            data = rng.standard_normal(num_pts) + a_real[ii] * np.sin(omega_real[ii] * x + phi_real[ii])
-        else:
-            data += a_real[ii] * np.sin(omega_real[ii] * x + phi_real[ii])
-
-    return x, data, omega_real, a_real, phi_real
-
 # standard least squares likelihood
 class LnLikelihood():
     def __init__(self, x, data, sigma=1):
@@ -38,7 +23,7 @@ class LnLikelihood():
         a = params[1]
         phi = params[2]
         func = a * np.sin(omega * self.x + phi)
-        result = np.sum(-0.5 * (func - self.data)**2)
+        result = np.sum(-0.5 * ((func - self.data) / self.sigma)**2)
         if np.isfinite(result):
             return result
         else:

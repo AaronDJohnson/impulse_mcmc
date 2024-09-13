@@ -3,14 +3,10 @@ import os
 import pathlib
 from typing import Callable
 import numpy as np
-# from numpy.random import SeedSequence, default_rng
 from tqdm import tqdm
-# from loguru import logger
-# import ray
 
-# from impulse.ptsampler import PTSwap
 from impulse.proposals import JumpProposals, ChainStats, am, scam, de
-from impulse.mhsampler import MHState, mh_kernel
+from impulse.mhsampler import MHState, mh_step, vectorized_mh_step
 from impulse.ptsampler import PTState, pt_kernel
 
 @dataclass
@@ -62,7 +58,7 @@ class ShortChain:
         with open(self.filepath, 'a+') as f:
             np.savetxt(f, to_save)
 
-class PTTestSampler:
+class PTSampler:
     def __init__(self,
                  ndim: int,
                  lnlike: Callable,
@@ -90,7 +86,8 @@ class PTTestSampler:
                  ladder: list = None,
                  inf_temp: bool = False,
                  adapt_t0: int = 100,
-                 adapt_nu: int = 10
+                 adapt_nu: int = 10,
+                 vectorized: bool = False,
                  ) -> None:
 
         if loglargs is None:
@@ -110,7 +107,8 @@ class PTTestSampler:
 
         # set up pieces for each temperature
         sequence = np.random.SeedSequence(seed)
-        seeds = sequence.spawn(ntemps + 1)  # extra one for the ptswaps
+        # each chain needs its own random number generator with a seed
+        seeds = sequence.spawn(ntemps + 1)  # extra seed for the ptswaps
         self.rngs = [np.random.default_rng(s) for s in seeds]
         self.chain_stats = [ChainStats(ndim, self.rngs[ii], groups=groups, sample_cov=sample_cov,
                                        sample_mean=sample_mean, buffer_size=buffer_size) for ii in range(ntemps)]
@@ -120,11 +118,12 @@ class PTTestSampler:
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
-                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=100, adapt_nu=10)
+                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
 
         self.cov_update = cov_update
         self.save_freq = save_freq
         self.outdir = outdir
+        self.vectorized = vectorized
 
     def sample(self,
                initial_sample: np.ndarray,
@@ -147,11 +146,17 @@ class PTTestSampler:
                                   ) for ii in range(self.ntemps)]
 
         # initial sample and go!
-        states = [mh_kernel(initial_states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
+        if self.vectorized:
+            states = vectorized_mh_step(initial_states, self.jumps, self.lnlike, self.lnprior, self.rngs[0])
+        else:
+            states = [mh_step(initial_states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
         [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
 
         for jj in tqdm(range(1, num_iterations), initial=1, total=num_iterations):
-            states = [mh_kernel(states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
+            if self.vectorized:
+                states = vectorized_mh_step(states, self.jumps, self.lnlike, self.lnprior, self.rngs[0])
+            else:
+                states = [mh_step(states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
             [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
             if jj % self.swap_steps == 0 and self.ntemps > 1:
                 states = pt_kernel(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
