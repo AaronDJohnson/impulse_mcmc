@@ -165,6 +165,9 @@ class PTTestSampler:
                 [short_chains[ii].save_chain() for ii in range(self.ntemps)]
         [short_chains[ii].save_chain() for ii in range(self.ntemps)]
 
+    def add_custom_jump(self, proposal, weight):
+        [jump.add_jump(proposal, weight) for jump in self.jumps]
+
 class _function_wrapper(object):
     """
     This is a hack to make the likelihood function pickleable when ``args``
