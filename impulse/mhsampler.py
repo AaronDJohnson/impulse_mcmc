@@ -50,10 +50,11 @@ def mh_step(state: MHState,
 
 
 def vectorized_mh_step(states: list[MHState],
-                        prop_fn: Callable,
+                        prop_fns: list[Callable],
                         lnlike_fn: Callable,
                         lnprior_fn: Callable,
                         rng: np.random.Generator,
+                        ndim: int,
                         ) -> list[MHState]:
     """
     Generate a MH kernel step with the likelihood and prior vectorized
@@ -61,25 +62,30 @@ def vectorized_mh_step(states: list[MHState],
     This means that the likelihood and prior functions return VectorizedMHState.num_temps values
     """
     # propose a move
-    results = [prop_fn(state) for state in states]
+    results = [prop_fns[ii](states[ii]) for ii in range(len(states))]
     x_stars, qxys = zip(*results)
+    x_stars, qxys = np.array(x_stars).flatten(), np.array(qxys)
+
     temperatures = np.array([state.temp for state in states])
-    old_lnprobs = np.array([state.lnprob for state in states])
+    old_lnprobs = np.array([float(state.lnprob) for state in states])
 
     # compute hastings ratio
-    x_star_array = np.hstack(x_stars)  # TODO: hstack or vstack?
-    print(x_star_array.shape)
-    lnlike_stars = lnlike_fn(x_star_array)
-    lnprior_stars = lnprior_fn(x_star_array)
-    
+    # x_star_array = np.array(x_stars)  # TODO: hstack or vstack?
+
+    lnlike_stars = lnlike_fn(x_stars)
+    lnprior_stars = lnprior_fn(x_stars)
+
     lnprob_stars = np.where(lnprior_stars == -np.inf, -np.inf, 1 / temperatures * lnlike_stars + lnprior_stars)
 
+    # draw random numbers for accpetance step
     hastings_ratios = lnprob_stars - (old_lnprobs) + qxys
-    rand_num = rng.uniform(size=len(states))
+    log_rand_nums = np.log(rng.uniform(size=len(states)))
+
+    # reshape to the original shape
+    x_stars = x_stars.reshape(-1, ndim)
+
+    # for hastings_ratio in hastings_ratios:
+    #     print("hastings =", hastings_ratio)
 
     # accept/reject step
-    return np.where(
-        np.log(rand_num) < hastings_ratios,
-        [MHState(x_star, lnlike_star, lnprior_star, 1 / state.temp * lnlike_star + lnprior_star, accepted=1, temp=state.temp) for x_star, lnlike_star, lnprior_star, state in zip(x_stars, lnlike_stars, lnprior_stars, states)],
-        states
-    )
+    return [MHState(x_star, lnlike_star, lnprior_star, 1 / state.temp * lnlike_star + lnprior_star, accepted=1, temp=state.temp) if (log_rand_num < hastings_ratio) else MHState(state.position, state.lnlike, state.lnprior, state.lnprob, accepted=0, temp=state.temp) for x_star, lnlike_star, lnprior_star, state, log_rand_num, hastings_ratio in zip(x_stars, lnlike_stars, lnprior_stars, states, log_rand_nums, hastings_ratios)]

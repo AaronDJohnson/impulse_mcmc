@@ -79,7 +79,7 @@ class PTSampler:
                  seed: int = None,
                  outdir: str = './chains',
                  ntemps: int = 2,
-                 swap_steps: int = 100,
+                 swap_steps: int = 10,
                  min_temp: float = 1.0,
                  max_temp: float = None,
                  temp_step: float = None,
@@ -138,23 +138,36 @@ class PTSampler:
         x0 = np.array(initial_sample, dtype=np.float64)
         lnlike0 = self.lnlike(x0)
         lnprior0 = self.lnprior(x0)
-        initial_states = [MHState(x0,
-                                  lnlike0,
-                                  lnprior0,
-                                  1/self.ptstate.ladder[ii] * (lnlike0) + lnprior0,
-                                  temp=self.ptstate.ladder[ii]
-                                  ) for ii in range(self.ntemps)]
+
+        # check for bad initial samples
+        try:  # non-vectorized
+            if ~np.isfinite(lnlike0):
+                raise ValueError("Initial sample likelihood value is not finite.")
+            if ~np.isfinite(lnlike0):
+                raise ValueError("Initial sample is outside the prior bounds.")
+        except ValueError:  # vectorized
+            if np.all(~np.isfinite(lnlike0)):
+                raise ValueError("Some likelihood values are not finite.")
+            if np.any(~np.isfinite(lnprior0)):
+                raise ValueError("An initial value falls outside the prior bounds.")
+
+        initial_states = [MHState(x0 if not self.vectorized else x0.reshape(-1, self.ndim)[ii],
+                                lnlike0 if not self.vectorized else lnlike0[ii],
+                                lnprior0 if not self.vectorized else lnprior0[ii],
+                                1/self.ptstate.ladder[ii] * (lnlike0) + lnprior0 if not self.vectorized else 1/self.ptstate.ladder[ii] * (lnlike0[ii]) + lnprior0[ii],
+                                temp=self.ptstate.ladder[ii]
+                                ) for ii in range(self.ntemps)]
 
         # initial sample and go!
         if self.vectorized:
-            states = vectorized_mh_step(initial_states, self.jumps, self.lnlike, self.lnprior, self.rngs[0])
+            states = vectorized_mh_step(initial_states, self.jumps, self.lnlike, self.lnprior, self.rngs[0], self.ndim)
         else:
             states = [mh_step(initial_states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
         [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
 
         for jj in tqdm(range(1, num_iterations), initial=1, total=num_iterations):
             if self.vectorized:
-                states = vectorized_mh_step(states, self.jumps, self.lnlike, self.lnprior, self.rngs[0])
+                states = vectorized_mh_step(states, self.jumps, self.lnlike, self.lnprior, self.rngs[0], self.ndim)
             else:
                 states = [mh_step(states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
             [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
