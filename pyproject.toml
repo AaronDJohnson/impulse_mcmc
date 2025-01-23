@@ -1,6 +1,17 @@
+[tool.poetry]
+name = "impulse-mcmc"
+version = "0.1.0"
+description = "A parallel tempering MCMC sampler"
+authors = ["Aaron Johnson <aaron.johnson@nanograv.org>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+numpy = "^2.2.2"
+scipy = "^1.15.1"
+tqdm = "^4.67.1"
+
+
 [build-system]
-requires = [
-    "setuptools>=42",
-    "wheel"
-]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
