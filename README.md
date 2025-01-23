@@ -6,8 +6,9 @@
   This package can be installed via pip: `pip install impulse_mcmc`
 
 ## Currently working:
-  * `PTSampler` with `ncores = 1`
+  * Metropolis-Hastings sampling with adaptive jumps
+  * Parallel tempering with adaptive temperature spacing (as in Vousden et al. 2016)
+  * Vectorized likelihoods and priors
 
 ## Currently under development:
   * Resume function
-  * Parallel processing
