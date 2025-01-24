@@ -96,26 +96,3 @@ class NestedProductSpace:
             return -np.inf
 
         return self.logprior(params[:-1])
-
-    def source_swap_proposal(self, chain_stats):
-        rng = chain_stats.rng
-        q = chain_stats.current_sample.copy()
-        qxy = 0
-        nmodel = int(np.rint(q[-1]))
-        if nmodel == 0:
-            return q, qxy
-        swap_source_1 = rng.integers(0, nmodel + 1)
-        swap_source_2 = rng.integers(0, nmodel + 1)
-        if swap_source_1 == swap_source_2:
-            return q, qxy
-        # print(nmodel)
-        # print(swap_source_1, swap_source_2)
-        # print(q[self.num_params * swap_source_1:self.num_params * (swap_source_1 + 1)])
-        # print(q[self.num_params * swap_source_2:self.num_params * (swap_source_2 + 1)])
-        # print()
-        x = q[self.num_params * swap_source_1:self.num_params * (swap_source_1 + 1)].copy()
-        y = q[self.num_params * swap_source_2:self.num_params * (swap_source_2 + 1)].copy()
-
-        q[self.num_params * swap_source_1:self.num_params * (swap_source_1 + 1)] = y
-        q[self.num_params * swap_source_2:self.num_params * (swap_source_2 + 1)] = x
-        return q, qxy
