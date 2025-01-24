@@ -300,6 +300,60 @@ def de(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
 
     return q, qxy
 
+def gaussian(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
+    """
+    Gaussian Jump. This function will occasionally
+    use different jump sizes to ensure proper mixing.
 
+    @param x: Parameter vector at current position
+    @param iter: Iteration of sampler
+    @param beta: Inverse temperature of chain
 
+    @return: q: New position in parameter space
+    @return: qxy: Forward-Backward jump probability
+    """
+    rng = chain_stats.rng
+    q = chain_stats.current_sample.copy()
+    qxy = 0
 
+    # choose group
+    jumpind = rng.integers(0, len(chain_stats.groups))
+    ndim = len(chain_stats.groups[jumpind])
+
+    # get jump scale size
+    prob = rng.random()
+
+    # mode jump
+    if prob > 0.5:
+        scale = 1.0
+
+    else:
+        scale = rng.random() * 2.4 / np.sqrt(2 * ndim) * np.sqrt(chain_stats.temp)
+
+    # make jump
+    q[chain_stats.groups[jumpind]] += rng.standard_normal(ndim) * scale
+
+    return q, qxy
+
+def source_swap_proposal(chain_stats: ChainStats):
+    rng = chain_stats.rng
+    q = chain_stats.current_sample.copy()
+    qxy = 0
+    nmodel = int(np.rint(q[-1]))
+    if nmodel == 0:
+        return q, qxy
+    swap_source_1 = rng.integers(0, nmodel + 1)
+    swap_source_2 = rng.integers(0, nmodel + 1)
+    if swap_source_1 == swap_source_2:
+        return q, qxy
+    # print(nmodel)
+    # print(swap_source_1, swap_source_2)
+    # print(q[self.num_params * swap_source_1:self.num_params * (swap_source_1 + 1)])
+    # print(q[self.num_params * swap_source_2:self.num_params * (swap_source_2 + 1)])
+    # print()
+    x = q[3 * swap_source_1:3 * (swap_source_1 + 1)].copy()
+    y = q[3 * swap_source_2:3 * (swap_source_2 + 1)].copy()
+
+    q[3 * swap_source_1:3 * (swap_source_1 + 1)] = y
+    q[3 * swap_source_2:3 * (swap_source_2 + 1)] = x
+    return q, qxy

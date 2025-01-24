@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from impulse.proposals import JumpProposals, ChainStats, am, scam, de
 from impulse.mhsampler import MHState, mh_step, vectorized_mh_step
-from impulse.ptsampler import PTState, pt_kernel
+from impulse.ptsampler import PTState, pt_step
 
 @dataclass
 class ShortChain:
@@ -117,6 +117,7 @@ class PTSampler:
             self.jumps[ii].add_jump(am, am_weight)
             self.jumps[ii].add_jump(scam, scam_weight)
             self.jumps[ii].add_jump(de, de_weight)
+            # self.jumps[ii].add_jump(gaussian, gaussian_weight)
         self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
                                temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
 
@@ -172,7 +173,7 @@ class PTSampler:
                 states = [mh_step(states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
             [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
             if jj % self.swap_steps == 0 and self.ntemps > 1:
-                states = pt_kernel(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
+                states = pt_step(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
                 [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
                 self.ptstate.adapt_ladder()
             if jj % self.cov_update == 0:
@@ -180,6 +181,9 @@ class PTSampler:
             if jj % self.save_freq == 0:
                 [short_chains[ii].save_chain() for ii in range(self.ntemps)]
         [short_chains[ii].save_chain() for ii in range(self.ntemps)]
+
+    def add_custom_jump(self, proposal, weight):
+        [jump.add_jump(proposal, weight) for jump in self.jumps]
 
 class _function_wrapper(object):
     """
