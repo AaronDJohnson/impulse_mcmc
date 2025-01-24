@@ -1,12 +1,14 @@
 # impulse
-  Rewrite of PTMCMCSampler focusing on modularity
+  A rewrite of PTMCMCSampler focusing on modularity
 
-# This is a work in progress (USE AT YOUR OWN RISK)
-  * tests of accuracy are under way
+## Installation
+
+  This package can be installed via pip: `pip install impulse_mcmc`
 
 ## Currently working:
-  * `PTSampler` with `ncores = 1`
+  * Metropolis-Hastings sampling with adaptive jumps
+  * Parallel tempering with adaptive temperature spacing (as in Vousden et al. 2016)
+  * Vectorized likelihoods and priors
 
 ## Currently under development:
   * Resume function
-  * Parallel processing
