@@ -68,7 +68,7 @@ class PTState():
         self.ladder[1:-1] = (np.cumsum(delta_temps) + self.ladder[0])
 
 
-def pt_kernel(mhstates: list[MHState],
+def pt_step(mhstates: list[MHState],
               ptstate: PTState,
               lnlike_fn: Callable,
               lnprior_fn: Callable,
