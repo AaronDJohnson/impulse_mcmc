@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from impulse.proposals import JumpProposals, ChainStats, am, scam, de
 from impulse.mhsampler import MHState, mh_step, vectorized_mh_step
-from impulse.ptsampler import PTState, pt_kernel
+from impulse.ptsampler import PTState, pt_step
 
 @dataclass
 class ShortChain:
@@ -173,7 +173,7 @@ class PTSampler:
                 states = [mh_step(states[ii], self.jumps[ii], self.lnlike, self.lnprior, self.rngs[ii]) for ii in range(self.ntemps)]
             [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
             if jj % self.swap_steps == 0 and self.ntemps > 1:
-                states = pt_kernel(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
+                states = pt_step(states, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
                 [short_chains[ii].add_state(states[ii]) for ii in range(self.ntemps)]
                 self.ptstate.adapt_ladder()
             if jj % self.cov_update == 0:
