@@ -64,7 +64,7 @@ def vectorized_mh_step(states: list[MHState],
     # propose a move
     results = [prop_fns[ii](states[ii]) for ii in range(len(states))]
     x_stars, qxys = zip(*results)
-    x_stars, qxys = np.array(x_stars).flatten(), np.array(qxys)
+    x_stars, qxys = np.array(x_stars), np.array(qxys)
 
     temperatures = np.array([state.temp for state in states])
     old_lnprobs = np.array([float(state.lnprob) for state in states])
@@ -82,7 +82,7 @@ def vectorized_mh_step(states: list[MHState],
     log_rand_nums = np.log(rng.uniform(size=len(states)))
 
     # reshape to the original shape
-    x_stars = x_stars.reshape(-1, ndim)
+    # x_stars = x_stars.reshape(-1, ndim)
 
     # for hastings_ratio in hastings_ratios:
     #     print("hastings =", hastings_ratio)
