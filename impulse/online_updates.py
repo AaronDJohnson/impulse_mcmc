@@ -1,4 +1,5 @@
 import numpy as np
+from joblib import Parallel, delayed
 
 def update_mean(old_arr_length: int,
                 old_arr_avg: np.ndarray,
@@ -55,13 +56,45 @@ def update_covariance(old_arr_length: int,
 #     return svd_U, svd_S
 
 # try this one:
+# def svd_groups(svd_U: list,
+#                svd_S: list,
+#                groups: list,
+#                sample_cov: np.ndarray
+#                ) -> tuple[list, list]:
+#     # do svd on parameter groups
+#     for ct, group in enumerate(groups):
+#         covgroup = sample_cov[group][:, group]
+#         svd_U[ct], svd_S[ct], __ = np.linalg.svd(covgroup)
+#     return svd_U, svd_S
+
+def _block_eigh(group: np.ndarray, sample_cov: np.ndarray):
+    C = sample_cov[np.ix_(group, group)]
+    try:
+        vals, vecs = np.linalg.eigh(C)
+        idx = np.argsort(vals)[::-1]
+        return vecs[:, idx], vals[idx]
+    except np.linalg.LinAlgError:
+        # Fallback to full SVD if eigh is unstable
+        U, S, _ = np.linalg.svd(C, full_matrices=False)
+        return U, S
+
 def svd_groups(svd_U: list,
                svd_S: list,
                groups: list,
-               sample_cov: np.ndarray
+               sample_cov: np.ndarray,
+               use_parallel: bool = False
                ) -> tuple[list, list]:
-    # do svd on parameter groups
-    for ct, group in enumerate(groups):
-        covgroup = sample_cov[group][:, group]
-        svd_U[ct], svd_S[ct], __ = np.linalg.svd(covgroup)
-    return svd_U, svd_S
+    """
+    If use_parallel, dispatch each block-eigh to a worker.
+    Otherwise do a simple Python loop.
+    """
+    if use_parallel:
+        results = Parallel(n_jobs=-1)(
+            delayed(_block_eigh)(grp, sample_cov) for grp in groups
+        )
+        for ct, (U, S) in enumerate(results):
+            svd_U[ct], svd_S[ct] = U, S
+    else:
+        for ct, grp in enumerate(groups):
+            U, S = _block_eigh(np.array(grp, dtype=int), sample_cov)
+            svd_U[ct], svd_S[ct] = U, S
