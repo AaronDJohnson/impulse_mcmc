@@ -12,7 +12,7 @@ from impulse.ptsampler import PTState, pt_step
 @dataclass
 class ShortChain:
     """
-    class to hold a short chain of save_freq iterations
+    Ring buffer to hold short chains and save to file periodically.
     """
     ndim: int
     short_iters: int
