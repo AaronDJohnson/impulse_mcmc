@@ -1,1 +1,1 @@
-from .base import PTSampler
+from .samplers import PTSampler
