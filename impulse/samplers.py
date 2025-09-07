@@ -44,7 +44,7 @@ def setup_initial_position(initial_position: np.ndarray, ntemps: int) -> np.ndar
         elif _x0.shape[0] == 1:
             positions = np.tile(_x0, (ntemps, 1))
         else:
-            raise ValueError(f"initial_position has { _x0.shape[0] } rows but expected 1 or {self.ntemps}")
+            raise ValueError(f"initial_position has { _x0.shape[0] } rows but expected 1 or {ntemps}")
     else:
         raise ValueError("initial_position must be 1-D (ndim,) or 2-D (ntemps, ndim)")
     return positions
