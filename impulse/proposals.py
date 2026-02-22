@@ -1,8 +1,11 @@
+import math
 import numpy as np
 from dataclasses import dataclass
 from typing import Callable, List, Tuple
 from impulse.chain_stats import ChainStats
 from impulse.sampler_state import SamplerState
+
+_SQRT2_INV = 2.4 / math.sqrt(2)  # constant for SCAM (neff is always 1)
 
 
 class JumpProposals:
@@ -193,16 +196,11 @@ def am(chain_stats: ChainStats) -> Tuple[np.ndarray, float]:
     else:
         scale = 1.0
 
-    # get parameters in new diagonalized basis
-    y = np.dot(chain_stats.svd_U[jumpind].T, chain_stats.current_sample[chain_stats.groups[jumpind]])
-
-    # make correlated componentwise adaptive jump
-    ind = np.arange(len(chain_stats.groups[jumpind]))
-    neff = len(ind)
-    cd = 2.4 / np.sqrt(2 * neff) * scale
-
-    y[ind] = y[ind] + rng.standard_normal(neff) * cd * np.sqrt(chain_stats.svd_S[jumpind][ind])
-    q[chain_stats.groups[jumpind]] = np.dot(chain_stats.svd_U[jumpind], y)
+    # make correlated adaptive jump using precomputed L = U * sqrt(S)
+    group = chain_stats.groups[jumpind]
+    neff = len(group)
+    cd = 2.4 / math.sqrt(2 * neff) * scale
+    q[group] += cd * (chain_stats.proposal_L[jumpind] @ rng.standard_normal(neff))
 
     return q, qxy
 
@@ -266,13 +264,11 @@ def scam(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
         scale = 1.0
 
     # make correlated componentwise adaptive jump
-    ind = rng.integers(0, ndim, size=1)
-
-    neff = len(ind)
-    cd = 2.4 / np.sqrt(2 * neff) * scale
+    ind = rng.integers(0, ndim)
+    cd = _SQRT2_INV * scale
 
     q[chain_stats.groups[jumpind]] += (
-        rng.standard_normal() * cd * np.sqrt(chain_stats.svd_S[jumpind][ind]) * chain_stats.svd_U[jumpind][:, ind].flatten()
+        rng.standard_normal() * cd * chain_stats.proposal_L[jumpind][:, ind]
     )
 
     return q, qxy

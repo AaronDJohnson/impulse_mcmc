@@ -37,6 +37,9 @@ class TestChainStats:
         np.testing.assert_array_equal(stats.groups[0], np.arange(2))
         assert len(stats.svd_U) == 1
         assert len(stats.svd_S) == 1
+        assert len(stats.proposal_L) == 1
+        assert stats.proposal_L[0] is not None
+        assert stats.proposal_L[0].shape == (2, 2)
 
     def test_chain_stats_init_custom_params(self, ptstate_2d):
         """Test ChainStats initialization with custom parameters"""
@@ -63,6 +66,7 @@ class TestChainStats:
         assert len(stats.groups) == 2
         assert len(stats.svd_U) == 2  # One per group
         assert len(stats.svd_S) == 2
+        assert len(stats.proposal_L) == 2
 
     def test_chain_stats_init_ladder_error(self):
         """Test error when PTState ladder is None"""

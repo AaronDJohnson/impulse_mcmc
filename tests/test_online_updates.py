@@ -140,112 +140,155 @@ class TestSvdGroups:
     """Test suite for svd_groups function"""
 
     def test_svd_groups_single_group(self):
-        """Test SVD with single parameter group"""
+        """Test eigh decomposition with single parameter group"""
         svd_U = [None]
         svd_S = [None]
         groups = [np.array([0, 1])]
         sample_cov = np.array([[2.0, 0.5], [0.5, 1.0]])
-        
-        updated_U, updated_S = svd_groups(svd_U, svd_S, groups, sample_cov)
-        
+
+        updated_U, updated_S, updated_L = svd_groups(svd_U, svd_S, groups, sample_cov)
+
         assert len(updated_U) == 1
         assert len(updated_S) == 1
+        assert len(updated_L) == 1
         assert updated_U[0].shape == (2, 2)
         assert updated_S[0].shape == (2,)
-        
-        # Check that it's a valid SVD
+        assert updated_L[0].shape == (2, 2)
+
+        # Eigenvalues should match SVD singular values for symmetric PSD matrix
         U, s, Vt = np.linalg.svd(sample_cov)
         np.testing.assert_array_almost_equal(np.sort(updated_S[0])[::-1], np.sort(s)[::-1])
 
+        # L @ L.T should reconstruct the covariance
+        np.testing.assert_array_almost_equal(updated_L[0] @ updated_L[0].T, sample_cov)
+
     def test_svd_groups_multiple_groups(self):
-        """Test SVD with multiple parameter groups"""
+        """Test eigh decomposition with multiple parameter groups"""
         svd_U = [None, None]
         svd_S = [None, None]
         groups = [np.array([0, 1]), np.array([2, 3])]
         sample_cov = np.eye(4)
-        
-        updated_U, updated_S = svd_groups(svd_U, svd_S, groups, sample_cov)
-        
+
+        updated_U, updated_S, updated_L = svd_groups(svd_U, svd_S, groups, sample_cov)
+
         assert len(updated_U) == 2
         assert len(updated_S) == 2
-        
+        assert len(updated_L) == 2
+
         for i in range(2):
             assert updated_U[i].shape == (2, 2)
             assert updated_S[i].shape == (2,)
-            # For identity submatrices, singular values should be 1
+            assert updated_L[i].shape == (2, 2)
+            # For identity submatrices, eigenvalues should be 1
             np.testing.assert_array_almost_equal(updated_S[i], np.ones(2))
+            # L should equal U for identity covariance (sqrt(1)=1)
+            np.testing.assert_array_almost_equal(
+                np.abs(updated_L[i]), np.abs(updated_U[i])
+            )
 
     def test_svd_groups_single_parameter_groups(self):
-        """Test SVD with single-parameter groups"""
+        """Test eigh with single-parameter groups"""
         svd_U = [None, None]
         svd_S = [None, None]
         groups = [np.array([0]), np.array([1])]
         sample_cov = np.array([[4.0, 1.0], [1.0, 2.0]])
-        
-        updated_U, updated_S = svd_groups(svd_U, svd_S, groups, sample_cov)
-        
+
+        updated_U, updated_S, updated_L = svd_groups(svd_U, svd_S, groups, sample_cov)
+
         assert len(updated_U) == 2
         assert len(updated_S) == 2
-        
+        assert len(updated_L) == 2
+
         # Single parameter groups should have 1x1 U matrices and 1-element S vectors
         assert updated_U[0].shape == (1, 1)
         assert updated_U[1].shape == (1, 1)
         assert updated_S[0].shape == (1,)
         assert updated_S[1].shape == (1,)
-        
-        # Singular values should match diagonal elements (not their square roots)
-        np.testing.assert_array_almost_equal(updated_S[0], [4.0])  # diagonal element
-        np.testing.assert_array_almost_equal(updated_S[1], [2.0])  # diagonal element
+
+        # Eigenvalues should match diagonal elements
+        np.testing.assert_array_almost_equal(updated_S[0], [4.0])
+        np.testing.assert_array_almost_equal(updated_S[1], [2.0])
+
+        # L[:, j] should equal U[:, j] * sqrt(S[j])
+        np.testing.assert_array_almost_equal(updated_L[0], [[2.0]])   # sqrt(4)
+        np.testing.assert_array_almost_equal(updated_L[1], [[np.sqrt(2.0)]])
 
     def test_svd_groups_overlapping_indices(self):
-        """Test SVD with realistic covariance matrix"""
+        """Test eigh with realistic covariance matrix"""
         svd_U = [None]
         svd_S = [None]
         groups = [np.array([0, 1, 2])]
-        
+
         # Create a realistic covariance matrix
         np.random.seed(42)
         A = np.random.randn(3, 3)
         sample_cov = A @ A.T  # Ensure positive definite
-        
-        updated_U, updated_S = svd_groups(svd_U, svd_S, groups, sample_cov)
-        
-        # Verify SVD properties
+
+        updated_U, updated_S, updated_L = svd_groups(svd_U, svd_S, groups, sample_cov)
+
+        # Verify decomposition properties
         U = updated_U[0]
         s = updated_S[0]
-        
+        L = updated_L[0]
+
         # U should be orthogonal
         np.testing.assert_array_almost_equal(U @ U.T, np.eye(3), decimal=10)
-        
-        # Singular values should be positive
+
+        # Eigenvalues should be positive
         assert np.all(s > 0)
-        
-        # Reconstruction check
+
+        # Reconstruction check: U @ diag(S) @ U.T == cov
         reconstructed = U @ np.diag(s) @ U.T
         np.testing.assert_array_almost_equal(reconstructed, sample_cov, decimal=10)
 
+        # L @ L.T should also reconstruct the covariance
+        np.testing.assert_array_almost_equal(L @ L.T, sample_cov, decimal=10)
+
+        # L[:, j] == U[:, j] * sqrt(S[j])
+        for j in range(3):
+            np.testing.assert_array_almost_equal(L[:, j], U[:, j] * np.sqrt(s[j]))
+
     def test_svd_groups_preserves_list_length(self):
-        """Test that SVD preserves input list lengths"""
+        """Test that decomposition preserves input list lengths"""
         original_U = [None, None, None]
         original_S = [None, None, None]
+        original_L = [None, None, None]
         groups = [np.array([0]), np.array([1]), np.array([2])]
         sample_cov = np.eye(3)
-        
-        updated_U, updated_S = svd_groups(original_U, original_S, groups, sample_cov)
-        
+
+        updated_U, updated_S, updated_L = svd_groups(
+            original_U, original_S, groups, sample_cov, original_L
+        )
+
         assert len(updated_U) == len(original_U)
         assert len(updated_S) == len(original_S)
+        assert len(updated_L) == len(original_L)
         assert updated_U is original_U  # Should modify in place
         assert updated_S is original_S  # Should modify in place
+        assert updated_L is original_L  # Should modify in place
 
     def test_svd_groups_empty_groups(self):
-        """Test SVD with empty groups list"""
+        """Test decomposition with empty groups list"""
         svd_U = []
         svd_S = []
         groups = []
         sample_cov = np.eye(2)
-        
-        updated_U, updated_S = svd_groups(svd_U, svd_S, groups, sample_cov)
-        
+
+        updated_U, updated_S, updated_L = svd_groups(svd_U, svd_S, groups, sample_cov)
+
         assert len(updated_U) == 0
         assert len(updated_S) == 0
+        assert len(updated_L) == 0
+
+    def test_svd_groups_proposal_L_none_creates_list(self):
+        """Test that proposal_L=None creates a fresh list"""
+        svd_U = [None]
+        svd_S = [None]
+        groups = [np.array([0, 1])]
+        sample_cov = np.eye(2)
+
+        updated_U, updated_S, updated_L = svd_groups(svd_U, svd_S, groups, sample_cov)
+
+        assert len(updated_L) == 1
+        assert updated_L[0] is not None
+        assert updated_L[0].shape == (2, 2)

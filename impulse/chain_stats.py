@@ -64,6 +64,7 @@ class ChainStats:
     sample_cov: Optional[np.ndarray] = None
     svd_U: List[Optional[np.ndarray]]|None = None  # U in the SVD of samples
     svd_S: List[Optional[np.ndarray]]|None = None  # Sigma in the SVD of samples
+    proposal_L: List[Optional[np.ndarray]]|None = None  # Precomputed U * sqrt(S)
     sample_mean: Optional[np.ndarray] = None
     current_sample: Optional[np.ndarray] = None
 
@@ -85,11 +86,15 @@ class ChainStats:
             self.svd_U = [None for _ in range(len(self.groups))]
         if self.svd_S is None:
             self.svd_S = [None for _ in range(len(self.groups))]
+        if self.proposal_L is None:
+            self.proposal_L = [None for _ in range(len(self.groups))]
 
         self._buffer = np.zeros((self.buffer_size, self.ndim))
         self.buffer_full = False
 
-        self.svd_U, self.svd_S = svd_groups(self.svd_U, self.svd_S, self.groups, self.sample_cov)
+        self.svd_U, self.svd_S, self.proposal_L = svd_groups(
+            self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L
+        )
 
     def update_buffer(self,
                       new_samples: np.ndarray
@@ -158,7 +163,9 @@ class ChainStats:
         # get new sample mean and covariance
         self.sample_mean, self.sample_cov = update_covariance(sample_num, self.sample_cov, self.sample_mean, new_samples)
         # new SVD on groups
-        self.svd_U, self.svd_S = svd_groups(self.svd_U, self.svd_S, self.groups, self.sample_cov)
+        self.svd_U, self.svd_S, self.proposal_L = svd_groups(
+            self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L
+        )
 
     def get_group_U(self, group_idx: int) -> np.ndarray:
         """Return U for group `group_idx` (shape (k, k))."""
@@ -177,6 +184,15 @@ class ChainStats:
         if s is None:
             raise ValueError(f"Singular values for group {group_idx} are not initialized")
         return s
+
+    def __setstate__(self, state):
+        """Restore from pickle, recomputing proposal_L for old checkpoints."""
+        self.__dict__.update(state)
+        if not hasattr(self, 'proposal_L') or self.proposal_L is None:
+            self.proposal_L = [None] * len(self.groups)
+            for ct, group in enumerate(self.groups):
+                sqrt_s = np.sqrt(np.maximum(self.svd_S[ct], 0.0))
+                self.proposal_L[ct] = self.svd_U[ct] * sqrt_s[None, :]
 
     def update_sample(self, position: np.ndarray):
         """

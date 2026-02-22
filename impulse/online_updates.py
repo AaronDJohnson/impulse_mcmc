@@ -61,33 +61,42 @@ def update_covariance(old_arr_length: int,
 def svd_groups(svd_U: list,
                svd_S: list,
                groups: list,
-               sample_cov: np.ndarray
-               ) -> tuple[list, list]:
+               sample_cov: np.ndarray,
+               proposal_L: list|None = None
+               ) -> tuple[list, list, list]:
     """
-    Compute SVD decomposition for parameter groups from covariance matrix.
+    Compute eigen-decomposition for parameter groups from covariance matrix.
 
-    Performs singular value decomposition on covariance submatrices
-    corresponding to parameter groups. This enables efficient adaptive
-    proposals by working in the principal component space.
+    Uses ``np.linalg.eigh`` (symmetric eigendecomposition) on covariance
+    submatrices corresponding to parameter groups.  Returns eigenvalues in
+    descending order so that the convention matches the old SVD-based code.
+
+    Also precomputes ``L = U * sqrt(S)`` for each group, which is the
+    "square root" of the covariance needed by AM / SCAM proposals.
 
     Parameters
     ----------
     svd_U : list
-        List to store left singular vectors (eigenvectors) for each group.
+        List to store eigenvectors for each group.
     svd_S : list
-        List to store singular values (square roots of eigenvalues) for each group.
+        List to store eigenvalues for each group.
     groups : list
         List of parameter index arrays, one for each group.
     sample_cov : np.ndarray
         Full covariance matrix, shape (n_params, n_params).
+    proposal_L : list or None
+        List to store precomputed ``U * sqrt(S)`` matrices.  If *None*,
+        a new list is created.
 
     Returns
     -------
-    tuple of (list, list)
+    tuple of (list, list, list)
         updated_U : list
-            Updated list of left singular vectors for each group.
+            Updated list of eigenvectors for each group.
         updated_S : list
-            Updated list of singular values for each group.
+            Updated list of eigenvalues for each group.
+        proposal_L : list
+            Precomputed ``U * sqrt(S)`` matrices for each group.
 
     Examples
     --------
@@ -96,11 +105,27 @@ def svd_groups(svd_U: list,
     >>> cov = np.eye(4)  # 4x4 covariance matrix
     >>> U_list = [None, None]
     >>> S_list = [None, None]
-    >>> U_updated, S_updated = svd_groups(U_list, S_list, groups, cov)
+    >>> U_updated, S_updated, L = svd_groups(U_list, S_list, groups, cov)
     >>> # U_updated[0] contains 2x2 eigenvector matrix for first group
     >>> # S_updated[0] contains 2-element eigenvalue array for first group
+    >>> # L[0] contains precomputed U * sqrt(S) for first group
     """
+    if proposal_L is None:
+        proposal_L = [None] * len(groups)
     for ct, group in enumerate(groups):
         covgroup = sample_cov[group][:, group]
-        svd_U[ct], svd_S[ct], __ = np.linalg.svd(covgroup)
-    return svd_U, svd_S
+        try:
+            eigvals, eigvecs = np.linalg.eigh(covgroup)
+        except np.linalg.LinAlgError:
+            # eigh can fail on degenerate matrices early in sampling;
+            # fall back to identity-like defaults so proposals still work.
+            k = len(group)
+            eigvals = np.ones(k)
+            eigvecs = np.eye(k)
+        # Reverse to descending order (matching old SVD convention)
+        svd_S[ct] = eigvals[::-1]
+        svd_U[ct] = eigvecs[:, ::-1]
+        # Clamp negative eigenvalues (numerical noise) before sqrt
+        sqrt_s = np.sqrt(np.maximum(svd_S[ct], 0.0))
+        proposal_L[ct] = svd_U[ct] * sqrt_s[None, :]
+    return svd_U, svd_S, proposal_L
