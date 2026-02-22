@@ -87,6 +87,19 @@ from .resume import (
 from .nuts import compose_logp_and_grad, make_logp_and_grad_numerical
 from .nuts import MassMatrix, MassMatrixType
 
+# Validation / SBC
+from .validation import (
+    compute_sbc_rank,
+    compute_sbc_quantile,
+    compute_model_pit,
+    ecdf,
+    sbc_ecdf_plot,
+    coverage_plot,
+    rank_histogram,
+    run_sbc_continuous,
+    run_sbc_model_selection,
+)
+
 __all__ = [
     # Samplers
     "PTSampler",
@@ -112,4 +125,14 @@ __all__ = [
     "make_logp_and_grad_numerical",
     "MassMatrix",
     "MassMatrixType",
+    # Validation / SBC
+    "compute_sbc_rank",
+    "compute_sbc_quantile",
+    "compute_model_pit",
+    "ecdf",
+    "sbc_ecdf_plot",
+    "coverage_plot",
+    "rank_histogram",
+    "run_sbc_continuous",
+    "run_sbc_model_selection",
 ]
