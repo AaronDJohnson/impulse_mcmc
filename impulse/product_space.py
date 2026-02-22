@@ -2,6 +2,42 @@ import numpy as np
 from typing import Callable
 
 class ProductSpace:
+    """
+    Product space for trans-dimensional MCMC with multiple competing models.
+
+    Handles sampling across different model structures by embedding all
+    possible parameters in a joint space and using a model index to
+    determine which parameters are active.
+
+    Parameters
+    ----------
+    model_names : list of str
+        Names of competing models.
+    loglikelihoods : list of callable
+        Log-likelihood functions for each model.
+    logpriors : list of callable
+        Log-prior functions for each model.
+    param_names : list of list of str
+        Parameter names for each model.
+
+    Attributes
+    ----------
+    num_models : int
+        Number of competing models.
+    all_params : list of str
+        All parameter names across models plus model index.
+    ndim : int
+        Total dimensionality of joint parameter space.
+
+    Examples
+    --------
+    >>> model_names = ['linear', 'quadratic']
+    >>> likelihoods = [linear_loglike, quad_loglike]
+    >>> priors = [linear_logprior, quad_logprior]
+    >>> param_names = [['a', 'b'], ['a', 'b', 'c']]
+    >>> space = ProductSpace(model_names, likelihoods, priors, param_names)
+    >>> # Now can sample over both model structures
+    """
     def __init__(self,
                  model_names: list,
                  loglikelihoods: list,
@@ -29,27 +65,47 @@ class ProductSpace:
                 self.model_params[i].append(self.all_params.index(param + '_' + model_names[i]))
 
     def loglikelihood(self, x):
-        # find model index variable
-        idx = list(self.all_params).index('nmodel')
-        nmodel = int(np.rint(x[idx]))
+        """
+        Evaluate log-likelihood for active model.
 
-        # only active parameters enter likelihood
-        active_lnlike = self.loglikelihoods[nmodel]
-        return active_lnlike(x[self.model_params[nmodel]])
+        Parameters
+        ----------
+        x : array_like
+            Full parameter vector including model index.
 
-    def logprior(self, x):
-        # find model index variable
-        idx = list(self.all_params).index('nmodel')
-        nmodel = int(np.rint(x[idx]))
-
+        Returns
+        -------
+        float
+            Log-likelihood value for the active model, or -inf if the
+            model index is out of range.
+        """
+        nmodel = int(np.rint(x[-1]))
         if nmodel not in self.nmodels:
             return -np.inf
-        vals = np.array([self.logpriors[i](x[self.model_params[i]]) for i in self.nmodels])
-        if np.any(np.isinf(vals)):
-            return -np.inf
+        return self.loglikelihoods[nmodel](x[self.model_params[nmodel]])
 
-        active_lnprior = self.logpriors[nmodel]
-        return active_lnprior(x[self.model_params[nmodel]])
+    def logprior(self, x):
+        """
+        Evaluate log-prior for active model.
+
+        Only the active model's prior is evaluated. Inactive model
+        parameters are unconstrained.
+
+        Parameters
+        ----------
+        x : array_like
+            Full parameter vector including model index.
+
+        Returns
+        -------
+        float
+            Log-prior value for the active model, or -inf if the
+            model index is out of range.
+        """
+        nmodel = int(np.rint(x[-1]))
+        if nmodel not in self.nmodels:
+            return -np.inf
+        return self.logpriors[nmodel](x[self.model_params[nmodel]])
 
 
 class NestedProductSpace:
@@ -85,14 +141,56 @@ class NestedProductSpace:
         self.ndim = num_sources * num_params + 1
 
     def get_loglikelihood(self, params):
-        # only active parameters enter the likelihood (the lowest nmodel parameters are used)
-        nmodel = int(np.rint(params[-1]))
+        """
+        Evaluate log-likelihood for current number of active sources.
 
-        return self.loglikelihood(params[:(nmodel + 1) * self.num_params])
+        Only the first ``(nmodel + 1) * num_params`` parameters are passed
+        to the likelihood function.
 
-    def get_logprior(self, params):
+        Parameters
+        ----------
+        params : array_like
+            Parameter vector with model index in last position.
+
+        Returns
+        -------
+        float
+            Log-likelihood value using only active parameters, or -inf
+            if the model index is out of range.
+
+        Examples
+        --------
+        >>> # For 2 sources, only first 2*num_params elements are used
+        >>> loglike_val = space.get_loglikelihood(full_params)
+        """
         nmodel = int(np.rint(params[-1]))
         if nmodel not in self.nmodels:
             return -np.inf
+        return self.loglikelihood(params[:(nmodel + 1) * self.num_params])
 
-        return self.logprior(params[:-1])
+    def get_logprior(self, params):
+        """
+        Evaluate log-prior for active source parameters.
+
+        Only the first ``(nmodel + 1) * num_params`` parameters are passed
+        to the prior function, matching the behavior of ``get_loglikelihood``.
+
+        Parameters
+        ----------
+        params : array_like
+            Parameter vector with model index in last position.
+
+        Returns
+        -------
+        float
+            Log-prior value, or -inf if model index is invalid.
+
+        Examples
+        --------
+        >>> # Returns -inf if nmodel is outside valid range
+        >>> logprior_val = space.get_logprior(full_params)
+        """
+        nmodel = int(np.rint(params[-1]))
+        if nmodel not in self.nmodels:
+            return -np.inf
+        return self.logprior(params[:(nmodel + 1) * self.num_params])

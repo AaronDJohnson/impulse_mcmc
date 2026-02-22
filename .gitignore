@@ -125,3 +125,7 @@ prior_chains/
 data/
 *.txt
 *.npy
+
+# MCMC chain output & checkpoints
+examples/chains*/
+sampler_checkpoint.pkl
