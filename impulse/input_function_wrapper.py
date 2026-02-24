@@ -70,12 +70,15 @@ class _function_wrapper(object):
                  kwargs: Optional[dict] = None,
                  *,
                  vectorized: bool = False,
-                 zero_copy: bool = True):
+                 zero_copy: bool = True,
+                 threads: int = 1):
         self.f = f
         self.args = tuple(args) if args else ()
         self.kwargs = dict(kwargs) if kwargs else {}
         self.vectorized = bool(vectorized)
         self.zero_copy = bool(zero_copy)
+        self.threads = int(threads)
+        self._executor = None  # lazily created
 
     def __call__(self, x: Any):
         # Use asanyarray to preserve views when possible, or asarray for copies
@@ -110,6 +113,10 @@ class _function_wrapper(object):
                 raise ValueError("Vectorized function returned array with incorrect leading dimension")
             return out_arr
 
+        # non-vectorized: threaded path when threads > 1 and multiple rows
+        if self.threads > 1 and n > 1:
+            return self._threaded_eval(x_arr, n)
+
         # non-vectorized: per-row calls
         if self.zero_copy:
             # Pre-allocate result array for zero-copy efficiency
@@ -135,6 +142,30 @@ class _function_wrapper(object):
             # Original behavior: collect results in list then convert
             results = [self.f(x_arr[i], *self.args, **self.kwargs) for i in range(n)]
             return np.asarray(results)
+
+    def _get_executor(self):
+        if self._executor is None:
+            from concurrent.futures import ThreadPoolExecutor
+            self._executor = ThreadPoolExecutor(max_workers=self.threads)
+        return self._executor
+
+    def _threaded_eval(self, x_arr, n):
+        executor = self._get_executor()
+        f, args, kwargs = self.f, self.args, self.kwargs
+        futures = [executor.submit(f, x_arr[i], *args, **kwargs) for i in range(n)]
+        results = np.empty(n, dtype=np.float64)
+        for i, fut in enumerate(futures):
+            results[i] = fut.result()
+        return results
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_executor'] = None
+        return state
+
+    def __del__(self):
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
 
     def __repr__(self):
         name = getattr(self.f, "__name__", repr(self.f))

@@ -464,6 +464,15 @@ class TestPTSampler:
         np.testing.assert_allclose(result['accepted'], expected['accepted'])
         np.testing.assert_allclose(result['temperature'], expected['temperature'])
 
+    def test_pt_sampler_threads_param(self, simple_likelihood, simple_prior, temp_dir):
+        """PTSampler(threads=2) initializes and forwards to wrappers"""
+        sampler = PTSampler(
+            ndim=2, lnlike=simple_likelihood, lnprior=simple_prior,
+            ntemps=2, outdir=temp_dir, threads=2,
+        )
+        assert sampler.lnlike.threads == 2
+        assert sampler.lnprior.threads == 2
+
     def test_pt_sampler_load_chain_missing_file(self, simple_likelihood, simple_prior, temp_dir):
         """Test load_chain raises FileNotFoundError when files are missing"""
         sampler = PTSampler(

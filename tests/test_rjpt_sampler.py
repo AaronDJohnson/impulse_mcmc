@@ -146,6 +146,15 @@ class TestRJPTSamplerBasic:
         assert sampler.nuts_enabled is True
         assert sampler._rjmcmc_space is rjmcmc_space
 
+    def test_threads_param(self, temp_dir):
+        """RJPTSampler(threads=2) initializes and forwards to wrappers."""
+        sampler = RJPTSampler(
+            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ntemps=2, seed=42, outdir=temp_dir, threads=2,
+        )
+        assert sampler.lnlike.threads == 2
+        assert sampler.lnprior.threads == 2
+
     def test_add_custom_jump(self, temp_dir):
         """Proposal added to all chains."""
         sampler = RJPTSampler(

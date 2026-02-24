@@ -152,6 +152,71 @@ class TestFunctionWrapper:
         expected = np.array([6.0])
         np.testing.assert_array_almost_equal(result, expected)
     
+    def test_threaded_matches_sequential(self):
+        """Threaded and sequential paths produce identical results"""
+        def simple_func(x):
+            return np.sum(x**2)
+
+        input_data = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+
+        wrapper_seq = _function_wrapper(simple_func, threads=1)
+        wrapper_thr = _function_wrapper(simple_func, threads=2)
+
+        result_seq = wrapper_seq(input_data)
+        result_thr = wrapper_thr(input_data)
+
+        np.testing.assert_array_almost_equal(result_seq, result_thr)
+
+    def test_threaded_skipped_when_vectorized(self):
+        """Executor not created when vectorized=True"""
+        def vectorized_func(x):
+            return np.sum(x**2, axis=1)
+
+        wrapper = _function_wrapper(vectorized_func, vectorized=True, threads=4)
+        input_data = np.array([[1.0, 2.0], [3.0, 4.0]])
+        wrapper(input_data)
+
+        assert wrapper._executor is None
+
+    def test_threaded_skipped_for_single_row(self):
+        """No threading for n=1 input"""
+        def simple_func(x):
+            return np.sum(x**2)
+
+        wrapper = _function_wrapper(simple_func, threads=4)
+        input_data = np.array([[1.0, 2.0]])
+        wrapper(input_data)
+
+        assert wrapper._executor is None
+
+    def test_getstate_drops_executor(self):
+        """__getstate__ drops executor, wrapper works after restore"""
+        def simple_func(x):
+            return np.sum(x**2)
+
+        wrapper = _function_wrapper(simple_func, threads=2)
+        input_data = np.array([[1.0, 2.0], [3.0, 4.0]])
+        # Force executor creation
+        wrapper(input_data)
+        assert wrapper._executor is not None
+
+        # __getstate__ should drop executor
+        state = wrapper.__getstate__()
+        assert state['_executor'] is None
+        assert state['threads'] == 2
+
+        # Simulate unpickle by creating new wrapper and restoring state
+        wrapper2 = object.__new__(_function_wrapper)
+        wrapper2.__dict__.update(state)
+
+        assert wrapper2._executor is None
+        assert wrapper2.threads == 2
+
+        # Still works after restore (executor lazily recreated)
+        result = wrapper2(input_data)
+        expected = np.array([5.0, 25.0])
+        np.testing.assert_array_almost_equal(result, expected)
+
     def test_complex_function(self):
         """Test with more complex mathematical function"""
         def complex_func(x):

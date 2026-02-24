@@ -103,6 +103,7 @@ class RJPTSampler:
         adapt_nu: int = 10,
         resume: bool = False,
         vectorized: bool = False,
+        threads: int = 1,
     ) -> None:
         if loglargs is None:
             loglargs = ()
@@ -116,8 +117,8 @@ class RJPTSampler:
         self.ndim = ndim
         self.ntemps = ntemps
         self.swap_steps = swap_steps
-        self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized)
-        self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized)
+        self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized, threads=threads)
+        self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized, threads=threads)
 
         # Keep raw references for NUTS gradient building
         self._raw_lnlike = lnlike
