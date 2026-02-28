@@ -473,6 +473,36 @@ class TestPTSampler:
         assert sampler.lnlike.threads == 2
         assert sampler.lnprior.threads == 2
 
+    @patch('impulse.samplers.tqdm')
+    def test_proposal_acceptance_rates(self, mock_tqdm, simple_likelihood, simple_prior, temp_dir):
+        """Total calls across all proposals equals num_iterations * ntemps."""
+        n_iter = 50
+        ntemps = 2
+        mock_tqdm.return_value = range(n_iter)
+
+        sampler = PTSampler(
+            ndim=2, lnlike=simple_likelihood, lnprior=simple_prior,
+            ntemps=ntemps, outdir=temp_dir, seed=42, save_freq=100,
+        )
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=n_iter)
+
+        rates = sampler.proposal_acceptance_rates()
+        assert set(rates.keys()) == {'am', 'scam', 'de'}
+
+        total_calls = sum(info['calls'] for info in rates.values())
+        assert total_calls == n_iter * ntemps
+
+        total_accepts = sum(info['accepts'] for info in rates.values())
+        assert total_accepts <= total_calls
+        assert total_accepts > 0  # at least some proposals accepted
+
+        for info in rates.values():
+            assert len(info['per_chain']) == ntemps
+            if info['calls'] > 0:
+                assert info['rate'] == pytest.approx(
+                    info['accepts'] / info['calls'], abs=1e-12
+                )
+
     def test_pt_sampler_load_chain_missing_file(self, simple_likelihood, simple_prior, temp_dir):
         """Test load_chain raises FileNotFoundError when files are missing"""
         sampler = PTSampler(

@@ -1,10 +1,30 @@
 from typing import List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 from impulse.online_updates import update_covariance, svd_groups
 from impulse.sampler_state import SamplerState, PTState
 from impulse.utils import shift_array
+
+
+@dataclass
+class _PerModelState:
+    """Per-model statistics for adaptive proposals in RJMCMC.
+
+    Holds the groups, covariance, SVD, and DE buffer for a single
+    model dimension so that within-model proposals use model-specific
+    learned statistics.
+    """
+    groups: list
+    sample_cov: np.ndarray
+    sample_mean: np.ndarray
+    svd_U: list
+    svd_S: list
+    proposal_L: list
+    buffer: np.ndarray
+    buffer_full: bool = False
+    sample_total: int = 0
+
 
 @dataclass
 class ChainStats:
@@ -133,20 +153,43 @@ class ChainStats:
         Performs comprehensive update of sample count, buffer, mean, covariance,
         and SVD decompositions using numerically stable online methods.
 
+        When per-model statistics are active, samples are partitioned by
+        their model index and each model's statistics are updated
+        independently.
+
         Parameters
         ----------
         sample_num : int
             Current total sample count before adding new samples.
         new_samples : np.ndarray
             New samples to incorporate, shape (n_new, ndim).
-
-        Examples
-        --------
-        >>> import numpy as np
-        >>> new_samples = np.array([[0.5, 1.5], [0.8, 1.2]])
-        >>> stats.recursive_update(1000, new_samples)
-        >>> # All statistics updated with new samples
         """
+        # Per-model path: partition samples by nmodel
+        if hasattr(self, '_per_model') and self._per_model is not None:
+            nmodels_arr = np.rint(new_samples[:, self._nmodel_idx]).astype(int)
+            for k, pm in self._per_model.items():
+                mask = nmodels_arr == k
+                if not np.any(mask):
+                    continue
+                model_samples = new_samples[mask]
+                old_count = pm.sample_total
+                pm.sample_total += len(model_samples)
+                # buffer update
+                pm.buffer = shift_array(pm.buffer, -len(model_samples))
+                pm.buffer[-len(model_samples):] = model_samples
+                if not pm.buffer_full and pm.sample_total > self.buffer_size:
+                    pm.buffer_full = True
+                # covariance update
+                if old_count + len(model_samples) < 2:
+                    continue
+                pm.sample_mean, pm.sample_cov = update_covariance(
+                    old_count, pm.sample_cov, pm.sample_mean, model_samples,
+                )
+                pm.svd_U, pm.svd_S, pm.proposal_L = svd_groups(
+                    pm.svd_U, pm.svd_S, pm.groups, pm.sample_cov, pm.proposal_L,
+                )
+            return
+
         if self.sample_cov is None or self.sample_mean is None:
             raise ValueError("sample_cov and sample_mean must be initialized before calling recursive_update")
         if self.svd_U is None or self.svd_S is None:
@@ -185,6 +228,46 @@ class ChainStats:
             raise ValueError(f"Singular values for group {group_idx} are not initialized")
         return s
 
+    def enable_per_model(self, num_models: int, num_params: int) -> None:
+        """Activate per-model adaptive statistics for RJMCMC.
+
+        Creates independent covariance, SVD, and DE-buffer state for each
+        model index so that within-model proposals use model-specific
+        learned statistics.
+
+        Parameters
+        ----------
+        num_models : int
+            Maximum number of models (e.g. ``rjmcmc_space.num_models``).
+        num_params : int
+            Number of continuous parameters per source.
+        """
+        self._num_models = num_models
+        self._num_params = num_params
+        self._nmodel_idx = num_models * num_params  # last element of position
+
+        all_groups = self.groups  # full list, one group per source slot
+
+        self._per_model: dict[int, _PerModelState] = {}
+        for k in range(num_models):
+            model_groups = [list(g) for g in all_groups[:k + 1]]
+            model_svd_U: list = [None] * len(model_groups)
+            model_svd_S: list = [None] * len(model_groups)
+            model_proposal_L: list = [None] * len(model_groups)
+            model_svd_U, model_svd_S, model_proposal_L = svd_groups(
+                model_svd_U, model_svd_S, model_groups,
+                self.sample_cov, model_proposal_L,
+            )
+            self._per_model[k] = _PerModelState(
+                groups=model_groups,
+                sample_cov=self.sample_cov.copy(),
+                sample_mean=self.sample_mean.copy(),
+                svd_U=model_svd_U,
+                svd_S=model_svd_S,
+                proposal_L=model_proposal_L,
+                buffer=np.zeros((self.buffer_size, self.ndim)),
+            )
+
     def __setstate__(self, state):
         """Restore from pickle, recomputing proposal_L for old checkpoints."""
         self.__dict__.update(state)
@@ -193,24 +276,41 @@ class ChainStats:
             for ct, group in enumerate(self.groups):
                 sqrt_s = np.sqrt(np.maximum(self.svd_S[ct], 0.0))
                 self.proposal_L[ct] = self.svd_U[ct] * sqrt_s[None, :]
+        # Recompute proposal_L for per-model states
+        if hasattr(self, '_per_model') and self._per_model is not None:
+            for pm in self._per_model.values():
+                if pm.proposal_L is None:
+                    pm.proposal_L = [None] * len(pm.groups)
+                for ct, group in enumerate(pm.groups):
+                    if pm.svd_U[ct] is not None and pm.svd_S[ct] is not None:
+                        sqrt_s = np.sqrt(np.maximum(pm.svd_S[ct], 0.0))
+                        pm.proposal_L[ct] = pm.svd_U[ct] * sqrt_s[None, :]
 
     def update_sample(self, position: np.ndarray):
         """
         Update current parameter position.
 
+        If per-model statistics are active, swaps in the groups, SVD,
+        and DE buffer for the current model index so that proposals
+        transparently use model-specific learned statistics.
+
         Parameters
         ----------
         position : np.ndarray
             New parameter position, shape (ndim,).
-
-        Examples
-        --------
-        >>> import numpy as np
-        >>> new_position = np.array([1.2, -0.8])
-        >>> stats.update_sample(new_position)
-        >>> # Current position updated for next proposal
         """
         self.current_sample = position
+        if hasattr(self, '_per_model') and self._per_model is not None:
+            nmodel = int(np.rint(position[self._nmodel_idx]))
+            nmodel = max(0, min(nmodel, self._num_models - 1))
+            pm = self._per_model[nmodel]
+            self.groups = pm.groups
+            self.proposal_L = pm.proposal_L
+            self.svd_U = pm.svd_U
+            self.svd_S = pm.svd_S
+            self._buffer = pm.buffer
+            self.buffer_full = pm.buffer_full
+            self.sample_total = pm.sample_total
 
 @dataclass
 class MultiChainStats:
@@ -290,6 +390,19 @@ class MultiChainStats:
     def get_group_S(self, chain_idx: int, group_idx: int) -> np.ndarray:
         """Return singular values for chain `chain_idx` and group `group_idx` (shape (k,))."""
         return self.chain_stats[chain_idx].get_group_S(group_idx)
+
+    def enable_per_model(self, num_models: int, num_params: int) -> None:
+        """Activate per-model adaptive statistics on every chain.
+
+        Parameters
+        ----------
+        num_models : int
+            Maximum number of models.
+        num_params : int
+            Number of continuous parameters per source.
+        """
+        for cs in self.chain_stats:
+            cs.enable_per_model(num_models, num_params)
 
     def update_sample(self, state: SamplerState):
         """

@@ -136,6 +136,33 @@ class TestRJPTSamplerBasic:
         n_proposals = len(sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert n_proposals == 7
 
+    def test_from_rjmcmc_per_source_cov(self, rjmcmc_space, temp_dir):
+        """Per-source sample_cov is expanded to full product space."""
+        per_source_cov = np.array([[4.0, 0.5], [0.5, 1.0]])
+        sampler = RJPTSampler.from_rjmcmc(
+            rjmcmc_space, ntemps=2, seed=42, outdir=temp_dir,
+            sample_cov=per_source_cov,
+        )
+        cs = sampler.multi_chain_stats.chain_stats[0]
+        assert cs.sample_cov.shape == (rjmcmc_space.ndim, rjmcmc_space.ndim)
+        for i in range(MAX_SOURCES):
+            sl = slice(i * NUM_PARAMS, (i + 1) * NUM_PARAMS)
+            np.testing.assert_array_equal(cs.sample_cov[sl, sl], per_source_cov)
+        assert cs.sample_cov[-1, -1] == 1.0
+
+    def test_from_rjmcmc_per_source_mean(self, rjmcmc_space, temp_dir):
+        """Per-source sample_mean is expanded to full product space."""
+        per_source_mean = np.array([2.5, 1.5])
+        sampler = RJPTSampler.from_rjmcmc(
+            rjmcmc_space, ntemps=2, seed=42, outdir=temp_dir,
+            sample_mean=per_source_mean,
+        )
+        cs = sampler.multi_chain_stats.chain_stats[0]
+        assert cs.sample_mean.shape == (rjmcmc_space.ndim,)
+        for i in range(MAX_SOURCES):
+            sl = slice(i * NUM_PARAMS, (i + 1) * NUM_PARAMS)
+            np.testing.assert_array_equal(cs.sample_mean[sl], per_source_mean)
+
     def test_from_rjmcmc_with_nuts(self, rjmcmc_space, temp_dir):
         """Both RJ and NUTS."""
         sampler = RJPTSampler.from_rjmcmc(
@@ -184,6 +211,50 @@ class TestRJPTSamplerMHPT:
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=500)
         assert sampler.short_chain.iteration == 500
+
+    def test_proposal_acceptance_rates(self, temp_dir):
+        """Total calls equals num_iterations * ntemps, all proposals represented."""
+        n_iter = 100
+        ntemps = 3
+        sampler = RJPTSampler(
+            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ntemps=ntemps, seed=42, outdir=temp_dir, save_freq=500,
+        )
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=n_iter)
+
+        rates = sampler.proposal_acceptance_rates()
+        assert set(rates.keys()) == {'am', 'scam', 'de'}
+
+        total_calls = sum(info['calls'] for info in rates.values())
+        assert total_calls == n_iter * ntemps
+
+        total_accepts = sum(info['accepts'] for info in rates.values())
+        assert total_accepts <= total_calls
+        assert total_accepts > 0
+
+        for info in rates.values():
+            assert len(info['per_chain']) == ntemps
+            if info['calls'] > 0:
+                assert info['rate'] == pytest.approx(
+                    info['accepts'] / info['calls'], abs=1e-12
+                )
+
+    def test_diagnostics_includes_proposal_acceptance(self, temp_dir):
+        """get_diagnostics includes proposal_acceptance with correct structure."""
+        ntemps = 3
+        sampler = RJPTSampler(
+            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ntemps=ntemps, seed=42, outdir=temp_dir, save_freq=500,
+        )
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=100)
+
+        diag = sampler.get_diagnostics()
+        assert 'proposal_acceptance' in diag
+        pa = diag['proposal_acceptance']
+        assert set(pa.keys()) == {'am', 'scam', 'de'}
+        for info in pa.values():
+            assert 'calls' in info and 'accepts' in info and 'rate' in info
+            assert len(info['per_chain']) == ntemps
 
     def test_load_chain_format(self, temp_dir):
         """Correct dict keys and shapes."""
@@ -404,6 +475,54 @@ class TestRJPTSamplerRJMCMC:
         sampler.sample(x0, num_iterations=300)
         # After sampling, some step sizes should be cached
         assert len(sampler._step_sizes) > 0
+
+
+# ---------------------------------------------------------------------------
+# TestPerModelStats
+# ---------------------------------------------------------------------------
+
+class TestPerModelStats:
+    """Per-model adaptive statistics for RJPTSampler."""
+
+    def test_per_model_enabled_from_rjmcmc(self, rjmcmc_space, temp_dir):
+        """from_rjmcmc enables per-model stats on all chains."""
+        sampler = RJPTSampler.from_rjmcmc(
+            rjmcmc_space, ntemps=3, seed=42, outdir=temp_dir,
+        )
+        for cs in sampler.multi_chain_stats.chain_stats:
+            assert hasattr(cs, '_per_model')
+            assert len(cs._per_model) == MAX_SOURCES
+            assert len(cs._per_model[0].groups) == 1
+            assert len(cs._per_model[2].groups) == 3
+
+    def test_rjmcmc_smoke_with_per_model(self, rjmcmc_space, temp_dir):
+        """Smoke test: RJPTSampler runs with per-model stats."""
+        sampler = RJPTSampler.from_rjmcmc(
+            rjmcmc_space, ntemps=3, seed=42, outdir=temp_dir, save_freq=500,
+        )
+        rng = np.random.default_rng(42)
+        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        sampler.sample(x0, num_iterations=500)
+        chain = sampler.load_chain()
+        assert chain["samples"].shape == (3, 500, rjmcmc_space.ndim)
+
+    def test_pickle_roundtrip_rjpt(self, rjmcmc_space, temp_dir):
+        """Pickle round-trip preserves per-model state."""
+        sampler = RJPTSampler.from_rjmcmc(
+            rjmcmc_space, ntemps=2, seed=42, outdir=temp_dir, save_freq=200,
+        )
+        rng = np.random.default_rng(42)
+        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        sampler.sample(x0, num_iterations=200)
+
+        cs_before = sampler.multi_chain_stats.chain_stats[0]
+        data = pickle.dumps(cs_before)
+        cs_after = pickle.loads(data)
+
+        assert hasattr(cs_after, '_per_model')
+        assert len(cs_after._per_model) == MAX_SOURCES
+        for k in range(MAX_SOURCES):
+            assert cs_after._per_model[k].sample_total == cs_before._per_model[k].sample_total
 
 
 # ---------------------------------------------------------------------------

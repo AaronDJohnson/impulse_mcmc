@@ -416,11 +416,34 @@ class PTSampler:
         >>> x0 = space.draw_initial_position(np.random.default_rng(42))
         >>> sampler.sample(x0, num_iterations=50000)
         """
+        # Expand per-source sample_cov / sample_mean to full product space
+        sample_cov = kwargs.pop('sample_cov', None)
+        if sample_cov is not None:
+            sample_cov = np.asarray(sample_cov)
+            if sample_cov.shape == (rjmcmc_space.num_params, rjmcmc_space.num_params):
+                full_cov = np.zeros((rjmcmc_space.ndim, rjmcmc_space.ndim))
+                for i in range(rjmcmc_space.num_models):
+                    sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
+                    full_cov[sl, sl] = sample_cov
+                full_cov[-1, -1] = 1.0  # model index
+                sample_cov = full_cov
+        sample_mean = kwargs.pop('sample_mean', None)
+        if sample_mean is not None:
+            sample_mean = np.asarray(sample_mean)
+            if sample_mean.shape == (rjmcmc_space.num_params,):
+                full_mean = np.zeros(rjmcmc_space.ndim)
+                for i in range(rjmcmc_space.num_models):
+                    sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
+                    full_mean[sl] = sample_mean
+                sample_mean = full_mean
+
         sampler = cls(
             ndim=rjmcmc_space.ndim,
             lnlike=rjmcmc_space.get_loglikelihood,
             lnprior=rjmcmc_space.get_logprior,
             groups=rjmcmc_space.get_default_groups(),
+            sample_cov=sample_cov,
+            sample_mean=sample_mean,
             am_weight=am_weight,
             scam_weight=scam_weight,
             de_weight=de_weight,
@@ -430,6 +453,9 @@ class PTSampler:
         sampler.add_custom_jump(rjmcmc_space.get_death_proposal(), death_weight)
         sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
         sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
+        sampler.multi_chain_stats.enable_per_model(
+            rjmcmc_space.num_models, rjmcmc_space.num_params,
+        )
         return sampler
 
     def add_custom_jump(self, proposal, weight):
@@ -524,6 +550,7 @@ class PTSampler:
 
         for jj in tqdm(range(self.short_chain.iteration, num_iterations), initial=self.short_chain.iteration, total=num_iterations, desc="Sampling"):
             self.state = vectorized_mh_step(self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0])
+            self.proposal_bundle.report_accepts(self.state.accepted)
             # save before add_state to prevent overwriting unsaved data
             if jj > 0 and jj % self.save_freq == 0:
                 self.short_chain.save_chain()
@@ -540,6 +567,16 @@ class PTSampler:
                 _last_cov_iter = self.short_chain.iteration
         # save the final iteration too
         self.short_chain.save_chain()
+
+    def proposal_acceptance_rates(self) -> dict:
+        """Per-proposal acceptance statistics aggregated across chains.
+
+        Returns
+        -------
+        dict
+            ``{name: {calls, accepts, rate, per_chain: [...]}}``
+        """
+        return self.proposal_bundle.acceptance_report()
 
     def load_chain(self):
         """

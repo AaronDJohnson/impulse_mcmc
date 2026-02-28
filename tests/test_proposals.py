@@ -1,6 +1,7 @@
+import pickle
 import pytest
 import numpy as np
-from impulse.proposals import JumpProposals, ProposalBundle, am, scam, de
+from impulse.proposals import JumpProposals, ProposalBundle, am, scam, de, gaussian
 from impulse.chain_stats import ChainStats
 from impulse.sampler_state import PTState, SamplerState
 
@@ -349,3 +350,243 @@ class TestProposalFunctions:
         # This is a rough test - exact matching would require many more samples
         assert empirical_cov.shape == (2, 2)
         assert np.all(np.isfinite(empirical_cov))
+
+
+class TestProposalAcceptanceTracking:
+    """Test per-proposal acceptance counter logic in JumpProposals."""
+
+    def test_counters_initialized_to_zero(self, chain_stats_2d):
+        jp = JumpProposals(chain_stats_2d)
+        jp.add_jump(am, 15)
+        jp.add_jump(scam, 30)
+        assert jp._last_proposal_idx == -1
+        np.testing.assert_array_equal(jp._proposal_calls, [0, 0])
+        np.testing.assert_array_equal(jp._proposal_accepts, [0, 0])
+
+    def test_calls_attributed_to_correct_proposal(self, sample_state_2d):
+        """With multiple proposals, each call is attributed to the selected one."""
+        ptstate = PTState(ndim=2, ntemps=3)
+        rng = np.random.default_rng(42)
+        cs = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=50)
+        jp = JumpProposals(cs)
+        jp.add_jump(am, 50)
+        jp.add_jump(scam, 50)
+
+        n_iters = 200
+        for _ in range(n_iters):
+            jp(sample_state_2d)
+
+        # Total calls across proposals must equal n_iters
+        assert jp._proposal_calls.sum() == n_iters
+        # With 50/50 weights and 200 draws both should get selected at least once
+        assert jp._proposal_calls[0] > 0, "am never selected"
+        assert jp._proposal_calls[1] > 0, "scam never selected"
+        # _last_proposal_idx should be a valid index
+        assert jp._last_proposal_idx in (0, 1)
+
+    def test_report_accept_credits_correct_proposal(self, sample_state_2d):
+        """report_accept credits the proposal that was last called, not always idx 0."""
+        ptstate = PTState(ndim=2, ntemps=3)
+        rng = np.random.default_rng(42)
+        cs = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=50)
+        jp = JumpProposals(cs)
+        jp.add_jump(am, 50)
+        jp.add_jump(scam, 50)
+
+        am_accepts = 0
+        scam_accepts = 0
+        for _ in range(200):
+            jp(sample_state_2d)
+            # Always accept — each accept should credit the last-selected proposal
+            jp.report_accept(True)
+            if jp._last_proposal_idx == 0:
+                am_accepts += 1
+            else:
+                scam_accepts += 1
+
+        assert jp._proposal_accepts[0] == am_accepts
+        assert jp._proposal_accepts[1] == scam_accepts
+        # Sanity: both were called (same check as above, but for accepts)
+        assert am_accepts > 0
+        assert scam_accepts > 0
+
+    def test_report_accept_false_does_not_increment(self, chain_stats_2d, sample_state_2d):
+        jp = JumpProposals(chain_stats_2d)
+        jp.add_jump(am, 1.0)
+
+        jp(sample_state_2d)
+        jp.report_accept(False)
+        assert jp._proposal_accepts[0] == 0
+
+        jp(sample_state_2d)
+        jp.report_accept(True)
+        assert jp._proposal_accepts[0] == 1
+
+        jp(sample_state_2d)
+        jp.report_accept(False)
+        # Still 1 — the False should not have changed it
+        assert jp._proposal_accepts[0] == 1
+
+    def test_acceptance_rates_multiple_proposals(self, sample_state_2d):
+        """acceptance_rates returns correct per-proposal rates with mixed accept/reject."""
+        ptstate = PTState(ndim=2, ntemps=3)
+        rng = np.random.default_rng(99)
+        cs = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=50)
+        jp = JumpProposals(cs)
+        jp.add_jump(am, 50)
+        jp.add_jump(scam, 50)
+
+        # Run enough iterations and accept every other call
+        for i in range(100):
+            jp(sample_state_2d)
+            jp.report_accept(i % 2 == 0)
+
+        rates = jp.acceptance_rates()
+        assert set(rates.keys()) == {'am', 'scam'}
+        total_calls = rates['am']['calls'] + rates['scam']['calls']
+        total_accepts = rates['am']['accepts'] + rates['scam']['accepts']
+        assert total_calls == 100
+        assert total_accepts == 50  # every other call accepted
+        for name in ('am', 'scam'):
+            assert rates[name]['rate'] == pytest.approx(
+                rates[name]['accepts'] / rates[name]['calls'], abs=1e-12
+            )
+
+    def test_de_fallback_attributed_to_de_slot(self, sample_state_2d):
+        """When DE falls back to gaussian, the call is still counted under the DE slot."""
+        ptstate = PTState(ndim=2, ntemps=3)
+        rng = np.random.default_rng(7)
+        cs = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=50)
+        cs.buffer_full = False  # force DE to always fall back
+
+        jp = JumpProposals(cs)
+        jp.add_jump(de, 1.0)  # only DE, but it will always fall back to gaussian
+
+        for _ in range(20):
+            jp(sample_state_2d)
+
+        assert jp._proposal_calls[0] == 20  # all counted under de's slot
+        assert jp._last_proposal_idx == 0
+        # gaussian is not in proposal_list, so it should have no slot
+        rates = jp.acceptance_rates()
+        assert 'de' in rates
+        assert 'gaussian' not in rates
+
+    def test_counters_survive_pickle(self, chain_stats_2d, sample_state_2d):
+        jp = JumpProposals(chain_stats_2d)
+        jp.add_jump(am, 50)
+        jp.add_jump(scam, 50)
+
+        for _ in range(10):
+            jp(sample_state_2d)
+            jp.report_accept(True)
+
+        jp2 = pickle.loads(pickle.dumps(jp))
+        np.testing.assert_array_equal(jp2._proposal_calls, jp._proposal_calls)
+        np.testing.assert_array_equal(jp2._proposal_accepts, jp._proposal_accepts)
+        assert jp2._last_proposal_idx == jp._last_proposal_idx
+
+    def test_setstate_handles_old_checkpoint(self, chain_stats_2d):
+        jp = JumpProposals(chain_stats_2d)
+        jp.add_jump(am, 15)
+        jp.add_jump(scam, 30)
+
+        # Simulate an old checkpoint missing counter attrs
+        state = jp.__dict__.copy()
+        del state['_last_proposal_idx']
+        del state['_proposal_calls']
+        del state['_proposal_accepts']
+
+        jp2 = JumpProposals.__new__(JumpProposals)
+        jp2.__setstate__(state)
+
+        assert jp2._last_proposal_idx == -1
+        np.testing.assert_array_equal(jp2._proposal_calls, [0, 0])
+        np.testing.assert_array_equal(jp2._proposal_accepts, [0, 0])
+        # Should be usable immediately after restore
+        rates = jp2.acceptance_rates()
+        assert rates['am']['calls'] == 0
+        assert rates['scam']['calls'] == 0
+
+
+class TestProposalBundleAcceptanceReport:
+    """Test ProposalBundle.report_accepts and acceptance_report."""
+
+    def _make_bundle(self, ntemps=2):
+        """Helper: create a bundle with am + scam on each chain."""
+        ptstate = PTState(ndim=2, ntemps=ntemps)
+        jps = []
+        for i in range(ntemps):
+            rng = np.random.default_rng(42 + i)
+            cs = ChainStats(ndim=2, pt_state=ptstate, chain_index=i, rng=rng, buffer_size=50)
+            jp = JumpProposals(cs)
+            jp.add_jump(am, 50)
+            jp.add_jump(scam, 50)
+            jps.append(jp)
+        state = SamplerState(
+            np.zeros((ntemps, 2)),
+            -np.ones(ntemps),
+            np.zeros(ntemps),
+            -np.ones(ntemps),
+            np.ones(ntemps),
+            ptstate.ladder,
+        )
+        return ProposalBundle(jps), state, jps
+
+    def test_report_accepts_per_chain(self):
+        """report_accepts dispatches True/False independently to each chain."""
+        bundle, state, jps = self._make_bundle(ntemps=3)
+
+        bundle(state)
+        # chain 0 accepted, chain 1 rejected, chain 2 accepted
+        bundle.report_accepts(np.array([1, 0, 1]))
+
+        # chain 0: last proposal should have 1 accept
+        idx0 = jps[0]._last_proposal_idx
+        assert jps[0]._proposal_accepts[idx0] == 1
+        # chain 1: no accepts
+        assert jps[1]._proposal_accepts.sum() == 0
+        # chain 2: last proposal should have 1 accept
+        idx2 = jps[2]._last_proposal_idx
+        assert jps[2]._proposal_accepts[idx2] == 1
+
+    def test_acceptance_report_aggregates_multiple_proposals(self):
+        """acceptance_report sums calls/accepts across chains for each proposal name."""
+        bundle, state, jps = self._make_bundle(ntemps=2)
+
+        n_iters = 100
+        for i in range(n_iters):
+            bundle(state)
+            # chain 0 always accepts, chain 1 always rejects
+            bundle.report_accepts(np.array([1, 0]))
+
+        report = bundle.acceptance_report()
+        assert set(report.keys()) == {'am', 'scam'}
+
+        # Total calls across all proposals and chains must equal n_iters * ntemps
+        total_calls = sum(report[name]['calls'] for name in report)
+        assert total_calls == n_iters * 2
+
+        # Total accepts = chain 0's accepts (chain 1 has 0)
+        total_accepts = sum(report[name]['accepts'] for name in report)
+        assert total_accepts == n_iters  # chain 0 accepted all n_iters
+
+        # Per-chain breakdown present
+        for name in ('am', 'scam'):
+            assert len(report[name]['per_chain']) == 2
+            # rate is consistent with calls/accepts
+            if report[name]['calls'] > 0:
+                assert report[name]['rate'] == pytest.approx(
+                    report[name]['accepts'] / report[name]['calls'], abs=1e-12
+                )
+
+    def test_acceptance_report_zero_calls(self):
+        """acceptance_report handles proposals with zero calls (rate=0)."""
+        bundle, state, jps = self._make_bundle(ntemps=1)
+
+        # No calls made — everything should be zero
+        report = bundle.acceptance_report()
+        for name in ('am', 'scam'):
+            assert report[name]['calls'] == 0
+            assert report[name]['accepts'] == 0
+            assert report[name]['rate'] == 0.0

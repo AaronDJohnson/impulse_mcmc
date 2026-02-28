@@ -200,12 +200,35 @@ class RJPTSampler:
         **kwargs
             Additional keyword arguments forwarded to ``__init__``.
         """
+        # Expand per-source sample_cov / sample_mean to full product space
+        sample_cov = kwargs.pop('sample_cov', None)
+        if sample_cov is not None:
+            sample_cov = np.asarray(sample_cov)
+            if sample_cov.shape == (rjmcmc_space.num_params, rjmcmc_space.num_params):
+                full_cov = np.zeros((rjmcmc_space.ndim, rjmcmc_space.ndim))
+                for i in range(rjmcmc_space.num_models):
+                    sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
+                    full_cov[sl, sl] = sample_cov
+                full_cov[-1, -1] = 1.0  # model index
+                sample_cov = full_cov
+        sample_mean = kwargs.pop('sample_mean', None)
+        if sample_mean is not None:
+            sample_mean = np.asarray(sample_mean)
+            if sample_mean.shape == (rjmcmc_space.num_params,):
+                full_mean = np.zeros(rjmcmc_space.ndim)
+                for i in range(rjmcmc_space.num_models):
+                    sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
+                    full_mean[sl] = sample_mean
+                sample_mean = full_mean
+
         sampler = cls(
             ndim=rjmcmc_space.ndim,
             lnlike=rjmcmc_space.get_loglikelihood,
             lnprior=rjmcmc_space.get_logprior,
             lnlike_grad=lnlike_grad,
             groups=rjmcmc_space.get_default_groups(),
+            sample_cov=sample_cov,
+            sample_mean=sample_mean,
             am_weight=am_weight,
             scam_weight=scam_weight,
             de_weight=de_weight,
@@ -216,6 +239,9 @@ class RJPTSampler:
         sampler.add_custom_jump(rjmcmc_space.get_death_proposal(), death_weight)
         sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
         sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
+        sampler.multi_chain_stats.enable_per_model(
+            rjmcmc_space.num_models, rjmcmc_space.num_params,
+        )
         return sampler
 
     # ------------------------------------------------------------------
@@ -469,6 +495,7 @@ class RJPTSampler:
             self.state = vectorized_mh_step(
                 self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0],
             )
+            self.proposal_bundle.report_accepts(self.state.accepted)
 
             # Step B: NUTS step on active continuous params
             if self.nuts_enabled:
@@ -523,6 +550,20 @@ class RJPTSampler:
         with open(self._nuts_diag_path, "a") as fp:
             np.savetxt(fp, rows, fmt="%.18e")
         self._nuts_diag_data = []
+
+    # ------------------------------------------------------------------
+    # proposal_acceptance_rates
+    # ------------------------------------------------------------------
+
+    def proposal_acceptance_rates(self) -> dict:
+        """Per-proposal acceptance statistics aggregated across chains.
+
+        Returns
+        -------
+        dict
+            ``{name: {calls, accepts, rate, per_chain: [...]}}``
+        """
+        return self.proposal_bundle.acceptance_report()
 
     # ------------------------------------------------------------------
     # load_chain
@@ -608,6 +649,9 @@ class RJPTSampler:
             diag["mean_tree_depth"] = float(np.mean(tree_depth))
             diag["mean_accept_prob"] = float(np.mean(accept_prob))
             diag["final_step_size"] = float(data[-1, 3])
+
+        # Per-proposal acceptance rates
+        diag["proposal_acceptance"] = self.proposal_acceptance_rates()
 
         return diag
 

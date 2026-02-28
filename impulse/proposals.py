@@ -51,6 +51,9 @@ class JumpProposals:
         self.proposal_list = proposal_list if proposal_list is not None else []
         self.proposal_weights = proposal_weights if proposal_weights is not None else []
         self.proposal_probs = proposal_probs
+        self._last_proposal_idx = -1
+        self._proposal_calls = np.zeros(0, dtype=np.int64)
+        self._proposal_accepts = np.zeros(0, dtype=np.int64)
 
     def add_jump(self,
                  jump: Callable,
@@ -75,6 +78,8 @@ class JumpProposals:
         if jump not in self.proposal_list:
             self.proposal_list.append(jump)
             self.proposal_weights.append(weight)
+            self._proposal_calls = np.append(self._proposal_calls, 0)
+            self._proposal_accepts = np.append(self._proposal_accepts, 0)
         elif weight != self.proposal_weights[self.proposal_list.index(jump)]:
             self.proposal_weights[self.proposal_list.index(jump)] = weight
         total = sum(self.proposal_weights)
@@ -89,12 +94,47 @@ class JumpProposals:
         old_sample = state.positions[self.chain_stats.chain_index]
         self.chain_stats.update_sample(old_sample)
         rng = self.chain_stats.rng
-        proposal = rng.choice(self.proposal_list, p=self.proposal_probs)
+        idx = rng.choice(len(self.proposal_list), p=self.proposal_probs)
+        proposal = self.proposal_list[idx]
         # DE requires a filled sample buffer; fall back to gaussian if unavailable
         if proposal.__name__ == 'de' and not self.chain_stats.buffer_full:
             proposal = gaussian
+        self._last_proposal_idx = idx
+        self._proposal_calls[idx] += 1
         new_sample, qxy = proposal(self.chain_stats)
         return new_sample, qxy
+
+    def report_accept(self, accepted: bool) -> None:
+        """Report whether the last proposal was accepted."""
+        if accepted and self._last_proposal_idx >= 0:
+            self._proposal_accepts[self._last_proposal_idx] += 1
+
+    def acceptance_rates(self) -> dict:
+        """Return per-proposal acceptance statistics.
+
+        Returns
+        -------
+        dict
+            ``{proposal_name: {calls, accepts, rate}}`` for each proposal.
+        """
+        result = {}
+        for i, proposal in enumerate(self.proposal_list):
+            calls = int(self._proposal_calls[i])
+            accepts = int(self._proposal_accepts[i])
+            rate = accepts / calls if calls > 0 else 0.0
+            result[proposal.__name__] = {'calls': calls, 'accepts': accepts, 'rate': rate}
+        return result
+
+    def __setstate__(self, state):
+        """Restore from pickle, initializing counters for old checkpoints."""
+        self.__dict__.update(state)
+        n = len(self.proposal_list)
+        if not hasattr(self, '_last_proposal_idx'):
+            self._last_proposal_idx = -1
+        if not hasattr(self, '_proposal_calls'):
+            self._proposal_calls = np.zeros(n, dtype=np.int64)
+        if not hasattr(self, '_proposal_accepts'):
+            self._proposal_accepts = np.zeros(n, dtype=np.int64)
 
 @dataclass
 class ProposalBundle:
@@ -137,6 +177,48 @@ class ProposalBundle:
 
     def __call__(self, state: SamplerState) -> Tuple[np.ndarray, np.ndarray]:
         return self.get_new_position(state)
+
+    def report_accepts(self, accepts: np.ndarray) -> None:
+        """Report acceptance results to each chain's JumpProposals.
+
+        Parameters
+        ----------
+        accepts : np.ndarray
+            Boolean/int array of length ``nchains``.
+        """
+        for i, jp in enumerate(self.jump_proposals):
+            jp.report_accept(bool(accepts[i]))
+
+    def acceptance_report(self) -> dict:
+        """Aggregate per-proposal acceptance statistics across all chains.
+
+        Returns
+        -------
+        dict
+            ``{name: {calls, accepts, rate, per_chain: [...]}}``
+        """
+        # Collect per-chain stats
+        chain_reports = [jp.acceptance_rates() for jp in self.jump_proposals]
+        # Gather all proposal names (preserving order from first chain)
+        all_names = list(chain_reports[0].keys()) if chain_reports else []
+        result = {}
+        for name in all_names:
+            total_calls = 0
+            total_accepts = 0
+            per_chain = []
+            for cr in chain_reports:
+                if name in cr:
+                    total_calls += cr[name]['calls']
+                    total_accepts += cr[name]['accepts']
+                    per_chain.append(cr[name])
+            rate = total_accepts / total_calls if total_calls > 0 else 0.0
+            result[name] = {
+                'calls': total_calls,
+                'accepts': total_accepts,
+                'rate': rate,
+                'per_chain': per_chain,
+            }
+        return result
 
 def am(chain_stats: ChainStats) -> Tuple[np.ndarray, float]:
     """
