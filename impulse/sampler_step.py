@@ -51,9 +51,15 @@ def vectorized_mh_step(state: SamplerState,
     # propose a set of new proposals
     x_stars, qxys = prop_fn(state)
 
-    # compute new prior
+    # evaluate prior first
     lnprior_stars = lnprior_fn(x_stars)
-    lnlike_stars = lnlike_fn(x_stars)
+
+    # only evaluate likelihood where prior is finite
+    valid = np.isfinite(lnprior_stars)
+    lnlike_stars = np.full_like(lnprior_stars, -np.inf)
+    if np.any(valid):
+        lnlike_stars[valid] = lnlike_fn(x_stars[valid])
+
     lnprob_stars = 1 / state.temps * lnlike_stars + lnprior_stars
 
     probability_ratios = lnprob_stars - (state.lnprobs) + qxys
