@@ -203,8 +203,11 @@ class ChainStats:
         # need at least 2 total samples for a meaningful covariance update
         if sample_num + len(new_samples) < 2:
             return
-        # get new sample mean and covariance
-        self.sample_mean, self.sample_cov = update_covariance(sample_num, self.sample_cov, self.sample_mean, new_samples)
+        # Recompute mean and covariance from the filled portion of the buffer
+        n_filled = min(self.sample_total, self.buffer_size)
+        buf = self._buffer[-n_filled:]
+        self.sample_mean = np.mean(buf, axis=0)
+        self.sample_cov = np.cov(buf, rowvar=False, ddof=1)
         # new SVD on groups
         self.svd_U, self.svd_S, self.proposal_L = svd_groups(
             self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L
