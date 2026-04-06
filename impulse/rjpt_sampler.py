@@ -24,7 +24,7 @@ from impulse.samplers import (
 )
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
-from impulse.nuts.warmup import find_reasonable_step_size
+from impulse.nuts.warmup import find_reasonable_step_size, DualAveraging
 from impulse.utils import prepare_files
 
 
@@ -57,6 +57,14 @@ class RJPTSampler:
         Mass matrix type for NUTS: ``'unit'``, ``'diagonal'``, or ``'dense'``.
     target_accept : float
         Target acceptance probability for NUTS step-size tuning.
+    mass_matrix_adapt_interval : int
+        Number of NUTS steps between mass matrix re-estimation.
+    mass_matrix_min_samples : int
+        Minimum non-divergent cold-chain samples before updating mass matrix.
+    step_size_min : float
+        Lower bound for adapted NUTS step size (default 1e-4).
+    step_size_max : float
+        Upper bound for adapted NUTS step size (default 5.0).
     buffer_size, groups, sample_mean, sample_cov, loglargs, loglkwargs,
     logpargs, logpkwargs, cov_update, save_freq, scam_weight, am_weight,
     de_weight, seed, outdir, ntemps, swap_steps, min_temp, max_temp,
@@ -76,6 +84,10 @@ class RJPTSampler:
         num_warmup: int = 200,
         mass_matrix_type: str = "diagonal",
         target_accept: float = 0.8,
+        mass_matrix_adapt_interval: int = 200,
+        mass_matrix_min_samples: int = 50,
+        step_size_min: float = 1e-4,
+        step_size_max: float = 5.0,
         # Standard PTSampler args
         buffer_size: int = 50_000,
         groups: Optional[list] = None,
@@ -160,6 +172,16 @@ class RJPTSampler:
         # NUTS caches (picklable)
         self._step_sizes: dict = {}      # (chain_idx, nmodel_or_ndim) -> float
         self._mass_matrices: dict = {}   # nmodel_or_ndim -> MassMatrix
+
+        # Online NUTS adaptation state (picklable)
+        self._dual_averagers: dict = {}           # (chain_idx, n_active) -> DualAveraging
+        self._nuts_sample_buffers: dict = {}      # n_active -> list[np.ndarray]
+        self._mass_matrix_injected: set = set()   # n_active values with externally set mass matrices
+        self._nuts_steps_since_mm_update: dict = {}  # n_active -> int counter
+        self._mass_matrix_adapt_interval = mass_matrix_adapt_interval
+        self._mass_matrix_min_samples = mass_matrix_min_samples
+        self._step_size_min = step_size_min
+        self._step_size_max = step_size_max
 
         # RJ-specific (set by from_rjmcmc)
         self._rjmcmc_space = None
@@ -261,6 +283,85 @@ class RJPTSampler:
         self.proposal_bundle.add_jump(proposal, weight)
 
     # ------------------------------------------------------------------
+    # Public: mass matrix injection
+    # ------------------------------------------------------------------
+
+    def set_mass_matrix(self, n_active: int, mass_matrix: MassMatrix):
+        """Inject an external mass matrix (e.g., Fisher-based) for a given dimension.
+
+        The matrix is preserved until at least ``2 * mass_matrix_min_samples``
+        non-divergent cold-chain samples accumulate, after which online
+        adaptation may overwrite it.
+
+        Parameters
+        ----------
+        n_active : int
+            Number of active continuous parameters this matrix applies to.
+        mass_matrix : MassMatrix
+            Mass matrix to use for NUTS proposals.
+        """
+        self._mass_matrices[n_active] = mass_matrix
+        self._mass_matrix_injected.add(n_active)
+        # Reset any DualAveraging instances for this n_active so step sizes
+        # re-tune to the new mass matrix.
+        for key in list(self._dual_averagers.keys()):
+            if key[1] == n_active:
+                current_step = self._step_sizes.get(key, 0.1)
+                self._dual_averagers[key] = DualAveraging(
+                    target_accept=self.target_accept,
+                    initial_step_size=current_step,
+                )
+
+    # ------------------------------------------------------------------
+    # Internal: mass matrix adaptation from samples
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _adapt_mass_matrix_from_samples(samples, n_active, mass_matrix_type):
+        """Compute regularized covariance from samples and return a MassMatrix.
+
+        Parameters
+        ----------
+        samples : list of np.ndarray
+            Position samples, each of shape ``(n_active,)``.
+        n_active : int
+            Dimensionality.
+        mass_matrix_type : MassMatrixType
+            Desired mass matrix type.
+
+        Returns
+        -------
+        MassMatrix
+            New mass matrix estimated from samples.
+        """
+        arr = np.array(samples)
+        n = len(arr)
+        if n < 2:
+            return MassMatrix(n_active, MassMatrixType.UNIT)
+
+        sample_cov = np.cov(arr, rowvar=False)
+        if sample_cov.ndim == 0:
+            sample_cov = sample_cov.reshape(1, 1)
+
+        # Regularization: shrink toward diagonal (Stan's approach)
+        shrinkage = 5.0 / (n + 5.0)
+        reg_cov = (1 - shrinkage) * sample_cov + shrinkage * np.diag(np.diag(sample_cov) + 1e-3)
+
+        if mass_matrix_type == MassMatrixType.DIAGONAL:
+            diag = np.maximum(np.diag(reg_cov), 1e-10)
+            return MassMatrix(n_active, MassMatrixType.DIAGONAL, diagonal=diag)
+        elif mass_matrix_type == MassMatrixType.DENSE:
+            reg_cov += 1e-8 * np.eye(n_active)
+            try:
+                np.linalg.cholesky(reg_cov)
+                return MassMatrix(n_active, MassMatrixType.DENSE, dense=reg_cov)
+            except np.linalg.LinAlgError:
+                diag = np.maximum(np.diag(reg_cov), 1e-10)
+                return MassMatrix(n_active, MassMatrixType.DIAGONAL, diagonal=diag)
+        else:
+            return MassMatrix(n_active, MassMatrixType.UNIT)
+
+    # ------------------------------------------------------------------
     # Internal: NUTS helpers
     # ------------------------------------------------------------------
 
@@ -292,14 +393,19 @@ class RJPTSampler:
             trial = full_params.copy()
             trial[active_idx] = x_active
 
-            ll, grad_ll = lnlike_grad(x_active)
-            # Prior on full vector (scalar, no gradient needed for NUTS)
+            # Check prior FIRST — cheap and catches out-of-bounds before
+            # potentially expensive/unstable gradient computation.
             if self._rjmcmc_space is not None:
                 lp = raw_lnprior(trial[:self._rjmcmc_space.num_models * self._rjmcmc_space.num_params])
             else:
                 lp = raw_lnprior(trial)
 
-            if not np.isfinite(lp) or not np.isfinite(ll):
+            if not np.isfinite(lp):
+                return -np.inf, np.zeros_like(x_active)
+
+            ll, grad_ll = lnlike_grad(x_active)
+
+            if not np.isfinite(ll) or not np.all(np.isfinite(grad_ll)):
                 return -np.inf, np.zeros_like(x_active)
 
             logp = ll / T + lp
@@ -315,26 +421,36 @@ class RJPTSampler:
         return self.ndim
 
     def _get_or_find_step_size(self, chain_idx, active_params, logp_and_grad, rng):
-        """Look up or compute step size for this chain/model dimension."""
-        cache_key = (chain_idx, len(active_params))
-        if cache_key in self._step_sizes:
-            return self._step_sizes[cache_key]
+        """Look up or compute step size for this chain/model dimension.
 
-        # Create mass matrix for this dimension
+        Also ensures a DualAveraging instance exists for online adaptation.
+        """
         n_active = len(active_params)
-        if n_active not in self._mass_matrices:
-            self._mass_matrices[n_active] = MassMatrix(n_active, MassMatrixType.UNIT)
+        cache_key = (chain_idx, n_active)
 
-        mass_matrix = self._mass_matrices[n_active]
-        logp, grad = logp_and_grad(active_params)
-        if not np.isfinite(logp):
-            step_size = 0.1  # fallback
-        else:
-            step_size = find_reasonable_step_size(
-                active_params, logp, grad, logp_and_grad, mass_matrix, rng,
+        if cache_key not in self._step_sizes:
+            # Create mass matrix for this dimension if needed
+            if n_active not in self._mass_matrices:
+                self._mass_matrices[n_active] = MassMatrix(n_active, MassMatrixType.UNIT)
+
+            mass_matrix = self._mass_matrices[n_active]
+            logp, grad = logp_and_grad(active_params)
+            if not np.isfinite(logp):
+                step_size = 0.1  # fallback
+            else:
+                step_size = find_reasonable_step_size(
+                    active_params, logp, grad, logp_and_grad, mass_matrix, rng,
+                )
+            self._step_sizes[cache_key] = step_size
+
+        # Ensure a DualAveraging instance exists for this (chain, n_active)
+        if cache_key not in self._dual_averagers:
+            self._dual_averagers[cache_key] = DualAveraging(
+                target_accept=self.target_accept,
+                initial_step_size=self._step_sizes[cache_key],
             )
-        self._step_sizes[cache_key] = step_size
-        return step_size
+
+        return self._step_sizes[cache_key]
 
     def _nuts_step_all_chains(self, state):
         """Run one NUTS transition on each temperature chain.
@@ -367,7 +483,7 @@ class RJPTSampler:
             mass_matrix = self._mass_matrices[n_active]
 
             logp_val, grad_val = logp_and_grad(active_params)
-            if not np.isfinite(logp_val):
+            if not np.isfinite(logp_val) or not np.all(np.isfinite(grad_val)):
                 continue
 
             nuts_state = NUTSState(
@@ -390,8 +506,27 @@ class RJPTSampler:
             new_lnlikes[k] = self._raw_lnlike(nuts_state.position) if self._rjmcmc_space is None else self.lnlike(new_positions[k:k+1])[0]
             new_lnpriors[k] = self._raw_lnprior(new_params) if self._rjmcmc_space is None else self.lnprior(new_positions[k:k+1])[0]
 
-            # Cache step size update
-            self._step_sizes[(k, n_active)] = nuts_state.step_size
+            # Online step size adaptation via dual averaging.
+            # ALL steps (divergent or not) feed DA. Divergent steps push
+            # step size down (accept_prob ≈ 0), non-divergent push up.
+            # np.clip prevents catastrophic collapse or explosion.
+            da_key = (k, n_active)
+            if da_key in self._dual_averagers:
+                adapted_step = self._dual_averagers[da_key].update(
+                    nuts_state.mean_accept_prob,
+                )
+                adapted_step = np.clip(adapted_step, self._step_size_min, self._step_size_max)
+                self._step_sizes[da_key] = adapted_step
+            else:
+                self._step_sizes[da_key] = nuts_state.step_size
+
+            # Cold chain: collect non-divergent samples for mass matrix adaptation
+            if k == 0 and not nuts_state.divergent:
+                if n_active not in self._nuts_sample_buffers:
+                    self._nuts_sample_buffers[n_active] = []
+                self._nuts_sample_buffers[n_active].append(
+                    nuts_state.position.copy(),
+                )
 
             # Cold chain diagnostics
             if k == 0:
@@ -399,8 +534,9 @@ class RJPTSampler:
                     "tree_depth": nuts_state.tree_depth,
                     "divergent": int(nuts_state.divergent),
                     "energy_error": nuts_state.energy_error,
-                    "step_size": nuts_state.step_size,
+                    "step_size": self._step_sizes[da_key],
                     "mean_accept_prob": nuts_state.mean_accept_prob,
+                    "n_active": n_active,
                 }
 
         new_lnprobs = 1.0 / state.temps * new_lnlikes + new_lnpriors
@@ -409,6 +545,115 @@ class RJPTSampler:
             state.accepted, state.temps,
         )
         return new_state, cold_diag
+
+    def _maybe_adapt_mass_matrices(self):
+        """Periodically re-estimate mass matrices from cold-chain samples.
+
+        Called once per iteration from the sample loop. For each ``n_active``
+        with buffered samples, checks whether enough steps and samples have
+        accumulated to warrant a mass matrix update.
+
+        Three protections are applied:
+        1. Injected (Fisher) mass matrices are never overwritten.
+        2. When a mass matrix changes, step sizes are recalibrated via
+           ``find_reasonable_step_size`` instead of inheriting the old value.
+        3. Candidate mass matrices are validated with trial NUTS steps;
+           if a majority diverge the candidate is rejected.
+        """
+        for n_active in list(self._nuts_sample_buffers.keys()):
+            # Increment step counter
+            self._nuts_steps_since_mm_update.setdefault(n_active, 0)
+            self._nuts_steps_since_mm_update[n_active] += 1
+
+            # Check interval
+            if self._nuts_steps_since_mm_update[n_active] < self._mass_matrix_adapt_interval:
+                continue
+
+            samples = self._nuts_sample_buffers.get(n_active, [])
+            n_samples = len(samples)
+
+            # Need minimum samples
+            if n_samples < self._mass_matrix_min_samples:
+                continue
+
+            # FIX 1: Never overwrite injected (Fisher) mass matrices.
+            # These are analytically computed and far superior to sample estimates.
+            if n_active in self._mass_matrix_injected:
+                self._nuts_steps_since_mm_update[n_active] = 0
+                continue
+
+            # Compute candidate mass matrix from samples
+            candidate_mm = self._adapt_mass_matrix_from_samples(
+                samples, n_active, self._mass_matrix_type,
+            )
+
+            # FIX 2: Find step size appropriate for the NEW mass matrix
+            # (old code inherited the old step size, causing immediate divergences)
+            cold_params = self.state.positions[0]
+            active_idx = self._get_active_indices(cold_params)
+            active_params = cold_params[active_idx].copy()
+
+            if len(active_params) != n_active:
+                # Model dimension changed since buffer was filled; skip
+                self._nuts_steps_since_mm_update[n_active] = 0
+                continue
+
+            logp_and_grad, _ = self._make_tempered_logp_grad(0, self.state)
+            rng = self.rngs[0]
+
+            logp_val, grad_val = logp_and_grad(active_params)
+            if np.isfinite(logp_val):
+                candidate_step = find_reasonable_step_size(
+                    active_params, logp_val, grad_val, logp_and_grad,
+                    candidate_mm, rng,
+                )
+                candidate_step = np.clip(candidate_step, self._step_size_min, self._step_size_max)
+            else:
+                candidate_step = 0.1
+
+            # FIX 3: Validate candidate with trial NUTS steps.
+            # Run a few short-tree NUTS steps; reject if majority diverge.
+            n_trial = 5
+            n_divergent = 0
+            trial_pos = active_params.copy()
+            trial_logp, trial_grad = logp_val, grad_val
+
+            for _ in range(n_trial):
+                if not np.isfinite(trial_logp):
+                    n_divergent += 1
+                    break
+                trial_state = NUTSState(
+                    position=trial_pos, logp=trial_logp, grad=trial_grad,
+                    step_size=candidate_step, mass_matrix=candidate_mm,
+                )
+                trial_result = nuts_step(trial_state, logp_and_grad, rng, max_tree_depth=3)
+                if trial_result.divergent:
+                    n_divergent += 1
+                trial_pos = trial_result.position
+                trial_logp = trial_result.logp
+                trial_grad = trial_result.grad
+
+            if n_divergent > n_trial // 2:
+                # Reject candidate — too many divergences. Reset counter, try later.
+                self._nuts_steps_since_mm_update[n_active] = 0
+                continue
+
+            # Commit the validated mass matrix
+            self._mass_matrices[n_active] = candidate_mm
+
+            # Reset step counter; keep recent half of sample buffer
+            self._nuts_steps_since_mm_update[n_active] = 0
+            half = n_samples // 2
+            self._nuts_sample_buffers[n_active] = samples[-half:]
+
+            # Reset DA with the step size calibrated to the new mass matrix
+            for key in list(self._dual_averagers.keys()):
+                if key[1] == n_active:
+                    self._step_sizes[key] = candidate_step
+                    self._dual_averagers[key] = DualAveraging(
+                        target_accept=self.target_accept,
+                        initial_step_size=candidate_step,
+                    )
 
     # ------------------------------------------------------------------
     # sample
@@ -469,6 +714,24 @@ class RJPTSampler:
             )
             self.__dict__.update(loaded.__dict__)
 
+        # Backward-compat: old checkpoints may lack new adaptation attributes
+        if not hasattr(self, '_dual_averagers'):
+            self._dual_averagers = {}
+        if not hasattr(self, '_nuts_sample_buffers'):
+            self._nuts_sample_buffers = {}
+        if not hasattr(self, '_mass_matrix_injected'):
+            self._mass_matrix_injected = set()
+        if not hasattr(self, '_nuts_steps_since_mm_update'):
+            self._nuts_steps_since_mm_update = {}
+        if not hasattr(self, '_mass_matrix_adapt_interval'):
+            self._mass_matrix_adapt_interval = 200
+        if not hasattr(self, '_mass_matrix_min_samples'):
+            self._mass_matrix_min_samples = 50
+        if not hasattr(self, '_step_size_min'):
+            self._step_size_min = 1e-4
+        if not hasattr(self, '_step_size_max'):
+            self._step_size_max = 5.0
+
         # NUTS diagnostics file
         if self.nuts_enabled:
             self._nuts_diag_data = []
@@ -502,6 +765,7 @@ class RJPTSampler:
                 self.state, cold_diag = self._nuts_step_all_chains(self.state)
                 if cold_diag is not None:
                     self._nuts_diag_data.append(cold_diag)
+                self._maybe_adapt_mass_matrices()
 
             # Step C: Save / checkpoint
             if jj > 0 and jj % self.save_freq == 0:
@@ -544,7 +808,8 @@ class RJPTSampler:
             return
         rows = np.array([
             [d["tree_depth"], d["divergent"], d["energy_error"],
-             d["step_size"], d["mean_accept_prob"]]
+             d["step_size"], d["mean_accept_prob"],
+             d.get("n_active", 0)]
             for d in self._nuts_diag_data
         ])
         with open(self._nuts_diag_path, "a") as fp:
@@ -613,6 +878,8 @@ class RJPTSampler:
             result["energy_error"] = nuts_data[:, 2]
             result["step_size"] = nuts_data[:, 3]
             result["mean_accept_prob"] = nuts_data[:, 4]
+            if nuts_data.shape[1] >= 6:
+                result["n_active"] = nuts_data[:, 5].astype(int)
 
         return result
 
