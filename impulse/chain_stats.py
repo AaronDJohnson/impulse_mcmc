@@ -116,6 +116,20 @@ class ChainStats:
             self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L
         )
 
+    @property
+    def proposals_ready(self) -> bool:
+        """True once the buffer is fully filled and adaptive proposals are trustworthy.
+
+        DE (and any other buffer-dependent proposals) should only run when this
+        is True; otherwise they either silently degenerate (zero-padded buffer
+        rows produce near-zero deltas) or, worse, propagate poisoned history.
+        """
+        if hasattr(self, '_per_model') and self._per_model is not None:
+            nmodel = int(np.rint(self.current_sample[self._nmodel_idx])) if self.current_sample is not None else 0
+            nmodel = max(0, min(nmodel, self._num_models - 1))
+            return self._per_model[nmodel].buffer_full
+        return self.buffer_full
+
     def update_buffer(self,
                       new_samples: np.ndarray
                       ) -> None:
@@ -164,6 +178,11 @@ class ChainStats:
         new_samples : np.ndarray
             New samples to incorporate, shape (n_new, ndim).
         """
+        # Refuse to poison stats with non-finite samples. Guards against a
+        # single bad accepted position propagating into proposal_L forever.
+        if not np.all(np.isfinite(new_samples)):
+            return
+
         # Per-model path: partition samples by nmodel
         if hasattr(self, '_per_model') and self._per_model is not None:
             nmodels_arr = np.rint(new_samples[:, self._nmodel_idx]).astype(int)
@@ -179,12 +198,13 @@ class ChainStats:
                 pm.buffer[-len(model_samples):] = model_samples
                 if not pm.buffer_full and pm.sample_total > self.buffer_size:
                     pm.buffer_full = True
-                # covariance update
-                if old_count + len(model_samples) < 2:
+                # covariance update: recompute from filled buffer portion
+                n_filled = min(pm.sample_total, self.buffer_size)
+                if n_filled < 2:
                     continue
-                pm.sample_mean, pm.sample_cov = update_covariance(
-                    old_count, pm.sample_cov, pm.sample_mean, model_samples,
-                )
+                buf = pm.buffer[-n_filled:]
+                pm.sample_mean = np.mean(buf, axis=0)
+                pm.sample_cov = np.cov(buf, rowvar=False, ddof=1)
                 pm.svd_U, pm.svd_S, pm.proposal_L = svd_groups(
                     pm.svd_U, pm.svd_S, pm.groups, pm.sample_cov, pm.proposal_L,
                 )
