@@ -13,6 +13,7 @@ from impulse.sampler_state import SamplerState, PTState
 from impulse.file_io import ShortChain
 from impulse.sampler_step import vectorized_mh_step, pt_step
 from impulse.resume import checkpoint_sampler, load_checkpoint, check_for_checkpoint
+from impulse.wrapping import WrapSpec, PeriodicSpec
 
 def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:
     """
@@ -337,6 +338,7 @@ class PTSampler:
                  resume: bool = False,
                  vectorized: bool = False,
                  threads: int = 1,
+                 periodic: Optional[PeriodicSpec] = None,
                  ) -> None:
 
         if loglargs is None:
@@ -351,6 +353,7 @@ class PTSampler:
         self.ndim = ndim
         self.ntemps = ntemps
         self.swap_steps = swap_steps
+        self.wrap = WrapSpec.from_dict(periodic)
         self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized, threads=threads)
         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized, threads=threads)
 
@@ -524,7 +527,8 @@ class PTSampler:
                                  thin=thin)
         # set up initial state here:
         initial_position = setup_initial_position(initial_position, self.ntemps)
-        # initial_position = np.tile(np.asarray(initial_position, dtype=np.float64), (self.ntemps, 1))
+        if self.wrap is not None:
+            initial_position = self.wrap.apply(initial_position)
 
         lnlike0 = self.lnlike(initial_position)
         lnprior0 = self.lnprior(initial_position)
@@ -549,7 +553,7 @@ class PTSampler:
         _last_cov_iter = self.short_chain.iteration
 
         for jj in tqdm(range(self.short_chain.iteration, num_iterations), initial=self.short_chain.iteration, total=num_iterations, desc="Sampling"):
-            self.state = vectorized_mh_step(self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0])
+            self.state = vectorized_mh_step(self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0], wrap=self.wrap)
             self.proposal_bundle.report_accepts(self.state.accepted)
             # save before add_state to prevent overwriting unsaved data
             if jj > 0 and jj % self.save_freq == 0:

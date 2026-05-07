@@ -1,7 +1,8 @@
-from typing import Callable
+from typing import Callable, Optional
 import numpy as np
 from impulse.sampler_state import SamplerState, PTState
 from impulse.proposals import ProposalBundle
+from impulse.wrapping import WrapSpec
 
 
 def vectorized_mh_step(state: SamplerState,
@@ -9,6 +10,7 @@ def vectorized_mh_step(state: SamplerState,
                        lnlike_fn: Callable,
                        lnprior_fn: Callable,
                        rng: np.random.Generator,
+                       wrap: Optional[WrapSpec] = None,
                        ) -> SamplerState:
     """
     Execute one Metropolis-Hastings step for all temperature chains simultaneously.
@@ -50,6 +52,10 @@ def vectorized_mh_step(state: SamplerState,
     """
     # propose a set of new positions
     x_stars, qxys = prop_fn(state)
+
+    # wrap periodic dimensions before any prior/likelihood evaluation
+    if wrap is not None:
+        x_stars = wrap.apply(x_stars)
 
     # compute new prior first; skip the likelihood for out-of-bounds rows
     lnprior_stars = lnprior_fn(x_stars)
