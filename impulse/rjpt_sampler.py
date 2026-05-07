@@ -18,6 +18,7 @@ from impulse.input_function_wrapper import _function_wrapper
 from impulse.sampler_state import SamplerState, PTState
 from impulse.file_io import ShortChain
 from impulse.sampler_step import vectorized_mh_step, pt_step
+from impulse.wrapping import WrapSpec, PeriodicSpec
 from impulse.resume import checkpoint_sampler, check_for_checkpoint, load_rjpt_checkpoint
 from impulse.samplers import (
     setup_seeds, setup_chain_stats, setup_standard_jumps, setup_initial_position,
@@ -116,6 +117,7 @@ class RJPTSampler:
         resume: bool = False,
         vectorized: bool = False,
         threads: int = 1,
+        periodic: Optional[PeriodicSpec] = None,
     ) -> None:
         if loglargs is None:
             loglargs = ()
@@ -129,6 +131,7 @@ class RJPTSampler:
         self.ndim = ndim
         self.ntemps = ntemps
         self.swap_steps = swap_steps
+        self.wrap = WrapSpec.from_dict(periodic)
         self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized, threads=threads)
         self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized, threads=threads)
 
@@ -500,6 +503,8 @@ class RJPTSampler:
             # Write active params back
             new_params = new_positions[k].copy()
             new_params[active_idx] = nuts_state.position
+            if self.wrap is not None:
+                new_params = self.wrap.apply(new_params)
             new_positions[k] = new_params
 
             # Recompute untempered lnlike and lnprior
@@ -687,6 +692,8 @@ class RJPTSampler:
 
         # Initial state
         initial_position = setup_initial_position(initial_position, self.ntemps)
+        if self.wrap is not None:
+            initial_position = self.wrap.apply(initial_position)
         lnlike0 = self.lnlike(initial_position)
         lnprior0 = self.lnprior(initial_position)
         lnprob0 = 1.0 / self.ptstate.ladder * lnlike0 + lnprior0
@@ -757,6 +764,7 @@ class RJPTSampler:
             # Step A: MH step (includes RJ proposals if registered)
             self.state = vectorized_mh_step(
                 self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0],
+                wrap=self.wrap,
             )
             self.proposal_bundle.report_accepts(self.state.accepted)
 
