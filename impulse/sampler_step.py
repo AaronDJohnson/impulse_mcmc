@@ -48,12 +48,18 @@ def vectorized_mh_step(state: SamplerState,
     - Proposal ratios (qxy) are included in acceptance calculation
     - Only accepted proposals update positions and log-probability values
     """
-    # propose a set of new proposals
+    # propose a set of new positions
     x_stars, qxys = prop_fn(state)
 
-    # compute new prior
+    # compute new prior first; skip the likelihood for out-of-bounds rows
     lnprior_stars = lnprior_fn(x_stars)
-    lnlike_stars = lnlike_fn(x_stars)
+    finite = np.isfinite(lnprior_stars)
+    lnprior_stars = np.where(finite, lnprior_stars, -np.inf)
+
+    lnlike_stars = np.full(len(x_stars), -np.inf)
+    if np.any(finite):
+        lnlike_stars[finite] = lnlike_fn(x_stars[finite])
+
     lnprob_stars = 1 / state.temps * lnlike_stars + lnprior_stars
 
     probability_ratios = lnprob_stars - (state.lnprobs) + qxys
