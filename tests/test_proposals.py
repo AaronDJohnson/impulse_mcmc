@@ -590,3 +590,61 @@ class TestProposalBundleAcceptanceReport:
             assert report[name]['calls'] == 0
             assert report[name]['accepts'] == 0
             assert report[name]['rate'] == 0.0
+
+    def test_save_chain_acceptance_rates_writes_json(self, tmp_path):
+        """End-to-end: a PTSampler run writes a usable JSON acceptance file."""
+        import json
+        import os
+        from impulse.samplers import PTSampler
+
+        def lnlike(x):
+            return float(-0.5 * (x[0] ** 2 + x[1] ** 2))
+
+        def lnprior(x):
+            return -np.inf if np.any(np.abs(x) > 5) else 0.0
+
+        outdir = str(tmp_path / "chains")
+        s = PTSampler(
+            ndim=2, lnlike=lnlike, lnprior=lnprior,
+            am_weight=15, scam_weight=30, de_weight=50,
+            ntemps=3, min_temp=1.0, max_temp=4.0,
+            seed=0, outdir=outdir, buffer_size=500, save_freq=2000,
+        )
+        s.sample(np.zeros((3, 2)), num_iterations=1500)
+
+        path = os.path.join(outdir, "chain_acceptance.json")
+        assert os.path.exists(path)
+        with open(path) as f:
+            rep = json.load(f)
+        assert set(rep.keys()) >= {"temperatures", "mh", "pt_swap", "per_proposal"}
+        assert len(rep["temperatures"]) == 3
+        assert len(rep["mh"]) == 3
+        for ch in rep["mh"]:
+            assert {"calls", "accepts", "rate", "per_proposal"} <= set(ch.keys())
+            assert ch["calls"] > 0
+            assert 0.0 <= ch["rate"] <= 1.0
+            assert {"am", "scam", "de"} <= set(ch["per_proposal"].keys())
+        assert len(rep["pt_swap"]) == 2  # ntemps - 1 neighbour pairs
+
+    def test_chain_acceptance_rates_per_chain(self):
+        """chain_acceptance_rates summarises by chain, including per-proposal."""
+        bundle, state, jps = self._make_bundle(ntemps=3)
+
+        n_iters = 50
+        for _ in range(n_iters):
+            bundle(state)
+            # chain 0 always accepts, chain 1 always rejects, chain 2 accepts half
+            accepts = np.array([1, 0, 1 if _ % 2 == 0 else 0])
+            bundle.report_accepts(accepts)
+
+        rates = bundle.chain_acceptance_rates()
+        assert len(rates) == 3
+        # Chain-level totals match
+        assert rates[0]['calls'] == n_iters
+        assert rates[0]['accepts'] == n_iters
+        assert rates[0]['rate'] == pytest.approx(1.0)
+        assert rates[1]['rate'] == pytest.approx(0.0)
+        assert rates[2]['rate'] == pytest.approx(0.5, abs=0.05)
+        # per_proposal field present and keyed by proposal name
+        for ch in rates:
+            assert set(ch['per_proposal'].keys()) == {'am', 'scam'}

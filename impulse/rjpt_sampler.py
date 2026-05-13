@@ -778,6 +778,7 @@ class RJPTSampler:
             # Step C: Save / checkpoint
             if jj > 0 and jj % self.save_freq == 0:
                 self.short_chain.save_chain()
+                self.save_chain_acceptance_rates()
                 if self.nuts_enabled:
                     self._flush_nuts_diagnostics()
                 checkpoint_sampler(
@@ -803,6 +804,7 @@ class RJPTSampler:
 
         # Final save
         self.short_chain.save_chain()
+        self.save_chain_acceptance_rates()
         if self.nuts_enabled:
             self._flush_nuts_diagnostics()
 
@@ -837,6 +839,55 @@ class RJPTSampler:
             ``{name: {calls, accepts, rate, per_chain: [...]}}``
         """
         return self.proposal_bundle.acceptance_report()
+
+    def chain_acceptance_rates(self) -> dict:
+        """Per-chain MH acceptance summary, plus PT swap rates.
+
+        Returns
+        -------
+        dict
+            ``temperatures`` (list of T per chain),
+            ``mh`` (list per chain: ``{calls, accepts, rate, per_proposal}``),
+            ``pt_swap`` (np.ndarray of length ``ntemps - 1`` with the
+            accept rate for each neighbour-pair swap, or empty if
+            ``ntemps == 1``).
+        """
+        ladder = self.ptstate.ladder
+        return {
+            'temperatures': [] if ladder is None else ladder.tolist(),
+            'mh': self.proposal_bundle.chain_acceptance_rates(),
+            'pt_swap': self.ptstate.compute_accept_ratio() if self.ntemps > 1
+                       else np.array([]),
+        }
+
+    def save_chain_acceptance_rates(self, path: Optional[str] = None) -> str:
+        """Write a JSON snapshot of chain acceptance rates to disk.
+
+        Includes per-chain MH rate, per-proposal × per-chain rate,
+        aggregate per-proposal rate, and PT swap acceptance per pair.
+
+        Parameters
+        ----------
+        path : str, optional
+            Output path. Defaults to ``<outdir>/chain_acceptance.json``.
+
+        Returns
+        -------
+        str
+            Resolved path written.
+        """
+        import json
+        if path is None:
+            path = os.path.join(self.outdir, "chain_acceptance.json")
+        report = self.chain_acceptance_rates()
+        swap = report['pt_swap']
+        report['pt_swap'] = (swap.tolist() if hasattr(swap, 'tolist')
+                             else list(swap))
+        report['per_proposal'] = self.proposal_acceptance_rates()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, 'w') as fp:
+            json.dump(report, fp, indent=2)
+        return path
 
     # ------------------------------------------------------------------
     # load_chain

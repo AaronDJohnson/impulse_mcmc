@@ -220,6 +220,29 @@ class ProposalBundle:
             }
         return result
 
+    def chain_acceptance_rates(self) -> list:
+        """Overall MH acceptance rate for each chain, across all proposals.
+
+        Returns
+        -------
+        list of dict
+            One entry per chain, in temperature order:
+            ``{calls, accepts, rate, per_proposal: {name: rate}}``.
+        """
+        out = []
+        for jp in self.jump_proposals:
+            rates = jp.acceptance_rates()
+            total_calls = int(sum(r['calls'] for r in rates.values()))
+            total_accepts = int(sum(r['accepts'] for r in rates.values()))
+            out.append({
+                'calls': total_calls,
+                'accepts': total_accepts,
+                'rate': (total_accepts / total_calls) if total_calls > 0 else 0.0,
+                'per_proposal': {name: r['rate'] for name, r in rates.items()},
+            })
+        return out
+
+
 def am(chain_stats: ChainStats) -> Tuple[np.ndarray, float]:
     """
     Adaptive Metropolis proposal using empirical covariance matrix.

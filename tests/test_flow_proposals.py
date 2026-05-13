@@ -115,6 +115,62 @@ def test_fixed_flow_no_refit(tmp_path):
         assert ks < 0.10, f"dim {d}: KS={ks:.3f} too large"
 
 
+def test_chain_acceptance_rates_includes_nf_and_custom(tmp_path):
+    """`chain_acceptance_rates` reports NF and user-defined proposals too.
+
+    Adds a fixed-flow NF proposal and a custom callable-class proposal to a
+    sampler alongside the standard am/scam/de jumps, runs briefly, and
+    verifies every proposal name shows up in the per-chain report.
+    """
+    from coppuccino import normalizing_flows_fit
+    from impulse.samplers import PTSampler
+    from impulse.flow_proposals import NormalizingFlowProposal
+
+    class MyTinyJump:
+        """Custom proposal: small Gaussian step (picklable callable class)."""
+        __name__ = "my_tiny_jump"
+
+        def __init__(self, sigma=0.1):
+            self.sigma = sigma
+
+        def __call__(self, chain_stats):
+            x = chain_stats.current_sample.copy()
+            x += chain_stats.rng.normal(0.0, self.sigma, size=x.shape)
+            return x, 0.0
+
+    # Pre-fit a flow on the target (2D standard normal) so the NF is usable
+    # from iteration 0.
+    rng = np.random.default_rng(0)
+    flow = normalizing_flows_fit(rng.standard_normal((2000, 2)), max_epochs=60)
+
+    def lnlike(x): return float(-0.5 * (x[0] ** 2 + x[1] ** 2))
+    def lnprior(x): return -np.inf if np.any(np.abs(x) > 6) else 0.0
+
+    sampler = PTSampler(
+        ndim=2, lnlike=lnlike, lnprior=lnprior,
+        am_weight=15, scam_weight=30, de_weight=50,
+        ntemps=2, min_temp=1.0, max_temp=4.0,
+        seed=0, outdir=str(tmp_path / "mixed"),
+        buffer_size=500, save_freq=2000,
+    )
+    sampler.proposal_bundle.add_jump(NormalizingFlowProposal(flow=flow), weight=20.0)
+    sampler.proposal_bundle.add_jump(MyTinyJump(sigma=0.2), weight=10.0)
+
+    sampler.sample(np.zeros((2, 2)), num_iterations=1500)
+
+    rep = sampler.chain_acceptance_rates()
+    assert len(rep["mh"]) == 2  # one entry per chain
+    expected_names = {"am", "scam", "de", "nf_flow", "my_tiny_jump"}
+    for ch_idx, ch in enumerate(rep["mh"]):
+        names = set(ch["per_proposal"].keys())
+        assert expected_names <= names, f"chain {ch_idx} missing names: {expected_names - names}"
+        # Each proposal got at least one call (random selection with positive weight)
+        chain_jp = sampler.proposal_bundle.jump_proposals[ch_idx]
+        per_chain_rates = chain_jp.acceptance_rates()
+        for n in expected_names:
+            assert per_chain_rates[n]["calls"] > 0, f"chain {ch_idx} {n} got 0 calls"
+
+
 def test_set_flow_after_unpickle(tmp_path):
     """Fixed flows are dropped during pickle; ``set_flow`` re-attaches."""
     import pickle
