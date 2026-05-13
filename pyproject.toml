@@ -29,6 +29,9 @@ dev = [
   "black",
   "isort",
 ]
+flow = [
+  "coppuccino",
+]
 
 [project.urls]
 Homepage = "https://github.com/AaronDJohnson/impulse_mcmc"
