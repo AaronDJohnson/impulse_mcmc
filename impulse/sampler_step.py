@@ -62,9 +62,18 @@ def vectorized_mh_step(state: SamplerState,
     finite = np.isfinite(lnprior_stars)
     lnprior_stars = np.where(finite, lnprior_stars, -np.inf)
 
-    lnlike_stars = np.full(len(x_stars), -np.inf)
-    if np.any(finite):
-        lnlike_stars[finite] = lnlike_fn(x_stars[finite])
+    # JAX-traced likelihoods recompile when the leading batch dimension
+    # changes, so feed them the full batch and mask the result. Note this
+    # computes the likelihood for out-of-prior rows too — we trade that
+    # wasted compute against avoiding JIT recompilation.
+    lnlike_jax = getattr(lnlike_fn, 'jax', False)
+    if lnlike_jax:
+        lnlike_stars = np.asarray(lnlike_fn(x_stars))
+        lnlike_stars = np.where(finite, lnlike_stars, -np.inf)
+    else:
+        lnlike_stars = np.full(len(x_stars), -np.inf)
+        if np.any(finite):
+            lnlike_stars[finite] = lnlike_fn(x_stars[finite])
 
     lnprob_stars = 1 / state.temps * lnlike_stars + lnprior_stars
 

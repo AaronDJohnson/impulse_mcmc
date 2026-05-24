@@ -262,6 +262,20 @@ class PTSampler:
         Whether to resume from existing checkpoint.
     vectorized : bool, default False
         Whether likelihood and prior functions support vectorized evaluation.
+    jax : bool, default False
+        Set True when the likelihood is JAX-traced/JIT-compiled. The MH step
+        will then evaluate the likelihood on the full proposal batch on every
+        iteration (masking invalid rows afterwards) so the input shape stays
+        constant and the JIT cache is reused instead of recompiling.
+
+        This does *not* skip computation for rows that fall outside the prior
+        — the likelihood is still computed for every row in the batch, and the
+        invalid rows are zeroed out only after the call. Use this flag when
+        the cost of JAX recompilation dominates the cost of evaluating a few
+        extra rows (almost always true for JIT'd likelihoods). When the
+        likelihood is plain vectorized NumPy and the prior-rejection rate is
+        high, leave ``jax=False`` so the step can genuinely skip invalid
+        rows.
 
     Attributes
     ----------
@@ -337,6 +351,7 @@ class PTSampler:
                  adapt_nu: int = 10,
                  resume: bool = False,
                  vectorized: bool = False,
+                 jax: bool = False,
                  threads: int = 1,
                  periodic: Optional[PeriodicSpec] = None,
                  ) -> None:
@@ -354,8 +369,8 @@ class PTSampler:
         self.ntemps = ntemps
         self.swap_steps = swap_steps
         self.wrap = WrapSpec.from_dict(periodic)
-        self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized, threads=threads)
-        self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized, threads=threads)
+        self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized, jax=jax, threads=threads)
+        self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized, jax=jax, threads=threads)
 
         self.rngs = setup_seeds(seed, ntemps)
 

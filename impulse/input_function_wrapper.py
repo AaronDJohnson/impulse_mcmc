@@ -21,6 +21,20 @@ class _function_wrapper(object):
     vectorized : bool, default False
         If True, the function is expected to handle batch inputs directly.
         If False, the function will be called row-by-row for batch inputs.
+    jax : bool, default False
+        If True, callers may assume the function is JAX-traced/JIT-compiled and
+        therefore sensitive to input-shape changes. The MH step uses this to
+        avoid masking out rows before the likelihood call (which would otherwise
+        trigger costly JIT recompilation each time a different number of
+        proposals lands outside the prior).
+
+        Note that this does *not* skip work for out-of-prior rows: the function
+        is evaluated on the full batch every iteration and the invalid rows are
+        masked to ``-inf`` afterwards. This trades a small amount of wasted
+        per-row likelihood compute for keeping the JIT cache warm. If your
+        prior-rejection rate is high and each row is expensive, a non-JIT'd
+        vectorized NumPy implementation (``jax=False``, ``vectorized=True``)
+        will actually skip work on invalid rows and may be faster overall.
     zero_copy : bool, default True
         If True, avoids unnecessary array copies for better performance in
         multicore environments. Uses array views when possible.
@@ -70,12 +84,14 @@ class _function_wrapper(object):
                  kwargs: Optional[dict] = None,
                  *,
                  vectorized: bool = False,
+                 jax: bool = False,
                  zero_copy: bool = True,
                  threads: int = 1):
         self.f = f
         self.args = tuple(args) if args else ()
         self.kwargs = dict(kwargs) if kwargs else {}
         self.vectorized = bool(vectorized)
+        self.jax = bool(jax)
         self.zero_copy = bool(zero_copy)
         self.threads = int(threads)
         self._executor = None  # lazily created
@@ -169,4 +185,4 @@ class _function_wrapper(object):
 
     def __repr__(self):
         name = getattr(self.f, "__name__", repr(self.f))
-        return f"<_function_wrapper {name} vectorized={self.vectorized} zero_copy={self.zero_copy}>"
+        return f"<_function_wrapper {name} vectorized={self.vectorized} jax={self.jax} zero_copy={self.zero_copy}>"
