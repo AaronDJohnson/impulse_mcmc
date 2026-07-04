@@ -1,6 +1,39 @@
 import numpy as np
 from dataclasses import dataclass
 
+
+def tempered_lnprobs(lnlikes: np.ndarray, lnpriors: np.ndarray, temps: np.ndarray) -> np.ndarray:
+    """
+    Compute tempered log-posteriors ``beta * lnlike + lnprior`` with ``beta = 1/T``.
+
+    Handles infinite temperatures explicitly: at ``T = inf`` the chain
+    samples the prior, so the result is exactly ``lnprior``.  A naive
+    ``1/T * lnlike`` would produce ``0 * (-inf) = NaN`` for out-of-support
+    likelihoods on the infinite-temperature chain.
+
+    Parameters
+    ----------
+    lnlikes : np.ndarray
+        Log-likelihood values, shape (ntemps,).
+    lnpriors : np.ndarray
+        Log-prior values, shape (ntemps,).
+    temps : np.ndarray
+        Temperature values, shape (ntemps,). May contain ``np.inf``.
+
+    Returns
+    -------
+    np.ndarray
+        Tempered log-posteriors, shape (ntemps,). Rows with ``-inf``
+        log-prior remain ``-inf``; results are bit-identical to
+        ``1/temps * lnlikes + lnpriors`` for finite temperatures.
+    """
+    with np.errstate(invalid='ignore'):
+        beta = np.where(np.isinf(temps), 0.0, 1.0 / temps)
+        # the beta == 0 branch of beta * lnlikes still evaluates eagerly
+        # (hence the errstate guard); np.where discards its NaNs
+        return np.where(beta == 0.0, lnpriors, beta * lnlikes + lnpriors)
+
+
 @dataclass
 class SamplerState:
     """

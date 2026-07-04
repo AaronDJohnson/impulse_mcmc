@@ -90,9 +90,64 @@ class TestFromRJMCMC:
             outdir=outdir,
         )
         assert sampler.ndim == NDIM
-        # standard (am, scam, de) + birth + death + nmodel + swap = 7
+        # standard (am, scam, de) + combined birth-death + nmodel + swap
+        # + early_de = 7 (birth and death are ONE kernel: schedule-driven
+        # selection inside the kernel is what keeps detailed balance under
+        # constant weights; early_de is the min-fill-gated DE that carries
+        # de_weight, with stock de registered at weight 0)
         n_proposals = len(sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert n_proposals == 7
+        names = [p.__name__ for p in
+                 sampler.proposal_bundle.jump_proposals[0].proposal_list]
+        assert 'birth_death' in names
+        assert 'early_de' in names
+        assert 'birth_proposal' not in names
+        assert 'death_proposal' not in names
+        # stock de must never be selected: its per-model buffer never
+        # fills at realistic run lengths (JumpProposals would silently
+        # substitute gaussian for every selection)
+        jp = sampler.proposal_bundle.jump_proposals[0]
+        de_idx = names.index('de')
+        assert jp.proposal_probs[de_idx] == 0.0
+
+    def test_single_model_space_constructs(self, outdir):
+        """Regression: a single-model space must construct successfully.
+
+        BirthDeathProposal rejects max_sources < 2, so from_rjmcmc must
+        skip the trans-dimensional jumps (birth-death, nmodel, source
+        swap — all meaningless with one model) instead of building them
+        and raising.  Only the standard continuous jumps are registered.
+        """
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike,
+            logprior=_logprior,
+            num_sources=1,
+            num_params=NUM_PARAMS,
+            source_prior_draw=_source_draw,
+        )
+        sampler = PTSampler.from_rjmcmc(space, ntemps=3, seed=42, outdir=outdir)
+        assert sampler.ndim == NUM_PARAMS + 1
+        names = sorted(p.__name__ for p in
+                       sampler.proposal_bundle.jump_proposals[0].proposal_list)
+        assert names == ['am', 'de', 'early_de', 'scam']
+
+    def test_zero_birth_death_weight_skips_kernel(self, rjmcmc_space, outdir):
+        """birth_weight + death_weight == 0: the birth-death kernel is
+        never selected, so it must not be constructed or registered (the
+        other RJ jumps stay)."""
+        sampler = PTSampler.from_rjmcmc(
+            rjmcmc_space,
+            birth_weight=0,
+            death_weight=0,
+            ntemps=3,
+            seed=42,
+            outdir=outdir,
+        )
+        names = [p.__name__ for p in
+                 sampler.proposal_bundle.jump_proposals[0].proposal_list]
+        assert 'birth_death' not in names
+        assert 'nmodel_jump' in names
+        assert 'source_swap_proposal' in names
 
     def test_initial_position(self, rjmcmc_space):
         rng = np.random.default_rng(42)
@@ -118,11 +173,157 @@ class TestFromRJMCMC:
         assert chain['samples'].shape == (3, 500, NDIM)
 
 
+class TestSourcePriorLogpdfResolution:
+    """The per-source prior-density fallback probe in RJMCMCProductSpace."""
+
+    def test_additive_prior_passes_probe(self):
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike, logprior=_logprior,
+            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            source_prior_draw=_source_draw,
+        )
+        assert space._resolve_source_prior_logpdf() is _logprior
+
+    def test_non_additive_prior_raises(self):
+        """A cross-slot coupling makes logprior non-additive: the fallback
+        per-source density would be provably wrong, so this must raise
+        rather than warn and proceed."""
+        def coupled_logprior(params):
+            p = np.asarray(params, float)
+            return -0.5 * float(np.sum(p)) ** 2  # not additive across slots
+
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike, logprior=coupled_logprior,
+            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            source_prior_draw=_source_draw,
+        )
+        with pytest.raises(ValueError, match="not additive"):
+            space.get_birth_death_proposal()
+
+    def test_probe_call_failure_raises_typeerror(self):
+        """A logprior that cannot handle a single source's vector gets the
+        curated TypeError (including when np.concatenate is what fails)."""
+        def strict_logprior(params):
+            if len(params) != MAX_SOURCES * NUM_PARAMS:
+                raise ValueError("expected the full parameter vector")
+            return 0.0
+
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike, logprior=strict_logprior,
+            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            source_prior_draw=_source_draw,
+        )
+        with pytest.raises(TypeError, match="source_prior_logpdf"):
+            space.get_birth_death_proposal()
+
+    def test_draws_outside_prior_support_raise(self):
+        """A probe draw outside the prior support must raise.
+
+        The fallback probe only runs when neither source_prior_logpdf nor
+        source_proposal_logpdf was supplied — a configuration in which
+        source_prior_draw is assumed to BE the prior.  An out-of-support
+        draw proves it is not, so the birth/death draw-density wiring
+        (prior density used as the draw density) is provably wrong and
+        silently redrawing would hide the misconfiguration.
+        """
+        def broad_draw(rng):
+            return rng.uniform(LO - 2.0, HI + 2.0)  # mostly out of bounds
+
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike, logprior=_logprior,
+            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            source_prior_draw=broad_draw,
+        )
+        with pytest.raises(ValueError, match="outside the prior support"):
+            space._resolve_source_prior_logpdf()
+
+    def test_broad_draw_with_proposal_logpdf_skips_probe(self):
+        """The same broader-than-prior draw is fine when its density is
+        declared: source_proposal_logpdf supplies the draw density, so the
+        prior-density probe (and its support check) is skipped."""
+        def broad_draw(rng):
+            return rng.uniform(LO - 2.0, HI + 2.0)
+
+        def broad_logpdf(params):
+            return float(-np.sum(np.log((HI + 2.0) - (LO - 2.0))))
+
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike, logprior=_logprior,
+            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            source_prior_draw=broad_draw,
+            source_proposal_logpdf=broad_logpdf,
+        )
+        log_proposal, log_prior = space._source_draw_density_args()
+        assert log_proposal is broad_logpdf
+        assert log_prior is None
+        # and the kernel builds without probing
+        space.get_birth_death_proposal()
+
+    def test_single_model_skips_probe(self):
+        """num_sources=1: the full prior IS the per-source prior, so no
+        probe draws should be made at all."""
+        def raising_draw(rng):
+            raise AssertionError("probe must not draw for num_sources=1")
+
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike, logprior=_logprior,
+            num_sources=1, num_params=NUM_PARAMS,
+            source_prior_draw=raising_draw,
+        )
+        assert space._resolve_source_prior_logpdf() is _logprior
+
+    def test_explicit_source_prior_logpdf_bypasses_probe(self):
+        def per_source(params):
+            return 0.0
+
+        space = RJMCMCProductSpace(
+            loglikelihood=_loglike, logprior=_logprior,
+            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            source_prior_draw=_source_draw,
+            source_prior_logpdf=per_source,
+        )
+        assert space._resolve_source_prior_logpdf() is per_source
+
+
 class TestModelRecovery:
     """Run long enough to check that the preferred model is correct."""
 
     @pytest.mark.slow
     def test_prefers_one_source(self, rjmcmc_space, outdir):
+        """Model recovery on the sinusoid problem with the default mixture.
+
+        Fix history (three formerly xfailing defects, all now covered by
+        dedicated regressions in tests/test_rjmcmc_detailed_balance.py):
+
+        1. Constant-weight birth/death selection violated detailed balance;
+           birth and death are now ONE kernel with schedule-driven internal
+           selection (``BirthDeathProposal``).
+        2. The value-preserving death left posterior-distributed parameters
+           in the vacated inactive slot, which ``nmodel_jump`` re-activated
+           with ``qxy = 0`` (valid only for prior-distributed slots),
+           pushing toward MORE sources; death now refreshes the slot from
+           the prior, and the kill-last death replaced the uniform-kill
+           variant whose missing kill-choice ``qxy`` factor biased toward
+           FEWER sources.
+        3. With trans-dimensional moves enumeration-exact, this test STILL
+           failed at the pinned seed 42 (P ~ [0.43-0.32, 0.47-0.52, 0.10])
+           with a continuous-space mixing failure: the k=2 conditional
+           posterior has an amplitude-splitting degenerate ridge (both
+           sources at f ~ 1, a1 + a2 ~ 2.3, likelihood >= k=1's best), and
+           exiting it to the death gateway (min amplitude ~ 0) requires
+           1-D diffusion along the ridge that am/scam traverse at 4-8%
+           acceptance while the stock ``de`` — the move designed for
+           exactly such ridge jumps — NEVER ran: it is gated on a FULL
+           per-model buffer (> 50,000 samples in the current model), which
+           a 20k-iteration run split across 3 models cannot reach, so
+           ``JumpProposals`` silently substituted ``gaussian``.
+           ``from_rjmcmc`` now registers the min-fill-gated ``EarlyDE``
+           (active after 100 within-model samples, drawing from the tail
+           of the partially filled buffer), which restores the ridge move;
+           it accepts at ~40% here and this test passes at seeds 42, 7,
+           43, 101, and 202 (P(1 source) = 0.54-0.63 vs the prior-MC gold
+           standard ~[0.64, 0.29, 0.07]).
+        """
         sampler = PTSampler.from_rjmcmc(
             rjmcmc_space,
             ntemps=5,

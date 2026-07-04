@@ -140,16 +140,19 @@ class _function_wrapper(object):
             first_result = self.f(x_arr[0], *self.args, **self.kwargs)
             first_arr = np.asanyarray(first_result)
 
-            # Pre-allocate output array
+            # Pre-allocate output array. Promote to at least float64: log-densities
+            # are floats by contract, and an int/bool dtype from the first row
+            # (e.g. a prior returning 0 in-bounds) cannot hold -inf from later rows.
+            out_dtype = np.result_type(first_arr.dtype, np.float64)
             if first_arr.ndim == 0:
                 # Scalar output
-                results = np.empty(n, dtype=first_arr.dtype)
+                results = np.empty(n, dtype=out_dtype)
                 results[0] = first_arr
                 for i in range(1, n):
                     results[i] = self.f(x_arr[i], *self.args, **self.kwargs)
             else:
                 # Array output
-                results = np.empty((n,) + first_arr.shape, dtype=first_arr.dtype)
+                results = np.empty((n,) + first_arr.shape, dtype=out_dtype)
                 results[0] = first_arr
                 for i in range(1, n):
                     results[i] = self.f(x_arr[i], *self.args, **self.kwargs)

@@ -1,3 +1,5 @@
+import warnings
+
 import pytest
 import numpy as np
 from unittest.mock import Mock
@@ -149,6 +151,43 @@ class TestVectorizedMhStep:
         # Positions should remain unchanged
         np.testing.assert_array_equal(new_state.positions, sample_state_2d.positions)
 
+    def test_vectorized_mh_step_inf_temp_accepts_neg_inf_likelihood(self, simple_prior):
+        """T = inf chain accepts prior-valid moves even where lnlike = -inf"""
+        def half_neg_inf_likelihood(x):
+            x = np.asarray(x)
+            if x.ndim == 1:
+                return -np.inf if x[0] > 0 else -0.5 * np.sum(x**2)
+            result = -0.5 * np.sum(x**2, axis=1)
+            result[x[:, 0] > 0] = -np.inf
+            return result
+
+        positions = np.array([[-1.0, 0.0], [-1.0, 0.0]])
+        lnlikes = np.array([-0.5, -0.5])
+        lnpriors = np.array([0.0, 0.0])
+        temps = np.array([1.0, np.inf])
+        lnprobs = np.array([-0.5, 0.0])  # inf chain: lnprob = lnprior
+        state = SamplerState(positions, lnlikes, lnpriors, lnprobs,
+                             np.ones(2, dtype=int), temps)
+
+        prop_fn = Mock()
+        # proposals inside the prior but in the -inf-likelihood half-space
+        prop_fn.return_value = (np.array([[0.5, 0.0], [0.5, 0.0]]), np.zeros(2))
+        rng = np.random.default_rng(42)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            new_state = vectorized_mh_step(
+                state, prop_fn, half_neg_inf_likelihood, simple_prior, rng
+            )
+
+        assert not np.any(np.isnan(new_state.lnprobs))
+        # cold chain must reject the -inf-likelihood proposal
+        assert new_state.accepted[0] == 0
+        # prior chain must accept it (prior ratio is 0)
+        assert new_state.accepted[1] == 1
+        np.testing.assert_array_equal(new_state.positions[1], [0.5, 0.0])
+        assert new_state.lnprobs[1] == 0.0
+
     def test_vectorized_mh_step_updates_probabilities(self, sample_state_2d, simple_likelihood, simple_prior):
         """Test that log-probabilities are updated correctly"""
         prop_fn = Mock()
@@ -288,6 +327,28 @@ class TestPtStep:
         # Check that they follow the correct formula: lnprob = lnprior + lnlike/temp
         expected_lnprobs = new_state.lnpriors + new_state.lnlikes / new_state.temps
         np.testing.assert_array_almost_equal(new_state.lnprobs, expected_lnprobs)
+
+    def test_pt_step_inf_temp_neg_inf_likelihood_no_nan(self, simple_likelihood, simple_prior):
+        """T = inf chain holding a -inf lnlike position: swap rejected, no NaN"""
+        positions = np.array([[-1.0, 0.0], [0.5, 0.0]])
+        lnlikes = np.array([-0.5, -np.inf])
+        lnpriors = np.array([0.0, 0.0])
+        temps = np.array([1.0, np.inf])
+        lnprobs = np.array([-0.5, 0.0])  # inf chain: lnprob = lnprior
+        state = SamplerState(positions, lnlikes, lnpriors, lnprobs,
+                             np.ones(2, dtype=int), temps)
+        ptstate = PTState(ndim=2, ntemps=2, ladder=temps)
+        rng = np.random.default_rng(42)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            new_state = pt_step(state, ptstate, simple_likelihood, simple_prior, rng)
+
+        # -inf-likelihood position can never move to a finite temperature
+        assert ptstate.swap_accept[0] == 0
+        np.testing.assert_array_equal(new_state.positions, positions)
+        assert not np.any(np.isnan(new_state.lnprobs))
+        assert new_state.lnprobs[1] == 0.0
 
     def test_pt_step_high_temperature_favors_swaps(self, simple_likelihood, simple_prior):
         """Test that higher temperature differences affect swap probabilities"""

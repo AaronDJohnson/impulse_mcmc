@@ -191,21 +191,18 @@ class WarmupSchedule:
         shrinkage = 5.0 / (n + 5.0)
         reg_cov = (1 - shrinkage) * sample_cov + shrinkage * np.diag(np.diag(sample_cov) + 1e-3)
 
-        # Ensure positive definiteness
+        # from_covariance inverts: mass matrix M = reg_cov^{-1} (Stan's
+        # inverse metric equals the posterior covariance)
         if self.mass_matrix_type == MassMatrixType.DIAGONAL:
-            diag = np.diag(reg_cov)
-            diag = np.maximum(diag, 1e-10)
-            return MassMatrix(self.ndim, MassMatrixType.DIAGONAL, diagonal=diag)
+            return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
         elif self.mass_matrix_type == MassMatrixType.DENSE:
             # Add small diagonal for numerical stability
             reg_cov += 1e-8 * np.eye(self.ndim)
             try:
-                np.linalg.cholesky(reg_cov)
-                return MassMatrix(self.ndim, MassMatrixType.DENSE, dense=reg_cov)
+                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DENSE)
             except np.linalg.LinAlgError:
                 # Fall back to diagonal
-                diag = np.maximum(np.diag(reg_cov), 1e-10)
-                return MassMatrix(self.ndim, MassMatrixType.DIAGONAL, diagonal=diag)
+                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
         else:
             return MassMatrix(self.ndim, MassMatrixType.UNIT)
 

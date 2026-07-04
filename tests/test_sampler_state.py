@@ -1,6 +1,8 @@
+import warnings
+
 import pytest
 import numpy as np
-from impulse.sampler_state import PTState, SamplerState
+from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
 
 
 class TestSamplerState:
@@ -274,3 +276,50 @@ class TestPTState:
         
         assert abs(ptstate_2d.temp_step - expected_2d) < 1e-10
         assert abs(ptstate_10d.temp_step - expected_10d) < 1e-10
+
+
+class TestTemperedLnprobs:
+    """Test cases for the tempered_lnprobs helper"""
+
+    def test_finite_temps_bit_identical(self):
+        """Finite temperatures reproduce 1/temps * lnlikes + lnpriors exactly"""
+        rng = np.random.default_rng(42)
+        lnlikes = rng.normal(size=6) * 100
+        lnpriors = rng.normal(size=6)
+        temps = np.array([1.0, 1.7, 3.3, 10.0, 55.5, 1e6])
+
+        result = tempered_lnprobs(lnlikes, lnpriors, temps)
+        expected = 1 / temps * lnlikes + lnpriors
+        np.testing.assert_array_equal(result, expected)
+
+    def test_inf_temp_neg_inf_lnlike_no_nan(self):
+        """T = inf with -inf lnlike gives lnprior, not NaN, without warnings"""
+        lnlikes = np.array([-1.0, -np.inf])
+        lnpriors = np.array([0.0, -0.5])
+        temps = np.array([1.0, np.inf])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = tempered_lnprobs(lnlikes, lnpriors, temps)
+
+        assert not np.any(np.isnan(result))
+        assert result[0] == -1.0
+        assert result[1] == -0.5  # prior chain ignores the likelihood
+
+    def test_neg_inf_lnprior_stays_neg_inf(self):
+        """-inf lnprior propagates for both finite and infinite temperatures"""
+        lnlikes = np.array([-1.0, -1.0, -np.inf])
+        lnpriors = np.array([-np.inf, -np.inf, -np.inf])
+        temps = np.array([1.0, np.inf, np.inf])
+
+        result = tempered_lnprobs(lnlikes, lnpriors, temps)
+        assert np.all(result == -np.inf)
+
+    def test_inf_temp_finite_lnlike(self):
+        """T = inf with finite lnlike still returns exactly lnprior"""
+        lnlikes = np.array([-123.4])
+        lnpriors = np.array([-0.25])
+        temps = np.array([np.inf])
+
+        result = tempered_lnprobs(lnlikes, lnpriors, temps)
+        assert result[0] == -0.25

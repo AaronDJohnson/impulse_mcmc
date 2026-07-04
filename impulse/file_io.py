@@ -76,6 +76,7 @@ class ShortChain:
         self.accept = np.zeros((self.ntemps, self.short_iters))
         self.var_temp = np.zeros((self.ntemps, self.short_iters))
         self._unsaved = 0
+        self._rows_written = 0
         self.filenames = [f'chain_{nchain}.txt' for nchain in range(self.ntemps)]
         self.filepaths = [os.path.join(self.outdir, filename) for filename in self.filenames]
         prepare_files(self.filepaths, resume=self.resume)
@@ -154,6 +155,35 @@ class ShortChain:
             # Wraps around (or full buffer when start == end)
             return np.concatenate([self.samples[:, start:, :], self.samples[:, :end, :]], axis=1)
 
+    def _ensure_rows_written(self):
+        """Lazily initialize ``_rows_written`` for legacy unpickled instances.
+
+        ShortChain instances unpickled from checkpoints written before row
+        tracking existed lack ``_rows_written``.  The counter must NEVER
+        restart at 0 in that case: the chain files already hold many rows,
+        and an undercount pickled into the next checkpoint would make the
+        following resume's :meth:`truncate_files_to_saved` rewrite the files
+        as a tiny prefix, destroying history.  Instead the counter is
+        re-seeded from the CURRENT on-disk line count of the chain files.
+
+        The per-temperature files are flushed in lockstep, so their counts
+        only differ after a torn (partially completed) flush; the minimum is
+        used so a later truncation drops the torn tail rather than trusting
+        it.  Called from every reader/writer of ``_rows_written`` so the
+        value is correct regardless of whether :meth:`save_chain` or
+        :meth:`truncate_files_to_saved` runs first after unpickling.
+        """
+        if hasattr(self, '_rows_written'):
+            return
+        counts = []
+        for filepath in self.filepaths:
+            if os.path.exists(filepath):
+                with open(filepath, 'r') as fp:
+                    counts.append(sum(1 for _ in fp))
+            else:
+                counts.append(0)
+        self._rows_written = min(counts) if counts else 0
+
     def save_chain(self):
         """
         Write unsaved samples to disk files with optional thinning.
@@ -175,6 +205,10 @@ class ShortChain:
         """
         if self._unsaved == 0:
             return
+        # Seed the row counter from disk BEFORE appending, so instances
+        # unpickled from pre-row-tracking checkpoints count on from the
+        # true file length instead of restarting at 0.
+        self._ensure_rows_written()
         count = min(self._unsaved, self.short_iters)
         end = self.iteration % self.short_iters
         start = (self.iteration - count) % self.short_iters
@@ -185,8 +219,47 @@ class ShortChain:
             # Wraps around (or full buffer when start == end)
             idx = np.r_[start:self.short_iters, 0:end]
 
+        nrows = 0
         for temp_idx, filepath in enumerate(self.filepaths):
             to_save = np.column_stack([self.samples[temp_idx, idx], self.lnlike[temp_idx, idx], self.lnprob[temp_idx, idx], self.accept[temp_idx, idx], self.var_temp[temp_idx, idx]])[::self.thin]
+            nrows = len(to_save)
             with open(filepath, 'a') as fp:
                 np.savetxt(fp, to_save, fmt='%.18e', delimiter=' ')
         self._unsaved = 0
+        self._rows_written += nrows
+
+    def truncate_files_to_saved(self):
+        """
+        Truncate the on-disk chain files to the flushed-row count.
+
+        Called when resuming from a checkpoint.  The checkpoint pickles this
+        object with ``_rows_written`` — the number of (thinned) rows this
+        buffer had flushed to each chain file when the checkpoint was taken.
+        Any rows beyond that were written AFTER the checkpoint (e.g. by the
+        final flush of a run that completed normally, or by a run killed
+        between a flush and the next checkpoint).  The resumed run re-generates
+        those iterations deterministically from the checkpointed RNG streams,
+        so the stale rows must be dropped first or they would be duplicated.
+
+        Instances restored from checkpoints that predate row tracking have no
+        ``_rows_written``; for those the counter is re-seeded from the current
+        on-disk line count (see :meth:`_ensure_rows_written`), so this call is
+        a no-op — the historical append-only behavior — and subsequent flushes
+        count on from the true file length.
+
+        Examples
+        --------
+        >>> # after unpickling a checkpointed ShortChain on resume:
+        >>> chain.truncate_files_to_saved()
+        >>> # chain files now end exactly at the checkpointed row count
+        """
+        self._ensure_rows_written()
+        rows = self._rows_written
+        for filepath in self.filepaths:
+            if not os.path.exists(filepath):
+                continue
+            with open(filepath, 'r') as fp:
+                lines = fp.readlines()
+            if len(lines) > rows:
+                with open(filepath, 'w') as fp:
+                    fp.writelines(lines[:rows])

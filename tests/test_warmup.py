@@ -80,6 +80,33 @@ class TestWarmupSchedule:
 
         assert mass_matrix_updated, "Mass matrix should be updated during warmup"
 
+    def test_adapted_mass_matrix_is_inverse_covariance(self):
+        """Adapted M must be Sigma^{-1}: velocity M^{-1} p scales as target cov."""
+        ws = WarmupSchedule(num_warmup=200, ndim=2,
+                            mass_matrix_type=MassMatrixType.DIAGONAL)
+        rng = np.random.default_rng(0)
+        stds = np.array([10.0, 1.0])
+        samples = [rng.standard_normal(2) * stds for _ in range(500)]
+
+        mm = ws._adapt_mass_matrix(samples)
+        assert mm.matrix_type == MassMatrixType.DIAGONAL
+        # M^{-1} diagonal approximates the sample variances
+        v = mm.inverse_multiply(np.ones(2))
+        np.testing.assert_allclose(v, stds ** 2, rtol=0.3)
+
+    def test_adapted_dense_mass_matrix_is_inverse_covariance(self):
+        ws = WarmupSchedule(num_warmup=200, ndim=2,
+                            mass_matrix_type=MassMatrixType.DENSE)
+        rng = np.random.default_rng(0)
+        stds = np.array([10.0, 1.0])
+        samples = [rng.standard_normal(2) * stds for _ in range(500)]
+
+        mm = ws._adapt_mass_matrix(samples)
+        assert mm.matrix_type == MassMatrixType.DENSE
+        # M = Sigma^{-1}, so M^{-1} diagonal approximates the variances
+        np.testing.assert_allclose(np.diag(np.linalg.inv(mm._dense)),
+                                   stds ** 2, rtol=0.3)
+
     def test_finalize(self):
         ws = WarmupSchedule(num_warmup=100, ndim=2, initial_step_size=0.5)
         mm = MassMatrix(2, MassMatrixType.UNIT)

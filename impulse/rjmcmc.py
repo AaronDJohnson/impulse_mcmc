@@ -10,6 +10,7 @@ from impulse.product_space import NestedProductSpace
 from impulse.proposals import make_source_swap_proposal
 from impulse.rjmcmc_proposals import (
     default_birth_death_probs,
+    make_birth_death_proposal,
     make_birth_proposal,
     make_death_proposal,
     make_nmodel_jump,
@@ -35,7 +36,15 @@ class RJMCMCProductSpace(NestedProductSpace):
         Log-likelihood accepting the first ``(nmodel+1)*num_params`` params.
     logprior : callable
         Log-prior that receives ``num_sources * num_params`` parameters
-        and must check bounds on **all** of them.
+        and must check bounds on **all** of them.  When
+        ``source_prior_logpdf`` is omitted, ``logprior`` is additionally
+        used as the per-source prior density for the birth/death moves'
+        slot-density terms: it must then also accept a single source's
+        ``num_params``-length vector and be additive across per-source
+        slots (``logprior(all slots) == sum of per-slot values``).  This
+        holds for the usual independent per-source priors and is probed at
+        proposal construction (a failed probe raises); supply
+        ``source_prior_logpdf`` explicitly otherwise.
     num_sources : int
         Maximum number of sources.
     num_params : int
@@ -119,24 +128,160 @@ class RJMCMCProductSpace(NestedProductSpace):
     # Proposal factories
     # ------------------------------------------------------------------
 
+    def _resolve_source_prior_logpdf(self) -> Callable:
+        """
+        Per-source prior log-density for the birth/death slot-density terms.
+
+        Returns ``source_prior_logpdf`` when supplied.  Otherwise falls back
+        to the full product-space ``logprior`` evaluated on a single source's
+        ``num_params``-length vector, which equals the per-source density only
+        for priors that are additive across per-source slots.  The fallback is
+        probed here on several independent sets of prior draws: ``logprior``
+        is evaluated on each slot and on the concatenated full vector.  A
+        probe call that fails raises :class:`TypeError`, and a failed
+        additivity check raises :class:`ValueError` — proceeding would
+        silently corrupt the birth/death Hastings ratios.
+
+        A probe draw *outside* the prior support also raises
+        :class:`ValueError`: this fallback only runs when neither
+        ``source_prior_logpdf`` nor ``source_proposal_logpdf`` was supplied,
+        a configuration in which ``source_prior_draw`` is assumed to sample
+        the prior itself — an out-of-support draw proves it does not, so the
+        birth/death draw-density terms (which would silently use the prior
+        density for a non-prior draw distribution) are provably wrong.  A
+        defensively-written ``logprior`` that returns ``-inf`` for a
+        single-source ``num_params``-length vector (e.g. a shape check on
+        its input) instead of raising trips the same branch; the error
+        message names both causes, and the remedy in either case is to
+        supply ``source_prior_logpdf``.
+
+        Returns
+        -------
+        callable
+            ``f(params) -> float`` taking one source's parameters.
+        """
+        if self.source_prior_logpdf is not None:
+            return self.source_prior_logpdf
+        if self.num_models == 1:
+            # Single-slot product space: the full prior IS the per-source
+            # prior, so there is no additivity to probe.
+            return self.logprior
+        rng = np.random.default_rng(0)
+        num_probe_sets = 3
+        probes = []
+        try:
+            for _ in range(num_probe_sets):
+                slots = [
+                    np.asarray(self.source_prior_draw(rng), dtype=float)
+                    for _ in range(self.num_models)
+                ]
+                per_slot = [float(self.logprior(s)) for s in slots]
+                total = float(self.logprior(np.concatenate(slots)))
+                probes.append((total, per_slot))
+        except Exception as err:
+            raise TypeError(
+                "source_prior_logpdf was not supplied, so logprior is used as "
+                "the per-source prior density for the birth/death moves — but "
+                "evaluating logprior on a single source's "
+                f"{self.num_params}-parameter vector failed ({err!r}). "
+                "Supply source_prior_logpdf explicitly."
+            ) from err
+        for total, per_slot in probes:
+            if not all(np.isfinite(v) for v in per_slot):
+                raise ValueError(
+                    "logprior returned -inf for a single-source probe draw. "
+                    "Either source_prior_draw samples outside the prior "
+                    "support (so it cannot be the prior), or logprior "
+                    "returns -inf for a single-source "
+                    f"{self.num_params}-parameter vector instead of raising "
+                    "(e.g. a defensive shape check on its input).  With "
+                    "neither source_proposal_logpdf nor source_prior_logpdf "
+                    "supplied, the birth/death moves would use the prior "
+                    "density as the draw density, which is provably wrong "
+                    "in the first case and unevaluable in the second.  "
+                    "Supply source_prior_logpdf (and source_proposal_logpdf "
+                    "if the draw distribution is not the prior)."
+                )
+            per_slot_sum = float(sum(per_slot))
+            if not (np.isfinite(total)
+                    and abs(total - per_slot_sum)
+                    <= 1e-6 * max(1.0, abs(total))):
+                raise ValueError(
+                    "source_prior_logpdf was not supplied and logprior is "
+                    "not additive across per-source slots "
+                    f"(logprior(full vector) = {total}, sum over slots = "
+                    f"{per_slot_sum}).  The birth/death slot-density terms "
+                    "would be wrong; supply source_prior_logpdf explicitly."
+                )
+        return self.logprior
+
+    def _source_draw_density_args(self):
+        """
+        Resolve the ``(log_proposal_density, log_prior_density)`` pair for
+        the birth/death proposals.
+
+        The proposals' Hastings terms use the log-density of the distribution
+        ``source_prior_draw`` actually samples: ``source_proposal_logpdf``
+        when supplied, otherwise the per-source prior density (resolved, and
+        probed for additivity, by :meth:`_resolve_source_prior_logpdf`).
+        When a proposal density is supplied the per-source prior density is
+        not needed, so the probe is skipped.
+        """
+        if self.source_proposal_logpdf is not None:
+            return self.source_proposal_logpdf, self.source_prior_logpdf
+        return None, self._resolve_source_prior_logpdf()
+
     def get_birth_proposal(self) -> Callable:
-        """Return a birth proposal closure wired to this space's prior draw."""
+        """Return a birth proposal closure wired to this space's prior draw.
+
+        .. warning::
+            Do not register this standalone with a constant selection weight;
+            use :meth:`get_birth_death_proposal` (see
+            :class:`~impulse.rjmcmc_proposals.BirthProposal`).
+        """
+        log_proposal, log_prior = self._source_draw_density_args()
         return make_birth_proposal(
             self.num_params,
             self.num_models,
             self.source_prior_draw,
-            log_proposal_density=self.source_proposal_logpdf,
-            log_prior_density=self.source_prior_logpdf,
+            log_proposal_density=log_proposal,
+            log_prior_density=log_prior,
+            prob_schedule=self.prob_schedule,
+        )
+
+    def get_birth_death_proposal(self) -> Callable:
+        """Return the combined birth-death kernel wired to this space.
+
+        This is the trans-dimensional kernel to register with the sampler:
+        it selects birth vs death internally with the ``prob_schedule``
+        probabilities, which is what makes the sub-proposals' Hastings
+        ratios exact under constant-weight jump selection.
+        """
+        log_proposal, log_prior = self._source_draw_density_args()
+        return make_birth_death_proposal(
+            self.num_params,
+            self.num_models,
+            self.source_prior_draw,
+            log_proposal_density=log_proposal,
+            log_prior_density=log_prior,
             prob_schedule=self.prob_schedule,
         )
 
     def get_death_proposal(self) -> Callable:
-        """Return a death proposal closure wired to this space."""
+        """Return a death proposal closure wired to this space.
+
+        .. warning::
+            Do not register this standalone with a constant selection weight;
+            use :meth:`get_birth_death_proposal` (see
+            :class:`~impulse.rjmcmc_proposals.DeathProposal`).
+        """
+        log_proposal, log_prior = self._source_draw_density_args()
         return make_death_proposal(
             self.num_params,
             self.num_models,
-            log_proposal_density=self.source_proposal_logpdf,
-            log_prior_density=self.source_prior_logpdf,
+            self.source_prior_draw,
+            log_proposal_density=log_proposal,
+            log_prior_density=log_prior,
             prob_schedule=self.prob_schedule,
         )
 

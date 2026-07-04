@@ -132,9 +132,39 @@ class TestRJPTSamplerBasic:
         )
         assert sampler.ndim == rjmcmc_space.ndim
         assert sampler._rjmcmc_space is rjmcmc_space
-        # 3 standard + 4 RJ = 7 proposals
+        # 3 standard + combined birth-death + nmodel + swap + early_de = 7
+        # (early_de carries de_weight; stock de stays at weight 0 because
+        # per-model buffers never reach buffer_full at realistic lengths)
         n_proposals = len(sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert n_proposals == 7
+        names = [p.__name__ for p in
+                 sampler.proposal_bundle.jump_proposals[0].proposal_list]
+        assert 'birth_death' in names
+        assert 'early_de' in names
+        assert 'birth_proposal' not in names
+        assert 'death_proposal' not in names
+
+    def test_from_rjmcmc_single_model_space(self, temp_dir):
+        """Regression: a single-model space must construct successfully.
+
+        BirthDeathProposal rejects max_sources < 2, so from_rjmcmc must
+        skip the trans-dimensional jumps (all meaningless with one model)
+        and register only the standard continuous jumps.
+        """
+        space = RJMCMCProductSpace(
+            loglikelihood=_rj_loglike,
+            logprior=_rj_logprior,
+            num_sources=1,
+            num_params=NUM_PARAMS,
+            source_prior_draw=_rj_source_draw,
+        )
+        sampler = RJPTSampler.from_rjmcmc(
+            space, ntemps=3, seed=42, outdir=temp_dir,
+        )
+        assert sampler.ndim == NUM_PARAMS + 1
+        names = sorted(p.__name__ for p in
+                       sampler.proposal_bundle.jump_proposals[0].proposal_list)
+        assert names == ['am', 'de', 'early_de', 'scam']
 
     def test_from_rjmcmc_per_source_cov(self, rjmcmc_space, temp_dir):
         """Per-source sample_cov is expanded to full product space."""
@@ -275,6 +305,24 @@ class TestRJPTSamplerMHPT:
         assert chain["samples"].shape == (ntemps, n_iter, 2)
         assert chain["lnlike"].shape == (ntemps, n_iter)
 
+    def test_lnprobs_consistent_after_ladder_adaptation(self, temp_dir):
+        """lnprobs stay in sync with the adapted temperature ladder."""
+        from impulse.sampler_state import tempered_lnprobs
+
+        sampler = RJPTSampler(
+            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ntemps=4, seed=42, outdir=temp_dir, save_freq=500,
+        )
+        initial_ladder = sampler.ptstate.ladder.copy()
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=200)
+
+        # adaptation must actually have moved the interior rungs
+        assert not np.allclose(sampler.ptstate.ladder, initial_ladder)
+        expected = tempered_lnprobs(
+            sampler.state.lnlikes, sampler.state.lnpriors, sampler.ptstate.ladder,
+        )
+        np.testing.assert_allclose(sampler.state.lnprobs, expected, atol=1e-12)
+
     def test_checkpoint_resume(self, temp_dir):
         """Round-trip pickle checkpoint."""
         sampler = RJPTSampler(
@@ -410,7 +458,17 @@ class TestRJPTSamplerRJMCMC:
 
     @pytest.mark.slow
     def test_rjmcmc_model_selection(self, rjmcmc_space, temp_dir):
-        """Recover correct model count."""
+        """Recover correct model count.
+
+        This was xfailed after the birth/death constant-weight-selection fix,
+        with the failure attributed to continuous-space mixing.  That partly
+        mis-attributed a second trans-dimensional defect: the value-preserving
+        death left posterior-distributed parameters in the inactive slot, and
+        ``nmodel_jump`` re-activated them with ``qxy = 0``, biasing the model
+        posterior toward MORE sources.  With the death move now refreshing
+        the vacated slot from the prior (see
+        tests/test_rjmcmc_detailed_balance.py), this recovers the preferred
+        model reliably (checked with seeds 42, 43, and 7)."""
         sampler = RJPTSampler.from_rjmcmc(
             rjmcmc_space, ntemps=5, seed=42, outdir=temp_dir, save_freq=5000,
         )
@@ -526,6 +584,113 @@ class TestPerModelStats:
 
 
 # ---------------------------------------------------------------------------
+# TestRJPTNumAdapt
+# ---------------------------------------------------------------------------
+
+class TestRJPTNumAdapt:
+    """Adaptation-freeze semantics of RJPTSampler(num_adapt=...)."""
+
+    def _make(self, temp_dir, num_adapt):
+        return RJPTSampler(
+            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            lnlike_grad=_simple_lnlike_grad,
+            ntemps=2, seed=42, outdir=temp_dir, save_freq=10_000,
+            cov_update=10, mass_matrix_adapt_interval=10,
+            mass_matrix_min_samples=5, num_adapt=num_adapt,
+        )
+
+    @staticmethod
+    def _snapshot_at(sampler, iteration):
+        """Capture NUTS adaptation state at the start of loop `iteration`.
+
+        Hooks report_accepts (called once per loop iteration, before the
+        NUTS step) so the snapshot reflects all adaptation through
+        `iteration - 1` — exactly the frozen values when num_adapt equals
+        `iteration`.
+        """
+        snap = {}
+        counter = {"jj": -1}
+        orig = sampler.proposal_bundle.report_accepts
+
+        def spy(accepts):
+            counter["jj"] += 1
+            if counter["jj"] == iteration:
+                snap["step_sizes"] = dict(sampler._step_sizes)
+                snap["mass_matrices"] = dict(sampler._mass_matrices)
+                snap["da_objects"] = dict(sampler._dual_averagers)
+                snap["da_counts"] = {
+                    k: da.count for k, da in sampler._dual_averagers.items()
+                }
+            orig(accepts)
+
+        sampler.proposal_bundle.report_accepts = spy
+        return snap
+
+    def test_num_adapt_default_none(self, temp_dir):
+        """Default num_adapt=None adapts forever (historical behavior)."""
+        sampler = RJPTSampler(
+            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ntemps=2, outdir=temp_dir,
+        )
+        assert sampler.num_adapt is None
+        assert sampler._adaptation_active(10**9) is True
+
+    def test_num_adapt_missing_attribute_defaults_to_adapt_forever(self, temp_dir):
+        """Resume-safety: checkpoints predating num_adapt keep adapting."""
+        sampler = self._make(temp_dir, 10)
+        # emulate resume from a checkpoint written before num_adapt existed
+        del sampler.num_adapt
+        assert sampler._adaptation_active(10**9) is True
+
+    def test_num_adapt_freezes_nuts_step_sizes_and_mass_matrices(self, temp_dir):
+        """With num_adapt=N, NUTS step sizes and mass matrices are unchanged
+        after iteration N while sampling continues."""
+        n_adapt, n_iter = 30, 80
+        sampler = self._make(temp_dir, n_adapt)
+        snap = self._snapshot_at(sampler, n_adapt)
+        sampler.sample(np.array([0.5, -0.5]), num_iterations=n_iter)
+
+        # sampling continued past the freeze
+        assert sampler.short_chain.iteration == n_iter
+
+        # step sizes unchanged after iteration n_adapt
+        assert snap  # snapshot actually taken
+        assert sampler._step_sizes == snap["step_sizes"]
+
+        # mass matrices are the same objects (never re-estimated post-freeze)
+        assert set(sampler._mass_matrices) == set(snap["mass_matrices"])
+        for k, mm in sampler._mass_matrices.items():
+            assert mm is snap["mass_matrices"][k]
+
+        # dual averaging received no further updates (same objects, same counts)
+        for k, da in sampler._dual_averagers.items():
+            assert da is snap["da_objects"][k]
+            assert da.count == snap["da_counts"][k]
+
+    def test_num_adapt_none_keeps_nuts_adapting(self, temp_dir):
+        """num_adapt=None must not accidentally freeze NUTS adaptation."""
+        n_mark, n_iter = 30, 80
+        sampler = self._make(temp_dir, None)
+        snap = self._snapshot_at(sampler, n_mark)
+        sampler.sample(np.array([0.5, -0.5]), num_iterations=n_iter)
+
+        # dual averaging kept adapting after the marker iteration: either the
+        # count advanced past the snapshot or the instance was replaced by a
+        # mass-matrix commit (which resets DualAveraging). Final step-size
+        # float comparison is not a reliable signal here because commits
+        # reset step sizes to quantized find_reasonable_step_size values.
+        assert any(
+            da is not snap["da_objects"][k] or da.count > snap["da_counts"][k]
+            for k, da in sampler._dual_averagers.items()
+        )
+        # mass matrices kept being re-estimated
+        assert any(
+            sampler._mass_matrices[k] is not mm
+            for k, mm in snap["mass_matrices"].items()
+        )
+
+
+# ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
@@ -542,3 +707,139 @@ def setup_initial_position_for_test(sampler):
         positions, lnlike0, lnprior0, lnprob0,
         accepted=np.ones(sampler.ntemps), temps=sampler.ptstate.ladder,
     )
+
+
+# ---------------------------------------------------------------------------
+# TestStepSizeFreezeFinalization
+# ---------------------------------------------------------------------------
+
+class TestStepSizeFreezeFinalization:
+    """The num_adapt freeze must pin the SMOOTHED dual-averaging step size
+    (``DualAveraging.finalize()``, exp(log_step_bar)), not the last noisy
+    primal iterate exp(log_step) that ``_step_sizes`` tracks during
+    adaptation. The primal iterate deliberately overshoots (mu anchors at
+    log(10 * step)), so a freeze landing in the transient right after a
+    mass-matrix commit resets DA would otherwise pin a step size several
+    times the converged value forever.
+    """
+
+    def _make(self, temp_dir, **kwargs):
+        return RJPTSampler(
+            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            lnlike_grad=_simple_lnlike_grad,
+            ntemps=2, seed=42, outdir=temp_dir, save_freq=10_000,
+            **kwargs,
+        )
+
+    def test_finalize_step_sizes_uses_smoothed_value(self, temp_dir):
+        """_finalize_step_sizes replaces the primal iterate with the
+        clipped finalize() value."""
+        from impulse.nuts.warmup import DualAveraging
+
+        sampler = self._make(temp_dir)
+        da = DualAveraging(target_accept=0.8, initial_step_size=0.2)
+        for accept_prob in [0.1, 0.3, 0.6, 0.9, 0.5]:
+            primal = da.update(accept_prob)
+        primal = float(np.clip(primal, sampler._step_size_min,
+                               sampler._step_size_max))
+        smoothed = float(np.clip(da.finalize(), sampler._step_size_min,
+                                 sampler._step_size_max))
+        assert primal != pytest.approx(smoothed)  # meaningful distinction
+
+        key = (0, 2)
+        sampler._dual_averagers = {key: da}
+        sampler._step_sizes = {key: primal}
+        sampler._finalize_step_sizes()
+        assert sampler._step_sizes[key] == pytest.approx(smoothed)
+
+    def test_finalize_keeps_current_step_when_da_never_updated(self, temp_dir):
+        from impulse.nuts.warmup import DualAveraging
+
+        sampler = self._make(temp_dir)
+        key = (0, 2)
+        sampler._dual_averagers = {key: DualAveraging(
+            target_accept=0.8, initial_step_size=0.7,
+        )}
+        sampler._step_sizes = {key: 0.123}
+        sampler._finalize_step_sizes()
+        assert sampler._step_sizes[key] == 0.123
+
+    def test_finalize_keeps_current_step_when_finalize_nonfinite(self, temp_dir):
+        from impulse.nuts.warmup import DualAveraging
+
+        sampler = self._make(temp_dir)
+        key = (0, 2)
+        da = DualAveraging(target_accept=0.8, initial_step_size=0.2)
+        da.update(0.5)
+        da.log_step_bar = np.nan  # corrupted / undefined smoothed state
+        sampler._dual_averagers = {key: da}
+        sampler._step_sizes = {key: 0.456}
+        sampler._finalize_step_sizes()
+        assert sampler._step_sizes[key] == 0.456
+
+    def test_freeze_after_mass_matrix_commit_pins_smoothed_step(self, temp_dir):
+        """Freeze landing shortly after a mass-matrix commit (DA reset,
+        post-reset transient): frozen step sizes must equal the finalized
+        (smoothed) values, not the last primal iterates."""
+        n_adapt, n_iter = 38, 60
+        sampler = self._make(
+            temp_dir, cov_update=10,
+            mass_matrix_adapt_interval=10, mass_matrix_min_samples=5,
+            num_adapt=n_adapt,
+        )
+
+        # Track the loop iteration (report_accepts runs once per iteration,
+        # before the NUTS step) and mass-matrix commit iterations.
+        it = {"jj": -1}
+        orig_report = sampler.proposal_bundle.report_accepts
+
+        def spy_report(accepts):
+            it["jj"] += 1
+            orig_report(accepts)
+
+        sampler.proposal_bundle.report_accepts = spy_report
+
+        commits = []
+        orig_mm_adapt = sampler._maybe_adapt_mass_matrices
+
+        def spy_mm_adapt():
+            before = dict(sampler._mass_matrices)
+            orig_mm_adapt()
+            if any(sampler._mass_matrices.get(k) is not v
+                   for k, v in before.items()):
+                commits.append(it["jj"])
+
+        sampler._maybe_adapt_mass_matrices = spy_mm_adapt
+
+        sampler.sample(np.array([0.5, -0.5]), num_iterations=n_iter)
+
+        # The scenario is real: a commit happened before the freeze, close
+        # enough that DA was still in its post-reset transient at freeze.
+        assert commits, "no mass-matrix commit occurred before the freeze"
+        assert commits[-1] < n_adapt
+        assert n_adapt - commits[-1] <= 10
+
+        # Post-freeze, DA state is untouched, so finalize() still returns
+        # the smoothed value as of the freeze transition.
+        checked = 0
+        for key, da in sampler._dual_averagers.items():
+            if da.count == 0:
+                continue
+            expected = float(np.clip(
+                da.finalize(), sampler._step_size_min, sampler._step_size_max,
+            ))
+            assert sampler._step_sizes[key] == pytest.approx(expected)
+            checked += 1
+        assert checked > 0
+
+        # And it is genuinely the smoothed value, not the primal iterate:
+        # for at least one chain the two differ.
+        primals = {
+            key: float(np.clip(np.exp(da.log_step), sampler._step_size_min,
+                               sampler._step_size_max))
+            for key, da in sampler._dual_averagers.items() if da.count > 0
+        }
+        assert any(
+            not np.isclose(primals[key], sampler._step_sizes[key])
+            for key in primals
+        )

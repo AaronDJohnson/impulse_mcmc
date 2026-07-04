@@ -36,7 +36,9 @@ class NUTSState:
     tree_depth : int
         Depth of the trajectory tree in the last transition.
     energy_error : float
-        Change in Hamiltonian energy (H_proposal - H_current).
+        Hamiltonian error of the selected proposal: H at the proposal
+        leaf (potential + kinetic) minus H at the trajectory start.
+        Zero if the transition kept the current position.
     mean_accept_prob : float
         Mean acceptance probability across the tree.
     """
@@ -120,7 +122,7 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
     dict with keys:
         position_left, momentum_left, grad_left, logp_left,
         position_right, momentum_right, grad_right, logp_right,
-        proposal_position, proposal_logp, proposal_grad,
+        proposal_position, proposal_logp, proposal_grad, proposal_H,
         log_sum_weight, n_leapfrog, divergent, turning, sum_accept_prob
     """
     if depth == 0:
@@ -144,7 +146,7 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
             "position_right": new_pos, "momentum_right": new_mom,
             "grad_right": new_grad, "logp_right": new_logp,
             "proposal_position": new_pos, "proposal_logp": new_logp,
-            "proposal_grad": new_grad,
+            "proposal_grad": new_grad, "proposal_H": H_new,
             "log_sum_weight": log_weight,
             "n_leapfrog": 1,
             "divergent": divergent,
@@ -193,6 +195,7 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
         inner["proposal_position"] = outer["proposal_position"]
         inner["proposal_logp"] = outer["proposal_logp"]
         inner["proposal_grad"] = outer["proposal_grad"]
+        inner["proposal_H"] = outer["proposal_H"]
 
     inner["log_sum_weight"] = log_sum_weight
     inner["n_leapfrog"] += outer["n_leapfrog"]
@@ -262,6 +265,7 @@ def nuts_step(state, logp_and_grad, rng, max_tree_depth=10,
     proposal_position = position
     proposal_logp = logp
     proposal_grad = grad
+    proposal_H = H0
 
     log_sum_weight = -H0
     depth = 0
@@ -311,6 +315,7 @@ def nuts_step(state, logp_and_grad, rng, max_tree_depth=10,
             proposal_position = tree["proposal_position"]
             proposal_logp = tree["proposal_logp"]
             proposal_grad = tree["proposal_grad"]
+            proposal_H = tree["proposal_H"]
 
         log_sum_weight = np.logaddexp(log_sum_weight, tree["log_sum_weight"])
         n_leapfrog += tree["n_leapfrog"]
@@ -325,11 +330,9 @@ def nuts_step(state, logp_and_grad, rng, max_tree_depth=10,
 
         depth += 1
 
-    # Compute energy error
-    H_proposal = -proposal_logp + mass_matrix.kinetic_energy(
-        mass_matrix.sample_momentum(rng)  # approximate; use logp difference
-    )
-    energy_error = proposal_logp - logp  # simpler: just log-prob difference
+    # True Hamiltonian error of the selected proposal relative to the
+    # trajectory start (both include the kinetic term)
+    energy_error = proposal_H - H0
 
     mean_accept_prob = sum_accept_prob / max(n_leapfrog, 1)
 

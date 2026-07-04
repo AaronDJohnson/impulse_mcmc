@@ -215,6 +215,56 @@ class TestHigherDimensional:
         assert diag["num_divergent"] == 0
 
 
+class TestAnisotropicAdaptation:
+    def test_anisotropic_gaussian_adaptation_helps(self, temp_dir):
+        """Regression: adapted mass matrix must not hurt on anisotropic targets.
+
+        Before the M vs M^{-1} convention fix, warmup adaptation set
+        M = Sigma, degrading conditioning by the square of the condition
+        number; ESS collapsed relative to an identity mass matrix.
+        """
+        from impulse.diagnostics import effective_sample_size
+
+        stds = np.array([10.0, 1.0])
+        var = stds ** 2
+
+        def logp_and_grad(x):
+            return -0.5 * np.sum(x ** 2 / var), -x / var
+
+        def run(mass_matrix_type, outdir):
+            sampler = NUTSSampler(
+                ndim=2, logp_and_grad=logp_and_grad,
+                num_warmup=500, mass_matrix_type=mass_matrix_type,
+                seed=42, outdir=outdir, save_freq=2000,
+            )
+            sampler.sample(np.zeros(2), num_iterations=1500)
+            return sampler, sampler.load_chain()["samples"][200:]
+
+        sampler_adapted, samples_adapted = run(
+            "diagonal", os.path.join(temp_dir, "adapted"))
+        _, samples_unit = run("unit", os.path.join(temp_dir, "unit"))
+
+        # The adapted M must equal Sigma^{-1}: velocity scaling M^{-1} p
+        # matches the target variances (pre-fix this was ~1/var, off by
+        # the squared condition number)
+        adapted_mm = sampler_adapted.state.mass_matrix
+        np.testing.assert_allclose(
+            adapted_mm.inverse_multiply(np.ones(2)), var, rtol=0.5)
+
+        # Post-warmup samples recover the per-dimension scales
+        np.testing.assert_allclose(np.std(samples_adapted, axis=0), stds, rtol=0.3)
+
+        ess_adapted = effective_sample_size(samples_adapted)
+        ess_unit = effective_sample_size(samples_unit)
+        assert np.all(np.isfinite(ess_adapted))
+
+        # Adaptation must not be catastrophically worse than identity;
+        # with the fix it should be comparable or better in each dimension
+        assert np.all(ess_adapted > 0.2 * ess_unit), (
+            f"ESS adapted {ess_adapted} vs unit {ess_unit}"
+        )
+
+
 class TestSaveWarmup:
     def test_save_warmup_increases_chain_length(self, temp_dir):
         sampler = NUTSSampler(

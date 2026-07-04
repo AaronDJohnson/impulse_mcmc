@@ -171,6 +171,40 @@ class TestNutsStep:
         # Mean of standard Gaussian should be near 0
         np.testing.assert_allclose(mean, [0, 0], atol=0.15)
 
+    def test_energy_error_small_for_small_step_size(self):
+        """Reported Delta-H (true Hamiltonian error) should be finite and
+        small when the leapfrog step size is small."""
+        mm = MassMatrix(2, MassMatrixType.UNIT)
+        x = np.array([1.0, -0.5])
+        logp, grad = gaussian_logp_and_grad(x)
+
+        state = NUTSState(
+            position=x, logp=logp, grad=grad,
+            step_size=0.01, mass_matrix=mm,
+        )
+        rng = np.random.default_rng(42)
+
+        for _ in range(20):
+            state = nuts_step(state, gaussian_logp_and_grad, rng)
+            assert np.isfinite(state.energy_error)
+            assert abs(state.energy_error) < 0.1
+
+    def test_energy_error_zero_when_position_unchanged(self):
+        """max_tree_depth=0 keeps the initial point, so Delta-H is exactly 0."""
+        mm = MassMatrix(2, MassMatrixType.UNIT)
+        x = np.array([0.5, 0.5])
+        logp, grad = gaussian_logp_and_grad(x)
+
+        state = NUTSState(
+            position=x, logp=logp, grad=grad,
+            step_size=0.1, mass_matrix=mm,
+        )
+        rng = np.random.default_rng(1)
+        new_state = nuts_step(state, gaussian_logp_and_grad, rng, max_tree_depth=0)
+
+        np.testing.assert_array_equal(new_state.position, x)
+        assert new_state.energy_error == 0.0
+
     def test_u_turn_limits_depth(self):
         """Tree should stop before max_tree_depth for reasonable problems."""
         mm = MassMatrix(2, MassMatrixType.UNIT)

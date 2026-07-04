@@ -6,21 +6,24 @@ Reuses existing building blocks without subclassing PTSampler.
 
 import logging
 import os
+import warnings
 import numpy as np
 from typing import Callable, Optional
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-from impulse.proposals import JumpProposals, ProposalBundle, am, scam, de
+from impulse.proposals import JumpProposals, ProposalBundle, am, scam, de, make_early_de
 from impulse.chain_stats import ChainStats, MultiChainStats
 from impulse.input_function_wrapper import _function_wrapper
-from impulse.sampler_state import SamplerState, PTState
+from impulse.sampler_state import SamplerState, PTState, tempered_lnprobs
 from impulse.file_io import ShortChain
 from impulse.sampler_step import vectorized_mh_step, pt_step
 from impulse.wrapping import WrapSpec, PeriodicSpec
 from impulse.resume import checkpoint_sampler, check_for_checkpoint, load_rjpt_checkpoint
+from impulse.rjmcmc_proposals import migrate_legacy_birth_death
 from impulse.samplers import (
+    _UNSET,
     setup_seeds, setup_chain_stats, setup_standard_jumps, setup_initial_position,
 )
 from impulse.nuts.core import NUTSState, nuts_step
@@ -66,6 +69,31 @@ class RJPTSampler:
         Lower bound for adapted NUTS step size (default 1e-4).
     step_size_max : float
         Upper bound for adapted NUTS step size (default 5.0).
+    num_adapt : int, optional
+        Number of iterations during which adaptation is allowed. Once the
+        global iteration counter (which persists across checkpoint resume)
+        reaches ``num_adapt``, all adaptation freezes: the
+        covariance/mean/SVD recomputes feeding AM/SCAM, the DE sample
+        buffer (frozen entirely — a rolling buffer would keep the kernel
+        history-dependent; DE keeps proposing from the frozen buffer),
+        temperature-ladder adaptation, NUTS dual-averaging step-size
+        updates (step sizes stay at their current adapted values), NUTS
+        mass-matrix re-estimation, and refits of adaptive custom proposals
+        (e.g. normalizing flows). One exception: a model dimension visited
+        for the first time after the freeze still gets a one-time lazy
+        step-size / unit-mass-matrix initialization, since no adapted
+        value exists for it yet. Samples drawn before the freeze are
+        warmup and should be discarded for strict asymptotic guarantees.
+        ``None`` adapts forever, preserving historical behavior.
+
+        Resume semantics: when ``num_adapt`` is not passed (the default),
+        resuming keeps the checkpointed value — un-freezing on resume by
+        default would produce a half-frozen kernel, because proposals
+        whose frozen state is pickled (e.g. a frozen normalizing flow)
+        stay frozen while everything else adapts again. An explicitly
+        passed value — including an explicit ``None`` — overrides the
+        checkpointed value, with a warning when they differ. Fresh (non
+        -resumed) runs treat the default exactly like ``None``.
     buffer_size, groups, sample_mean, sample_cov, loglargs, loglkwargs,
     logpargs, logpkwargs, cov_update, save_freq, scam_weight, am_weight,
     de_weight, seed, outdir, ntemps, swap_steps, min_temp, max_temp,
@@ -119,6 +147,7 @@ class RJPTSampler:
         jax: bool = False,
         threads: int = 1,
         periodic: Optional[PeriodicSpec] = None,
+        num_adapt: Optional[int] = _UNSET,
     ) -> None:
         if loglargs is None:
             loglargs = ()
@@ -159,6 +188,11 @@ class RJPTSampler:
         self.save_freq = save_freq
         self.outdir = outdir
         self.resume = resume
+        # NEVER store the _UNSET sentinel on self (it must not end up in
+        # pickled checkpoints); remember instead whether the caller passed
+        # num_adapt explicitly, which controls the resume semantics.
+        self._num_adapt_explicit = num_adapt is not _UNSET
+        self.num_adapt = None if num_adapt is _UNSET else num_adapt
 
         # NUTS configuration
         self.lnlike_grad = lnlike_grad
@@ -194,6 +228,151 @@ class RJPTSampler:
         self._nuts_diag_data = None
 
     # ------------------------------------------------------------------
+    # Adaptation freeze
+    # ------------------------------------------------------------------
+
+    def _adaptation_active(self, iteration: int) -> bool:
+        """True while adaptation may still run at this global iteration.
+
+        The ``getattr`` guards the public
+        ``load_rjpt_checkpoint(...)`` -> ``.sample()`` path: checkpoints
+        written before ``num_adapt`` existed produce samplers without the
+        attribute (unpickling bypasses ``__init__``), and missing means
+        adapt forever — the historical behavior.
+
+        Parameters
+        ----------
+        iteration : int
+            Global iteration counter (persists across checkpoint resume).
+
+        Returns
+        -------
+        bool
+            True if adaptation is still allowed at ``iteration``.
+        """
+        num_adapt = getattr(self, 'num_adapt', None)
+        return num_adapt is None or iteration < num_adapt
+
+    def _freeze_adaptive_proposals(self) -> None:
+        """Permanently freeze registered proposals that adapt internal state.
+
+        Duck-typed: any proposal exposing a callable ``freeze_adaptation``
+        (e.g. :class:`~impulse.flow_proposals.NormalizingFlowProposal`)
+        is told to stop refitting. Idempotent.
+        """
+        for jp in self.proposal_bundle.jump_proposals:
+            for prop in jp.proposal_list:
+                freeze = getattr(prop, 'freeze_adaptation', None)
+                if callable(freeze):
+                    freeze()
+
+    def _migrate_or_warn_legacy_birth_death(self) -> None:
+        """Migrate resumed pre-fix RJ birth/death wiring, or warn loudly.
+
+        Checkpoints written before the detailed-balance fix register
+        ``birth_proposal`` and ``death_proposal`` as SEPARATE
+        constant-weight jumps. That wiring violates detailed balance and
+        biases the model posterior toward fewer sources; resuming it
+        unchanged reproduces the bias. Detection starts from the proposal
+        ``__name__``\\ s over the restored proposal lists, then inspects the
+        attribute layout: CURRENT-code standalone registrations carry the
+        same ``__name__``\\ s, but the current ``DeathProposal`` stores
+        ``draw_from_prior`` (it re-fills the vacated slot) while the legacy
+        one never did.  A pair whose death proposals all carry
+        ``draw_from_prior`` is therefore NOT migrated — it is not legacy —
+        and an accurate warning is emitted instead (standalone birth/death
+        registration violates detailed balance; use the combined kernel).
+
+        When a true legacy pair is found, a best-effort migration
+        (:func:`impulse.rjmcmc_proposals.migrate_legacy_birth_death`)
+        reconstructs the combined ``birth_death`` kernel from the
+        unpickled legacy birth proposal and replaces the pair in every
+        chain with their summed selection weight, then warns that
+        PRE-resume samples remain biased. If reconstruction fails the
+        checkpoint is left untouched and the historical loud warning is
+        emitted instead.
+        """
+        props = [
+            prop
+            for jp in self.proposal_bundle.jump_proposals
+            for prop in jp.proposal_list
+        ]
+        names = {getattr(prop, '__name__', '') for prop in props}
+        if 'birth_proposal' not in names and 'death_proposal' not in names:
+            return
+        deaths = [
+            p for p in props
+            if getattr(p, '__name__', '') == 'death_proposal'
+        ]
+        if deaths and all(
+                callable(getattr(p, 'draw_from_prior', None))
+                for p in deaths):
+            warnings.warn(
+                "Resumed checkpoint registers separate standalone "
+                "'birth_proposal'/'death_proposal' jumps whose attribute "
+                "layout matches current-code standalone registrations (the "
+                "death proposal carries draw_from_prior), not a pre-fix "
+                "legacy checkpoint; no migration was attempted. Standalone "
+                "birth/death registration in a constant-weight mixture "
+                "violates detailed balance and biases the model posterior "
+                "toward fewer sources: register the ONE combined "
+                "birth-death kernel (make_birth_death_proposal or "
+                "from_rjmcmc) instead.",
+                UserWarning,
+            )
+            return
+        migrated = migrate_legacy_birth_death(
+            self.proposal_bundle.jump_proposals)
+        if migrated is not None:
+            warnings.warn(
+                "Resumed checkpoint registered separate 'birth_proposal'/"
+                "'death_proposal' jumps (pre-detailed-balance-fix wiring). "
+                "The checkpoint was migrated automatically: the pair was "
+                "replaced by the combined 'birth_death' kernel with their "
+                "summed selection weight, so sampling continues from a "
+                "detailed-balance-correct kernel. Model posteriors built "
+                "from PRE-resume samples remain biased toward fewer "
+                "sources and should be discarded.",
+                UserWarning,
+            )
+            return
+        warnings.warn(
+            "Resumed checkpoint registers separate 'birth_proposal'/"
+            "'death_proposal' jumps: it predates the detailed-balance "
+            "fix and carries the biased birth/death wiring, so model "
+            "posteriors will remain biased toward fewer sources. Start "
+            "a fresh run (or re-register the combined birth-death "
+            "kernel) for correct model posteriors.",
+            UserWarning,
+        )
+
+    def _finalize_step_sizes(self) -> None:
+        """Replace primal dual-averaging iterates with smoothed step sizes.
+
+        Called once at the ``num_adapt`` freeze transition. During
+        adaptation ``_step_sizes`` tracks the noisy PRIMAL dual-averaging
+        iterate ``exp(log_step)``, which deliberately overshoots (its
+        anchor is ``mu = log(10 * step)``); the converged estimate is the
+        smoothed ``DualAveraging.finalize()`` value ``exp(log_step_bar)``.
+        Freezing the primal iterate — especially in the transient right
+        after a mass-matrix commit resets dual averaging — can pin a step
+        size several times the converged value with no way to correct it.
+
+        A dual averager that never received an update (or yields a
+        non-finite/non-positive value) leaves the current step size
+        untouched. Idempotent: finalize() is a pure read of DA state.
+        """
+        for key, da in self._dual_averagers.items():
+            if getattr(da, 'count', 0) == 0:
+                continue  # never updated; nothing smoothed to freeze to
+            finalized = da.finalize()
+            if not np.isfinite(finalized) or finalized <= 0:
+                continue  # keep the current step size
+            self._step_sizes[key] = float(
+                np.clip(finalized, self._step_size_min, self._step_size_max)
+            )
+
+    # ------------------------------------------------------------------
     # from_rjmcmc classmethod
     # ------------------------------------------------------------------
 
@@ -209,6 +388,7 @@ class RJPTSampler:
         am_weight: float = 15,
         scam_weight: float = 15,
         de_weight: float = 15,
+        de_min_fill: int = 100,
         **kwargs,
     ) -> "RJPTSampler":
         """Construct an RJPTSampler pre-configured for RJMCMC model selection.
@@ -220,11 +400,38 @@ class RJPTSampler:
         lnlike_grad : callable, optional
             Gradient function for NUTS on active continuous params.
         birth_weight, death_weight, nmodel_weight, swap_weight : float
-            Relative weights for RJ proposals.
+            Relative weights for RJ proposals.  Birth and death are
+            registered as ONE combined kernel selected with weight
+            ``birth_weight + death_weight``; the birth/death split is
+            governed by the space's ``prob_schedule`` (registering them as
+            separate constant-weight jumps violates detailed balance).
         am_weight, scam_weight, de_weight : float
-            Relative weights for standard MH proposals.
+            Relative weights for standard MH proposals.  In RJ
+            configurations ``de_weight`` is given to the min-fill-gated
+            :class:`~impulse.proposals.EarlyDE` variant rather than the
+            stock ``de`` (see Notes).
+        de_min_fill : int
+            Minimum per-model buffer fill before the DE difference move
+            activates; see :class:`~impulse.proposals.EarlyDE`.
         **kwargs
             Additional keyword arguments forwarded to ``__init__``.
+
+        Notes
+        -----
+        For a single-model space (``rjmcmc_space.num_models == 1``) the
+        birth-death kernel, the model-index jump, and the source-swap
+        proposal are all skipped — none is meaningful with one model, and
+        the birth-death kernel itself rejects ``max_sources < 2`` — so
+        only the standard continuous jumps (AM, SCAM, early-DE) are
+        registered.  The birth-death kernel is also skipped when
+        ``birth_weight + death_weight == 0``.
+
+        The stock ``de`` jump requires a completely FULL sample buffer,
+        which per-model buffers never reach at realistic run lengths
+        (``JumpProposals`` silently substitutes ``gaussian``), so ``de``
+        is registered with weight 0 and ``de_weight`` goes to
+        :class:`~impulse.proposals.EarlyDE`; see
+        ``PTSampler.from_rjmcmc`` for the full rationale.
         """
         # Expand per-source sample_cov / sample_mean to full product space
         sample_cov = kwargs.pop('sample_cov', None)
@@ -257,14 +464,38 @@ class RJPTSampler:
             sample_mean=sample_mean,
             am_weight=am_weight,
             scam_weight=scam_weight,
-            de_weight=de_weight,
+            # stock de is gated on buffer_full, which per-model buffers
+            # never reach at realistic run lengths; the min-fill-gated
+            # EarlyDE registered below carries de_weight instead
+            de_weight=0,
             **kwargs,
         )
         sampler._rjmcmc_space = rjmcmc_space
-        sampler.add_custom_jump(rjmcmc_space.get_birth_proposal(), birth_weight)
-        sampler.add_custom_jump(rjmcmc_space.get_death_proposal(), death_weight)
-        sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
-        sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
+        # Trans-dimensional and label-permuting jumps only exist for
+        # multi-model spaces: with a single model there is no birth/death
+        # move to make, no other model index to jump to, and no second
+        # source slot to swap with (BirthDeathProposal itself rejects
+        # max_sources < 2), so only the standard continuous jumps are
+        # registered.
+        if rjmcmc_space.num_models > 1:
+            if birth_weight != death_weight:
+                warnings.warn(
+                    "birth_weight != death_weight has no effect on the birth/death "
+                    "split: birth and death form one combined kernel selected with "
+                    "weight birth_weight + death_weight, and the split is governed "
+                    "by the space's prob_schedule.",
+                    UserWarning,
+                )
+            # Birth and death must be one kernel with schedule-driven selection;
+            # separate constant-weight jumps violate detailed balance (see
+            # impulse.rjmcmc_proposals.BirthDeathProposal).
+            if birth_weight + death_weight > 0:
+                sampler.add_custom_jump(rjmcmc_space.get_birth_death_proposal(),
+                                        birth_weight + death_weight)
+            sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
+            sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
+        if de_weight > 0:
+            sampler.add_custom_jump(make_early_de(de_min_fill), de_weight)
         sampler.multi_chain_stats.enable_per_model(
             rjmcmc_space.num_models, rjmcmc_space.num_params,
         )
@@ -303,6 +534,16 @@ class RJPTSampler:
             Number of active continuous parameters this matrix applies to.
         mass_matrix : MassMatrix
             Mass matrix to use for NUTS proposals.
+
+        Notes
+        -----
+        A Fisher information matrix approximates the posterior PRECISION,
+        which under the Stan convention (inverse metric = posterior
+        covariance) is exactly the mass matrix. Build it with
+        :meth:`MassMatrix.from_precision` (or the raw ``MassMatrix``
+        constructor) — never :meth:`MassMatrix.from_covariance`, which
+        inverts its argument and would silently install the inverse of
+        the intended metric.
         """
         self._mass_matrices[n_active] = mass_matrix
         self._mass_matrix_injected.add(n_active)
@@ -336,7 +577,7 @@ class RJPTSampler:
         Returns
         -------
         MassMatrix
-            New mass matrix estimated from samples.
+            New mass matrix M = (regularized covariance)^{-1}.
         """
         arr = np.array(samples)
         n = len(arr)
@@ -351,17 +592,16 @@ class RJPTSampler:
         shrinkage = 5.0 / (n + 5.0)
         reg_cov = (1 - shrinkage) * sample_cov + shrinkage * np.diag(np.diag(sample_cov) + 1e-3)
 
+        # from_covariance inverts: mass matrix M = reg_cov^{-1} (Stan's
+        # inverse metric equals the posterior covariance)
         if mass_matrix_type == MassMatrixType.DIAGONAL:
-            diag = np.maximum(np.diag(reg_cov), 1e-10)
-            return MassMatrix(n_active, MassMatrixType.DIAGONAL, diagonal=diag)
+            return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
         elif mass_matrix_type == MassMatrixType.DENSE:
             reg_cov += 1e-8 * np.eye(n_active)
             try:
-                np.linalg.cholesky(reg_cov)
-                return MassMatrix(n_active, MassMatrixType.DENSE, dense=reg_cov)
+                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DENSE)
             except np.linalg.LinAlgError:
-                diag = np.maximum(np.diag(reg_cov), 1e-10)
-                return MassMatrix(n_active, MassMatrixType.DIAGONAL, diagonal=diag)
+                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
         else:
             return MassMatrix(n_active, MassMatrixType.UNIT)
 
@@ -456,8 +696,18 @@ class RJPTSampler:
 
         return self._step_sizes[cache_key]
 
-    def _nuts_step_all_chains(self, state):
+    def _nuts_step_all_chains(self, state, adapt: bool = True):
         """Run one NUTS transition on each temperature chain.
+
+        Parameters
+        ----------
+        state : SamplerState
+            Current state of all chains.
+        adapt : bool
+            When False (past the ``num_adapt`` freeze), dual-averaging
+            step-size updates are skipped — step sizes stay at their
+            current adapted values — and cold-chain samples are no longer
+            buffered for mass-matrix re-estimation.
 
         Returns updated SamplerState and cold-chain diagnostics dict.
         """
@@ -516,18 +766,22 @@ class RJPTSampler:
             # ALL steps (divergent or not) feed DA. Divergent steps push
             # step size down (accept_prob ≈ 0), non-divergent push up.
             # np.clip prevents catastrophic collapse or explosion.
+            # Past the num_adapt freeze (adapt=False) DA is not updated and
+            # _step_sizes keeps its last adapted value, so the kernel is fixed.
             da_key = (k, n_active)
-            if da_key in self._dual_averagers:
-                adapted_step = self._dual_averagers[da_key].update(
-                    nuts_state.mean_accept_prob,
-                )
-                adapted_step = np.clip(adapted_step, self._step_size_min, self._step_size_max)
-                self._step_sizes[da_key] = adapted_step
-            else:
-                self._step_sizes[da_key] = nuts_state.step_size
+            if adapt:
+                if da_key in self._dual_averagers:
+                    adapted_step = self._dual_averagers[da_key].update(
+                        nuts_state.mean_accept_prob,
+                    )
+                    adapted_step = np.clip(adapted_step, self._step_size_min, self._step_size_max)
+                    self._step_sizes[da_key] = adapted_step
+                else:
+                    self._step_sizes[da_key] = nuts_state.step_size
 
-            # Cold chain: collect non-divergent samples for mass matrix adaptation
-            if k == 0 and not nuts_state.divergent:
+            # Cold chain: collect non-divergent samples for mass matrix
+            # adaptation (frozen along with mass-matrix re-estimation)
+            if adapt and k == 0 and not nuts_state.divergent:
                 if n_active not in self._nuts_sample_buffers:
                     self._nuts_sample_buffers[n_active] = []
                 self._nuts_sample_buffers[n_active].append(
@@ -545,7 +799,7 @@ class RJPTSampler:
                     "n_active": n_active,
                 }
 
-        new_lnprobs = 1.0 / state.temps * new_lnlikes + new_lnpriors
+        new_lnprobs = tempered_lnprobs(new_lnlikes, new_lnpriors, state.temps)
         new_state = SamplerState(
             new_positions, new_lnlikes, new_lnpriors, new_lnprobs,
             state.accepted, state.temps,
@@ -681,6 +935,25 @@ class RJPTSampler:
             Total number of MCMC iterations.
         thin : int
             Thinning factor for saved samples.
+
+        Notes
+        -----
+        When ``num_adapt`` is set, all adaptation stops once the global
+        iteration counter reaches it; samples before the freeze are warmup
+        and should be discarded for strict asymptotic guarantees.
+
+        Resume semantics: ``num_iterations`` is a GLOBAL iteration target —
+        a resumed run continues from the checkpointed iteration counter up
+        to ``num_iterations``, so pass the total, not the increment.  A
+        checkpoint is written at the END of every iteration ``jj`` with
+        ``jj > 0`` and ``jj % save_freq == 0``, capturing the sampler after
+        that iteration fully completed (post NUTS, post PT-swap, post
+        adaptation), including every RNG stream.  On resume the chain files
+        (and the NUTS diagnostics file) are truncated back to the
+        checkpointed flushed-row count and all iterations after the
+        checkpoint are re-generated bit-identically, so an interrupted run
+        resumed to ``N`` total iterations produces chain files identical to
+        a single uninterrupted ``N``-iteration run.
         """
         if self.ptstate.ladder is None:
             raise ValueError("PTState ladder is not initialized")
@@ -690,6 +963,10 @@ class RJPTSampler:
             self.ndim, self.ntemps, self.save_freq,
             iteration=0, outdir=self.outdir, resume=self.resume, thin=thin,
         )
+        # iteration of the last covariance refresh; kept on the instance so
+        # it is pickled into checkpoints (a resume overwrites this fresh
+        # value with the checkpointed one via __dict__.update below)
+        self._last_cov_iter = self.short_chain.iteration
 
         # Initial state
         initial_position = setup_initial_position(initial_position, self.ntemps)
@@ -697,7 +974,7 @@ class RJPTSampler:
             initial_position = self.wrap.apply(initial_position)
         lnlike0 = self.lnlike(initial_position)
         lnprior0 = self.lnprior(initial_position)
-        lnprob0 = 1.0 / self.ptstate.ladder * lnlike0 + lnprior0
+        lnprob0 = tempered_lnprobs(lnlike0, lnprior0, self.ptstate.ladder)
         initial_state = SamplerState(
             initial_position, lnlike0, lnprior0, lnprob0,
             accepted=np.ones(self.ntemps), temps=self.ptstate.ladder,
@@ -711,8 +988,10 @@ class RJPTSampler:
         self.state = initial_state
 
         # Checkpoint / resume
+        _resumed_from_checkpoint = False
         self.checkpoint_path = check_for_checkpoint(self.outdir)
         if self.resume and self.checkpoint_path is not None:
+            _resumed_from_checkpoint = True
             logger.info("Resuming from checkpoint: %s", self.checkpoint_path)
             loaded = load_rjpt_checkpoint(
                 self.checkpoint_path,
@@ -720,7 +999,51 @@ class RJPTSampler:
                 raw_lnlike=self._raw_lnlike, raw_lnprior=self._raw_lnprior,
                 lnlike_grad=self.lnlike_grad,
             )
+            # num_adapt resume semantics: an EXPLICITLY passed constructor
+            # value (including an explicit None) wins over the checkpointed
+            # value, with a warning when they differ; the default keeps the
+            # checkpointed value — silently un-freezing a checkpointed
+            # freeze would resume a half-frozen kernel (proposals whose
+            # frozen state is pickled, e.g. a frozen normalizing flow, stay
+            # frozen while everything else adapts again).  getattr guards
+            # the load_rjpt_checkpoint(...)->sample() path, where unpickling
+            # bypasses __init__ (pre-num_adapt checkpoints lack both
+            # attributes).
+            constructor_num_adapt = getattr(self, 'num_adapt', None)
+            num_adapt_explicit = getattr(self, '_num_adapt_explicit', False)
+            constructor_resume = self.resume
+            constructor_checkpoint_path = self.checkpoint_path
             self.__dict__.update(loaded.__dict__)
+            # the checkpoint carries the ORIGINAL run's resume flag (often
+            # False) and checkpoint path (None until its first checkpoint);
+            # keep this run's values or prepare_files below would truncate
+            # the NUTS diagnostics instead of appending
+            self.resume = constructor_resume
+            self.checkpoint_path = constructor_checkpoint_path
+            checkpoint_num_adapt = getattr(loaded, 'num_adapt', None)
+            if num_adapt_explicit:
+                if checkpoint_num_adapt != constructor_num_adapt:
+                    logger.warning(
+                        "Resume: overriding checkpointed num_adapt=%s with "
+                        "the resuming constructor's explicitly passed "
+                        "num_adapt=%s. Proposals whose frozen state is "
+                        "pickled (e.g. normalizing flows frozen by "
+                        "freeze_adaptation) remain frozen regardless: their "
+                        "freeze is irreversible and survives the "
+                        "checkpoint, so removing or extending the freeze "
+                        "only re-enables the other adaptive components.",
+                        checkpoint_num_adapt, constructor_num_adapt,
+                    )
+                self.num_adapt = constructor_num_adapt
+            else:
+                self.num_adapt = checkpoint_num_adapt
+            self._num_adapt_explicit = num_adapt_explicit
+            self._migrate_or_warn_legacy_birth_death()
+            # drop chain-file rows written after the checkpoint (e.g. by the
+            # final flush of a run that completed normally): the loop below
+            # re-generates those iterations bit-identically from the
+            # checkpointed RNG streams, so stale rows would be duplicates
+            self.short_chain.truncate_files_to_saved()
 
         # Backward-compat: old checkpoints may lack new adaptation attributes
         if not hasattr(self, '_dual_averagers'):
@@ -739,12 +1062,21 @@ class RJPTSampler:
             self._step_size_min = 1e-4
         if not hasattr(self, '_step_size_max'):
             self._step_size_max = 5.0
+        if not hasattr(self, 'num_adapt'):
+            self.num_adapt = None
 
         # NUTS diagnostics file
         if self.nuts_enabled:
             self._nuts_diag_data = []
             self._nuts_diag_path = os.path.join(self.outdir, "nuts_diagnostics.txt")
             prepare_files([self._nuts_diag_path], resume=self.resume)
+            if _resumed_from_checkpoint:
+                # mirror the chain-file truncation: drop diagnostics rows
+                # written after the checkpoint (the resumed iterations
+                # re-generate them)
+                self._truncate_nuts_diagnostics()
+            else:
+                self._nuts_diag_rows_written = 0
 
         # NUTS warmup: find initial step sizes
         if self.nuts_enabled:
@@ -754,7 +1086,7 @@ class RJPTSampler:
                 if len(active_params) > 0:
                     self._get_or_find_step_size(k, active_params, logp_and_grad, self.rngs[k])
 
-        _last_cov_iter = self.short_chain.iteration
+        _proposals_frozen = False
 
         for jj in tqdm(
             range(self.short_chain.iteration, num_iterations),
@@ -762,6 +1094,14 @@ class RJPTSampler:
             total=num_iterations,
             desc="Sampling",
         ):
+            adapting = self._adaptation_active(jj)
+            if not adapting and not _proposals_frozen:
+                self._freeze_adaptive_proposals()
+                # Freeze the smoothed dual-averaging step sizes, not the
+                # noisy primal iterates tracked during adaptation
+                self._finalize_step_sizes()
+                _proposals_frozen = True
+
             # Step A: MH step (includes RJ proposals if registered)
             self.state = vectorized_mh_step(
                 self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0],
@@ -771,21 +1111,19 @@ class RJPTSampler:
 
             # Step B: NUTS step on active continuous params
             if self.nuts_enabled:
-                self.state, cold_diag = self._nuts_step_all_chains(self.state)
+                self.state, cold_diag = self._nuts_step_all_chains(self.state, adapt=adapting)
                 if cold_diag is not None:
                     self._nuts_diag_data.append(cold_diag)
-                self._maybe_adapt_mass_matrices()
+                if adapting:
+                    self._maybe_adapt_mass_matrices()
 
-            # Step C: Save / checkpoint
+            # Step C: Save (chain files flush before add_state so the ring
+            # buffer never overwrites unsaved data)
             if jj > 0 and jj % self.save_freq == 0:
                 self.short_chain.save_chain()
                 self.save_chain_acceptance_rates()
                 if self.nuts_enabled:
                     self._flush_nuts_diagnostics()
-                checkpoint_sampler(
-                    self, path=self.checkpoint_path,
-                    omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
-                )
             self.short_chain.add_state(self.state)
 
             # Step D: PT swap
@@ -793,15 +1131,38 @@ class RJPTSampler:
                 self.state = pt_step(
                     self.state, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1],
                 )
-                self.ptstate.adapt_ladder()
+                if adapting:
+                    self.ptstate.adapt_ladder()
+                    # adapt_ladder mutates the ladder (aliased by state.temps) in
+                    # place, so the tempered lnprobs must be recomputed for the
+                    # new temperatures
+                    self.state.lnprobs = tempered_lnprobs(
+                        self.state.lnlikes, self.state.lnpriors, self.ptstate.ladder)
 
-            # Step E: Covariance update
-            if jj % self.cov_update == 0:
-                new_count = self.short_chain.iteration - _last_cov_iter
+            # Step E: Covariance update. Past num_adapt neither the
+            # covariance/mean/SVD nor the DE buffer update, so the transition
+            # kernel is fixed (DE keeps proposing from the frozen buffer).
+            # _last_cov_iter is an instance attribute (not a loop local) so
+            # the covariance-refresh cadence itself is checkpointed state and
+            # survives a resume even when the checkpoint iteration is not a
+            # covariance-update boundary.
+            if adapting and jj % self.cov_update == 0:
+                new_count = self.short_chain.iteration - self._last_cov_iter
                 if new_count > 0:
                     new_samples = self.short_chain.get_recent_samples(new_count)
                     self.multi_chain_stats.recursive_update(new_samples)
-                _last_cov_iter = self.short_chain.iteration
+                self._last_cov_iter = self.short_chain.iteration
+
+            # Step F: checkpoint at the END of the iteration: the pickle
+            # then captures a fully completed iteration (post NUTS, post
+            # PT-swap, post adaptation) with every RNG stream at an
+            # iteration boundary, so a resumed run continues at jj + 1
+            # bit-identically
+            if jj > 0 and jj % self.save_freq == 0:
+                checkpoint_sampler(
+                    self, path=self.checkpoint_path,
+                    omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
+                )
 
         # Final save
         self.short_chain.save_chain()
@@ -813,10 +1174,35 @@ class RJPTSampler:
     # NUTS diagnostics I/O
     # ------------------------------------------------------------------
 
+    def _ensure_nuts_diag_rows_written(self):
+        """Lazily initialize ``_nuts_diag_rows_written`` for legacy checkpoints.
+
+        Samplers unpickled from checkpoints written before row tracking
+        existed lack the attribute.  Mirroring
+        :meth:`impulse.file_io.ShortChain._ensure_rows_written`, the counter
+        must never restart at 0 — an undercount pickled forward would make
+        the NEXT resume's :meth:`_truncate_nuts_diagnostics` rewrite the
+        diagnostics file as a tiny prefix — so it is re-seeded from the
+        current on-disk line count.  Called before every read/append of the
+        counter so the value is correct regardless of whether a flush or a
+        truncation runs first after unpickling.
+        """
+        if hasattr(self, '_nuts_diag_rows_written'):
+            return
+        path = getattr(self, '_nuts_diag_path', None)
+        if path is not None and os.path.exists(path):
+            with open(path, 'r') as fp:
+                self._nuts_diag_rows_written = sum(1 for _ in fp)
+        else:
+            self._nuts_diag_rows_written = 0
+
     def _flush_nuts_diagnostics(self):
         """Write buffered NUTS diagnostics to disk."""
         if not self._nuts_diag_data:
             return
+        # Seed the row counter from disk BEFORE appending (legacy
+        # pre-row-tracking checkpoints lack the attribute).
+        self._ensure_nuts_diag_rows_written()
         rows = np.array([
             [d["tree_depth"], d["divergent"], d["energy_error"],
              d["step_size"], d["mean_accept_prob"],
@@ -826,6 +1212,30 @@ class RJPTSampler:
         with open(self._nuts_diag_path, "a") as fp:
             np.savetxt(fp, rows, fmt="%.18e")
         self._nuts_diag_data = []
+        self._nuts_diag_rows_written += len(rows)
+
+    def _truncate_nuts_diagnostics(self):
+        """Truncate the NUTS diagnostics file to the checkpointed row count.
+
+        Resume counterpart of
+        :meth:`impulse.file_io.ShortChain.truncate_files_to_saved`:
+        diagnostics rows written after the checkpoint was taken belong to
+        iterations the resumed run re-generates, so they are dropped to
+        avoid duplication.  Checkpoints that predate row tracking carry no
+        ``_nuts_diag_rows_written``; for those the counter is re-seeded from
+        the current on-disk line count (see
+        :meth:`_ensure_nuts_diag_rows_written`), making this call a no-op —
+        the historical append-only behavior.
+        """
+        if not os.path.exists(self._nuts_diag_path):
+            return
+        self._ensure_nuts_diag_rows_written()
+        rows = self._nuts_diag_rows_written
+        with open(self._nuts_diag_path, 'r') as fp:
+            lines = fp.readlines()
+        if len(lines) > rows:
+            with open(self._nuts_diag_path, 'w') as fp:
+                fp.writelines(lines[:rows])
 
     # ------------------------------------------------------------------
     # proposal_acceptance_rates

@@ -1,6 +1,6 @@
 from typing import Callable, Optional
 import numpy as np
-from impulse.sampler_state import SamplerState, PTState
+from impulse.sampler_state import SamplerState, PTState, tempered_lnprobs
 from impulse.proposals import ProposalBundle
 from impulse.wrapping import WrapSpec
 
@@ -75,7 +75,7 @@ def vectorized_mh_step(state: SamplerState,
         if np.any(finite):
             lnlike_stars[finite] = lnlike_fn(x_stars[finite])
 
-    lnprob_stars = 1 / state.temps * lnlike_stars + lnprior_stars
+    lnprob_stars = tempered_lnprobs(lnlike_stars, lnprior_stars, state.temps)
 
     probability_ratios = lnprob_stars - (state.lnprobs) + qxys
     rand_num = rng.uniform(size=len(state.temps))
@@ -146,10 +146,16 @@ def pt_step(state: SamplerState,
     # loop through and propose a swap at each chain (starting from hottest chain and going down in T)
     # and keep track of results in swap_map
     for swap_chain in reversed(range(len(ladder) - 1)):
-        log_acc_ratio = -log_likes[swap_map[swap_chain]] / ladder[swap_chain]
-        log_acc_ratio += -log_likes[swap_map[swap_chain + 1]] / ladder[swap_chain + 1]
-        log_acc_ratio += log_likes[swap_map[swap_chain + 1]] / ladder[swap_chain]
-        log_acc_ratio += log_likes[swap_map[swap_chain]] / ladder[swap_chain + 1]
+        if np.isinf(ladder[swap_chain + 1]):
+            # T = inf contributes no likelihood term (beta = 0); dividing a
+            # -inf log-likelihood by an infinite temperature would give NaN
+            log_acc_ratio = -log_likes[swap_map[swap_chain]] / ladder[swap_chain]
+            log_acc_ratio += log_likes[swap_map[swap_chain + 1]] / ladder[swap_chain]
+        else:
+            log_acc_ratio = -log_likes[swap_map[swap_chain]] / ladder[swap_chain]
+            log_acc_ratio += -log_likes[swap_map[swap_chain + 1]] / ladder[swap_chain + 1]
+            log_acc_ratio += log_likes[swap_map[swap_chain + 1]] / ladder[swap_chain]
+            log_acc_ratio += log_likes[swap_map[swap_chain]] / ladder[swap_chain + 1]
 
         if np.log(rng.uniform()) <= log_acc_ratio:
             swap_map[swap_chain], swap_map[swap_chain + 1] = swap_map[swap_chain + 1], swap_map[swap_chain]
@@ -162,6 +168,6 @@ def pt_step(state: SamplerState,
     new_positions = positions[swap_map]
     new_loglikes = log_likes[swap_map]
     new_logpriors = log_priors[swap_map]
-    new_lnprobs = 1 / ladder * new_loglikes + new_logpriors
+    new_lnprobs = tempered_lnprobs(new_loglikes, new_logpriors, ladder)
     new_accepted = np.ones(len(ladder), dtype=int)  # all ones for this one (PT swaps are handled separately)
     return SamplerState(new_positions, new_loglikes, new_logpriors, new_lnprobs, new_accepted, ladder)

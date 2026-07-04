@@ -217,6 +217,64 @@ class TestFunctionWrapper:
         expected = np.array([5.0, 25.0])
         np.testing.assert_array_almost_equal(result, expected)
 
+    def test_int_returning_prior_with_inf_int_first(self):
+        """Int first row must not fix an int dtype that cannot hold -inf"""
+        def int_prior(x):
+            return 0 if np.all(np.abs(x) < 1) else -np.inf
+
+        wrapper = _function_wrapper(int_prior)
+
+        # First row in-bounds (returns int 0), second out-of-bounds (returns -inf)
+        input_data = np.array([[0.5], [5.0]])
+        result = wrapper(input_data)
+
+        assert np.issubdtype(result.dtype, np.floating)
+        np.testing.assert_array_equal(result, np.array([0.0, -np.inf]))
+
+    def test_int_returning_prior_with_inf_inf_first(self):
+        """-inf first row followed by int rows works and stays float"""
+        def int_prior(x):
+            return 0 if np.all(np.abs(x) < 1) else -np.inf
+
+        wrapper = _function_wrapper(int_prior)
+
+        input_data = np.array([[5.0], [0.5]])
+        result = wrapper(input_data)
+
+        assert np.issubdtype(result.dtype, np.floating)
+        np.testing.assert_array_equal(result, np.array([-np.inf, 0.0]))
+
+    def test_bool_returning_first_row(self):
+        """Bool first row is promoted so later -inf rows fit"""
+        def bool_prior(x):
+            in_bounds = bool(np.all(np.abs(x) < 1))
+            return in_bounds if in_bounds else -np.inf
+
+        wrapper = _function_wrapper(bool_prior)
+
+        input_data = np.array([[0.5], [5.0]])
+        result = wrapper(input_data)
+
+        assert np.issubdtype(result.dtype, np.floating)
+        np.testing.assert_array_equal(result, np.array([1.0, -np.inf]))
+
+    def test_int_array_output_with_inf(self):
+        """Array-output path promotes int first row so -inf rows fit"""
+        def int_array_prior(x):
+            if np.all(np.abs(x) < 1):
+                return np.zeros(2, dtype=np.int64)
+            return np.full(2, -np.inf)
+
+        wrapper = _function_wrapper(int_array_prior)
+
+        input_data = np.array([[0.5], [5.0]])
+        result = wrapper(input_data)
+
+        assert np.issubdtype(result.dtype, np.floating)
+        np.testing.assert_array_equal(
+            result, np.array([[0.0, 0.0], [-np.inf, -np.inf]])
+        )
+
     def test_complex_function(self):
         """Test with more complex mathematical function"""
         def complex_func(x):

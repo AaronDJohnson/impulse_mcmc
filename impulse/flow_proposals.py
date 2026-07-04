@@ -87,8 +87,12 @@ class NormalizingFlowProposal:
       references cannot be pickled reliably). On resume from checkpoint,
       re-attach with :meth:`set_flow` before continuing — otherwise the
       proposal silently becomes a stay-put no-op.
-    - The optional ``coppuccino`` import is resolved at construction.
-      Without it, instantiation raises ``ImportError`` with an install hint.
+    - When the owning sampler's ``num_adapt`` freeze triggers, the sampler
+      calls :meth:`freeze_adaptation` and refits stop permanently; the last
+      fitted flow keeps serving as a fixed independence proposal. Because
+      the flow is dropped during pickle, a frozen adaptive-mode proposal
+      restored from a checkpoint has no flow and becomes a stay-put no-op;
+      re-attach one with :meth:`set_flow` if desired.
     """
 
     __name__ = "nf_flow"
@@ -121,9 +125,21 @@ class NormalizingFlowProposal:
         # Fixed-flow mode: a pre-fitted flow disables refitting.
         self.fixed = flow is not None
         self.flow = flow
+        self.frozen = False
         self._call_count = 0
         self._last_fit_at = -10**9
         self._fit_count = 0
+
+    def freeze_adaptation(self) -> None:
+        """Permanently disable flow refits.
+
+        Called by the sampler when its ``num_adapt`` freeze triggers. The
+        current flow keeps serving as a fixed independence proposal; if no
+        flow has been fitted yet (or the flow was dropped by a checkpoint
+        pickle) the proposal remains a stay-put no-op, which is a valid
+        fixed kernel. Idempotent.
+        """
+        self.frozen = True
 
     def set_flow(self, flow) -> None:
         """Attach (or replace) a pre-fitted flow and disable refitting.
@@ -153,6 +169,9 @@ class NormalizingFlowProposal:
         self._fit_fn, self._sample_fn, self._logprob_fn = _require_coppuccino()
 
     def _maybe_fit(self, chain_stats: ChainStats) -> None:
+        # getattr: proposals unpickled from pre-`frozen` checkpoints lack it
+        if getattr(self, 'frozen', False):
+            return  # adaptation frozen — keep the current flow as-is
         if self.fixed:
             return  # pre-fitted flow — never refit
         if self.cold_chain_only and chain_stats.chain_index != 0:

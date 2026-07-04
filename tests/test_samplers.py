@@ -2,13 +2,14 @@ import pytest
 import numpy as np
 import tempfile
 import os
+import warnings
 from unittest.mock import patch
 
 from impulse.samplers import (
-    setup_seeds, setup_chain_stats, setup_standard_jumps, 
+    setup_seeds, setup_chain_stats, setup_standard_jumps,
     setup_initial_position, PTSampler
 )
-from impulse.sampler_state import PTState
+from impulse.sampler_state import PTState, tempered_lnprobs
 from impulse.chain_stats import MultiChainStats
 from impulse.proposals import ProposalBundle
 
@@ -503,6 +504,51 @@ class TestPTSampler:
                     info['accepts'] / info['calls'], abs=1e-12
                 )
 
+    def test_pt_sampler_lnprobs_consistent_after_ladder_adaptation(self, simple_likelihood, simple_prior, temp_dir):
+        """lnprobs stay in sync with the adapted temperature ladder"""
+        sampler = PTSampler(
+            ndim=2, lnlike=simple_likelihood, lnprior=simple_prior,
+            ntemps=4, outdir=temp_dir, seed=42, save_freq=500,
+        )
+        initial_ladder = sampler.ptstate.ladder.copy()
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=200)
+
+        # adaptation must actually have moved the interior rungs
+        assert not np.allclose(sampler.ptstate.ladder, initial_ladder)
+        expected = tempered_lnprobs(
+            sampler.state.lnlikes, sampler.state.lnpriors, sampler.ptstate.ladder,
+        )
+        np.testing.assert_allclose(sampler.state.lnprobs, expected, atol=1e-12)
+
+    def test_pt_sampler_inf_temp_neg_inf_likelihood(self, simple_prior, temp_dir):
+        """inf_temp=True with lnlike = -inf on half the prior support:
+        the prior chain still crosses into that region without NaNs or warnings"""
+        def half_neg_inf_likelihood(x):
+            x = np.asarray(x)
+            if x.ndim == 1:
+                return -np.inf if x[0] > 0 else -0.5 * np.sum(x**2)
+            result = -0.5 * np.sum(x**2, axis=1)
+            result[x[:, 0] > 0] = -np.inf
+            return result
+
+        sampler = PTSampler(
+            ndim=2, lnlike=half_neg_inf_likelihood, lnprior=simple_prior,
+            ntemps=4, inf_temp=True, outdir=temp_dir, seed=42, save_freq=500,
+        )
+        assert np.isinf(sampler.ptstate.ladder[-1])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            sampler.sample(np.array([-1.0, 0.0]), num_iterations=300)
+
+        assert not np.any(np.isnan(sampler.state.lnprobs))
+        chain = sampler.load_chain()
+        assert not np.any(np.isnan(chain['lnprob']))
+        # the prior chain must have accepted moves into the -inf-likelihood
+        # half-space (half the prior mass lives there)
+        prior_chain_samples = chain['samples'][-1]
+        assert np.any(prior_chain_samples[:, 0] > 0)
+
     def test_pt_sampler_load_chain_missing_file(self, simple_likelihood, simple_prior, temp_dir):
         """Test load_chain raises FileNotFoundError when files are missing"""
         sampler = PTSampler(
@@ -512,3 +558,154 @@ class TestPTSampler:
 
         with pytest.raises(FileNotFoundError, match="Chain file not found"):
             sampler.load_chain()
+
+
+class _FreezableProposal:
+    """Picklable adaptive-proposal stand-in exposing the freeze hook."""
+
+    __name__ = "freezable"
+
+    def __init__(self):
+        self.frozen = False
+
+    def freeze_adaptation(self):
+        self.frozen = True
+
+    def __call__(self, chain_stats):
+        return chain_stats.current_sample.copy(), 0.0
+
+
+class TestNumAdapt:
+    """Adaptation-freeze semantics of PTSampler(num_adapt=...)."""
+
+    def _make_sampler(self, likelihood, prior, outdir, num_adapt):
+        return PTSampler(
+            ndim=2, lnlike=likelihood, lnprior=prior, ntemps=3,
+            outdir=outdir, seed=42, save_freq=10_000, cov_update=10,
+            num_adapt=num_adapt,
+        )
+
+    @staticmethod
+    def _instrument(sampler):
+        """Spy on covariance recomputes and ladder adaptation.
+
+        Records ``(loop_iteration, sample_cov, proposal_L)`` for every
+        cold-chain covariance recompute and the ladder after every
+        ``adapt_ladder`` call.
+        """
+        cov_calls, ladder_calls = [], []
+        orig_update = sampler.multi_chain_stats.recursive_update
+
+        def spy_update(new_samples):
+            orig_update(new_samples)
+            cs = sampler.multi_chain_stats.chain_stats[0]
+            # short_chain.iteration - 1 == loop iteration jj at call time
+            cov_calls.append((
+                sampler.short_chain.iteration - 1,
+                cs.sample_cov.copy(),
+                [L.copy() for L in cs.proposal_L],
+            ))
+
+        sampler.multi_chain_stats.recursive_update = spy_update
+        orig_adapt = sampler.ptstate.adapt_ladder
+
+        def spy_adapt():
+            orig_adapt()
+            ladder_calls.append(sampler.ptstate.ladder.copy())
+
+        sampler.ptstate.adapt_ladder = spy_adapt
+        return cov_calls, ladder_calls
+
+    def test_num_adapt_default_none(self, simple_likelihood, simple_prior, temp_dir):
+        """Default num_adapt=None adapts forever (historical behavior)"""
+        sampler = PTSampler(
+            ndim=2, lnlike=simple_likelihood, lnprior=simple_prior,
+            ntemps=2, outdir=temp_dir,
+        )
+        assert sampler.num_adapt is None
+        assert sampler._adaptation_active(10**9) is True
+
+    def test_num_adapt_freezes_covariance_and_ladder(self, simple_likelihood, simple_prior, temp_dir):
+        """With num_adapt=N, cov/proposal_L/ladder are unchanged after iteration N"""
+        n_adapt, n_iter = 50, 120
+        sampler = self._make_sampler(simple_likelihood, simple_prior, temp_dir, n_adapt)
+        cov_calls, ladder_calls = self._instrument(sampler)
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=n_iter)
+
+        # sampling continued past the freeze
+        assert sampler.short_chain.iteration == n_iter
+
+        # all covariance recomputes happened before the freeze
+        assert cov_calls
+        assert max(it for it, _, _ in cov_calls) < n_adapt
+
+        # covariance and proposal_L unchanged after iteration n_adapt
+        _, last_cov, last_L = cov_calls[-1]
+        cs = sampler.multi_chain_stats.chain_stats[0]
+        np.testing.assert_array_equal(cs.sample_cov, last_cov)
+        for final, snap in zip(cs.proposal_L, last_L):
+            np.testing.assert_array_equal(final, snap)
+
+        # ladder adaptation ran exactly once per pre-freeze iteration and the
+        # ladder has not moved since
+        assert len(ladder_calls) == n_adapt
+        np.testing.assert_array_equal(sampler.ptstate.ladder, ladder_calls[-1])
+
+    def test_num_adapt_none_keeps_adapting(self, simple_likelihood, simple_prior, temp_dir):
+        """num_adapt=None must not accidentally freeze anything"""
+        n_iter = 120
+        sampler = self._make_sampler(simple_likelihood, simple_prior, temp_dir, None)
+        cov_calls, ladder_calls = self._instrument(sampler)
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=n_iter)
+
+        # covariance updates keep happening late in the run
+        assert max(it for it, _, _ in cov_calls) >= 110
+        # ladder adaptation ran every iteration
+        assert len(ladder_calls) == n_iter
+        # covariance actually moved off its identity initialization
+        cs = sampler.multi_chain_stats.chain_stats[0]
+        assert not np.allclose(cs.sample_cov, np.identity(2))
+
+    def test_num_adapt_freezes_custom_proposals(self, simple_likelihood, simple_prior, temp_dir):
+        """Proposals exposing freeze_adaptation are frozen at the boundary"""
+        sampler = self._make_sampler(simple_likelihood, simple_prior, temp_dir, 20)
+        prop = _FreezableProposal()
+        sampler.add_custom_jump(prop, weight=10)
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=60)
+        assert prop.frozen is True
+
+    def test_num_adapt_none_leaves_custom_proposals_adapting(self, simple_likelihood, simple_prior, temp_dir):
+        """Without num_adapt the freeze hook is never invoked"""
+        sampler = self._make_sampler(simple_likelihood, simple_prior, temp_dir, None)
+        prop = _FreezableProposal()
+        sampler.add_custom_jump(prop, weight=10)
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=60)
+        assert prop.frozen is False
+
+    def test_num_adapt_missing_attribute_defaults_to_adapt_forever(self, simple_likelihood, simple_prior, temp_dir):
+        """Resume-safety: checkpoints predating num_adapt keep adapting"""
+        sampler = self._make_sampler(simple_likelihood, simple_prior, temp_dir, 50)
+        # emulate resume from a checkpoint written before num_adapt existed
+        del sampler.num_adapt
+        assert sampler._adaptation_active(10**9) is True
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=30)  # no AttributeError
+        assert sampler.short_chain.iteration == 30
+
+    def test_flow_proposal_freeze_stops_refits(self, chain_stats_2d):
+        """freeze_adaptation permanently disables NF refits"""
+        pytest.importorskip("coppuccino")
+        from impulse.flow_proposals import NormalizingFlowProposal
+
+        prop = NormalizingFlowProposal(refit_interval=1, min_samples=1)
+        fits = []
+        prop._fit_fn = lambda *args, **kwargs: fits.append(1) or object()
+        chain_stats_2d.sample_total = 10  # pretend the buffer has samples
+
+        prop._call_count = 1
+        prop._maybe_fit(chain_stats_2d)
+        assert len(fits) == 1
+
+        prop.freeze_adaptation()
+        prop._call_count = 100
+        prop._maybe_fit(chain_stats_2d)
+        assert len(fits) == 1  # frozen: no further refits

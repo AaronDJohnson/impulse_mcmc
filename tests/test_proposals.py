@@ -1,7 +1,16 @@
 import pickle
 import pytest
 import numpy as np
-from impulse.proposals import JumpProposals, ProposalBundle, am, scam, de, gaussian
+from impulse.proposals import (
+    EarlyDE,
+    JumpProposals,
+    ProposalBundle,
+    am,
+    de,
+    gaussian,
+    make_early_de,
+    scam,
+)
 from impulse.chain_stats import ChainStats
 from impulse.sampler_state import PTState, SamplerState
 
@@ -648,3 +657,124 @@ class TestProposalBundleAcceptanceReport:
         # per_proposal field present and keyed by proposal name
         for ch in rates:
             assert set(ch['per_proposal'].keys()) == {'am', 'scam'}
+
+class TestEarlyDE:
+    """Test cases for the min-fill-gated differential evolution proposal."""
+
+    def _stats(self, buffer_size=100, ndim=2, seed=42):
+        ptstate = PTState(ndim=ndim, ntemps=3)
+        rng = np.random.default_rng(seed)
+        return ChainStats(
+            ndim=ndim, pt_state=ptstate, chain_index=0, rng=rng,
+            buffer_size=buffer_size,
+        )
+
+    def test_name_is_not_de(self):
+        """__name__ must differ from 'de': JumpProposals substitutes gaussian
+        for proposals named 'de' whenever the buffer is not full, which would
+        defeat the min-fill gating."""
+        prop = make_early_de()
+        assert prop.__name__ == 'early_de'
+
+    def test_identity_below_min_fill(self):
+        """Below min_fill the proposal is the identity kernel with qxy=0."""
+        cs = self._stats()
+        cs.current_sample = np.array([1.0, 2.0])
+        cs.sample_total = 5  # < min_fill
+        prop = make_early_de(min_fill=10)
+
+        new_sample, qxy = prop(cs)
+
+        np.testing.assert_array_equal(new_sample, cs.current_sample)
+        assert new_sample is not cs.current_sample  # a copy, not an alias
+        assert qxy == 0.0
+
+    def test_difference_move_from_partial_buffer_tail(self):
+        """Above min_fill the move is a difference of two TAIL buffer rows.
+
+        The circular buffer fills from the tail, so the head of a partially
+        filled buffer is zero padding; drawing from the head (as the stock
+        de indexes it) would produce degenerate near-zero jumps.
+        """
+        cs = self._stats(buffer_size=100)
+        rng_fill = np.random.default_rng(7)
+        n_filled = 20
+        # head of buffer left as zero padding; tail holds the history
+        cs._buffer[-n_filled:] = 5.0 + rng_fill.random((n_filled, 2))
+        cs.sample_total = n_filled
+        cs.current_sample = np.array([1.0, 2.0])
+        prop = make_early_de(min_fill=10)
+
+        moved = 0
+        for _ in range(50):
+            new_sample, qxy = prop(cs)
+            assert qxy == 0.0
+            delta = new_sample - cs.current_sample
+            if np.any(delta != 0.0):
+                moved += 1
+                # every delta must be a scaled difference of tail rows:
+                # tail values are in [5, 6], so |row_i - row_j| < 1 per
+                # coordinate and scale <= 1  =>  |delta| < 1.  A head
+                # (zero-padding) row would give |delta| >= 4.
+                assert np.max(np.abs(delta)) < 1.0
+        assert moved > 0
+
+    def test_min_fill_validation(self):
+        """min_fill < 2 cannot produce two distinct rows and must raise."""
+        with pytest.raises(ValueError, match="min_fill"):
+            make_early_de(min_fill=1)
+
+    def test_respects_groups(self):
+        """Only the chosen group's parameters move; others are untouched."""
+        ptstate = PTState(ndim=4, ntemps=3)
+        rng = np.random.default_rng(3)
+        groups = [[0, 1], [2, 3]]
+        cs = ChainStats(ndim=4, pt_state=ptstate, chain_index=0, rng=rng,
+                        groups=groups, buffer_size=50)
+        cs._buffer[-20:] = np.random.default_rng(4).random((20, 4))
+        cs.sample_total = 20
+        cs.current_sample = np.zeros(4)
+        prop = make_early_de(min_fill=10)
+
+        for _ in range(50):
+            new_sample, _ = prop(cs)
+            delta = new_sample != 0.0
+            # a single group per call: never parameters from both groups
+            assert not (np.any(delta[:2]) and np.any(delta[2:]))
+
+    def test_pickle_roundtrip(self):
+        """Checkpointing pickles every registered proposal."""
+        prop = make_early_de(min_fill=37)
+        restored = pickle.loads(pickle.dumps(prop))
+        assert isinstance(restored, EarlyDE)
+        assert restored.min_fill == 37
+        assert restored.__name__ == 'early_de'
+
+    def test_symmetry_forward_reverse_rates(self):
+        """Empirical check of q(y|x) = q(x|y) (the qxy = 0 claim).
+
+        With a frozen two-row buffer and scale fixed to the mode-jump
+        branch (prob > 0.5 -> scale = 1), the only proposable moves from x
+        are x + (b0 - b1) and x + (b1 - b0), each with probability 1/2 (of
+        the mode-jump branch): the forward and reverse displacement are
+        proposed at identical rates from any point.
+        """
+        cs = self._stats(buffer_size=10, seed=11)
+        cs._buffer[-2:] = np.array([[0.3, 0.1], [0.1, 0.4]])
+        cs.sample_total = 2
+        cs.current_sample = np.array([0.0, 0.0])
+        prop = make_early_de(min_fill=2)
+
+        diff = cs._buffer[-2] - cs._buffer[-1]
+        n_fwd = n_rev = 0
+        for _ in range(4000):
+            new_sample, qxy = prop(cs)
+            assert qxy == 0.0
+            delta = new_sample - cs.current_sample
+            if np.allclose(delta, diff):
+                n_fwd += 1
+            elif np.allclose(delta, -diff):
+                n_rev += 1
+        # mode-jump branch fires ~half the time, split evenly across signs
+        assert n_fwd + n_rev > 1000
+        assert abs(n_fwd - n_rev) / (n_fwd + n_rev) < 0.1
