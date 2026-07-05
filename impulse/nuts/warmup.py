@@ -5,10 +5,12 @@ a windowed scheme for mass matrix estimation.
 """
 
 from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
+from numpy.typing import ArrayLike
 
-from impulse.nuts.core import leapfrog
+from impulse.nuts.core import NUTSState, leapfrog
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 
 
@@ -36,14 +38,14 @@ class DualAveraging:
     kappa: float = 0.75
     initial_step_size: float = 1.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.log_step = np.log(self.initial_step_size)
         self.log_step_bar = np.log(self.initial_step_size)
         self.mu = np.log(10.0 * self.initial_step_size)
         self.h_bar = 0.0
         self.count = 0
 
-    def update(self, accept_prob):
+    def update(self, accept_prob: float) -> float:
         """Update step size given observed acceptance probability.
 
         Parameters
@@ -72,7 +74,7 @@ class DualAveraging:
 
         return np.exp(self.log_step)
 
-    def finalize(self):
+    def finalize(self) -> float:
         """Return the smoothed step size.
 
         Returns
@@ -82,7 +84,7 @@ class DualAveraging:
         """
         return np.exp(self.log_step_bar)
 
-    def reset(self, step_size):
+    def reset(self, step_size: float) -> None:
         """Reset for a new adaptation window.
 
         Parameters
@@ -125,14 +127,14 @@ class WarmupSchedule:
 
     def __init__(
         self,
-        num_warmup,
-        ndim,
-        mass_matrix_type=MassMatrixType.DIAGONAL,
-        target_accept=0.8,
-        init_buffer=75,
-        term_buffer=50,
-        initial_step_size=1.0,
-    ):
+        num_warmup: int,
+        ndim: int,
+        mass_matrix_type: MassMatrixType = MassMatrixType.DIAGONAL,
+        target_accept: float = 0.8,
+        init_buffer: int = 75,
+        term_buffer: int = 50,
+        initial_step_size: float = 1.0,
+    ) -> None:
         self.num_warmup = num_warmup
         self.ndim = ndim
         self.mass_matrix_type = mass_matrix_type
@@ -146,11 +148,11 @@ class WarmupSchedule:
             initial_step_size=initial_step_size,
         )
 
-        self._window_samples = []
+        self._window_samples: List[np.ndarray] = []
         self._windows = self._compute_windows()
         self._current_window_idx = 0
 
-    def _compute_windows(self):
+    def _compute_windows(self) -> List[Tuple[int, int]]:
         """Compute Stan's doubling window schedule.
 
         Returns list of (start, end) iteration pairs for adaptation windows.
@@ -161,7 +163,7 @@ class WarmupSchedule:
         if middle_end <= middle_start:
             return []
 
-        windows = []
+        windows: List[Tuple[int, int]] = []
         window_size = 25
         start = middle_start
         while start < middle_end:
@@ -176,7 +178,7 @@ class WarmupSchedule:
             )
         return windows
 
-    def _adapt_mass_matrix(self, samples):
+    def _adapt_mass_matrix(self, samples: ArrayLike) -> MassMatrix:
         """Estimate mass matrix from window samples with regularization.
 
         Parameters
@@ -217,7 +219,7 @@ class WarmupSchedule:
         else:
             return MassMatrix(self.ndim, MassMatrixType.UNIT)
 
-    def _in_window(self, iteration):
+    def _in_window(self, iteration: int) -> Optional[int]:
         """Check if iteration falls within any adaptation window."""
         for i, (start, end) in enumerate(self._windows):
             if start <= iteration < end:
@@ -226,7 +228,9 @@ class WarmupSchedule:
                 return -(i + 1)  # signal: at window boundary
         return None
 
-    def update(self, iteration, state, accept_prob):
+    def update(
+        self, iteration: int, state: NUTSState, accept_prob: float
+    ) -> Tuple[float, Optional[MassMatrix]]:
         """Update adaptation state for the given iteration.
 
         Parameters
@@ -264,7 +268,7 @@ class WarmupSchedule:
 
         return new_step_size, new_mass_matrix
 
-    def finalize(self):
+    def finalize(self) -> float:
         """Finalize warmup: return smoothed step size.
 
         Returns
@@ -275,7 +279,14 @@ class WarmupSchedule:
         return self.dual_averaging.finalize()
 
 
-def find_reasonable_step_size(position, logp, grad, logp_and_grad, mass_matrix, rng):
+def find_reasonable_step_size(
+    position: np.ndarray,
+    logp: float,
+    grad: np.ndarray,
+    logp_and_grad: Callable,
+    mass_matrix: MassMatrix,
+    rng: np.random.Generator,
+) -> float:
     """Stan's heuristic to find a reasonable initial step size.
 
     Doubles or halves the step size until the acceptance probability

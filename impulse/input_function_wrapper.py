@@ -1,6 +1,9 @@
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from concurrent.futures import ThreadPoolExecutor
 
 
 class _function_wrapper(object):
@@ -99,7 +102,7 @@ class _function_wrapper(object):
         self.jax = bool(jax)
         self.zero_copy = bool(zero_copy)
         self.threads = int(threads)
-        self._executor = None  # lazily created
+        self._executor: Optional["ThreadPoolExecutor"] = None  # lazily created
 
     def __call__(self, x: Any):
         # Use asanyarray to preserve views when possible, or asarray for copies
@@ -166,8 +169,8 @@ class _function_wrapper(object):
             return results
         else:
             # Original behavior: collect results in list then convert
-            results = [self.f(x_arr[i], *self.args, **self.kwargs) for i in range(n)]
-            return np.asarray(results)
+            raw_results = [self.f(x_arr[i], *self.args, **self.kwargs) for i in range(n)]
+            return np.asarray(raw_results)
 
     def _get_executor(self):
         if self._executor is None:

@@ -394,7 +394,7 @@ def model_visitation_stats(chain: np.ndarray, num_models: int, burn: int = 0):
     if n > 0:
         current = nmodel_samples[0]
         run_len = 1
-        run_lengths = {k: [] for k in range(num_models)}
+        run_lengths: dict[int, list[int]] = {k: [] for k in range(num_models)}
         for t in range(1, n):
             if nmodel_samples[t] == current:
                 run_len += 1

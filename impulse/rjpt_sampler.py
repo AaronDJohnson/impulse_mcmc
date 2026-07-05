@@ -249,7 +249,7 @@ class RJPTSampler:
         self._rjmcmc_space = None
 
         # NUTS diagnostics buffer (populated during sampling)
-        self._nuts_diag_data = None
+        self._nuts_diag_data: Optional[list] = None
 
     # ------------------------------------------------------------------
     # Adaptation freeze
@@ -647,6 +647,8 @@ class RJPTSampler:
         T = state.temps[chain_idx]
         active_idx = self._get_active_indices(full_params)
         lnlike_grad = self.lnlike_grad
+        # only reachable on the NUTS path, which requires lnlike_grad
+        assert lnlike_grad is not None
         raw_lnprior = self._raw_lnprior
 
         def logp_and_grad(x_active):
@@ -1176,6 +1178,8 @@ class RJPTSampler:
             if self.nuts_enabled:
                 self.state, cold_diag = self._nuts_step_all_chains(self.state, adapt=adapting)
                 if cold_diag is not None:
+                    # initialized above whenever nuts_enabled
+                    assert self._nuts_diag_data is not None
                     self._nuts_diag_data.append(cold_diag)
                 if adapting:
                     self._maybe_adapt_mass_matrices()

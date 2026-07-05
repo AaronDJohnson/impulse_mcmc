@@ -11,9 +11,12 @@ import atexit
 import os
 import warnings
 from multiprocessing import Pool, cpu_count, shared_memory
-from typing import Callable, Optional, Union
+from typing import TYPE_CHECKING, Callable, Optional, Union
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from multiprocessing.pool import Pool as _PoolType
 
 
 class ParallelLikelihood:
@@ -84,10 +87,10 @@ class ParallelLikelihood:
         self.max_batch_size = max_batch_size or (10 * batch_size)
 
         # Initialize shared memory components
-        self._param_shm = None
-        self._param_array = None
-        self._pool = None
-        self._param_dim = None
+        self._param_shm: Optional[shared_memory.SharedMemory] = None
+        self._param_array: Optional[np.ndarray] = None
+        self._pool: Optional["_PoolType"] = None
+        self._param_dim: Optional[int] = None
 
         # Register cleanup
         atexit.register(self.cleanup)
@@ -181,6 +184,9 @@ class ParallelLikelihood:
         if self._pool is None:
             return self.likelihood_fn(params)
 
+        # _setup_shared_memory either populated this or raised
+        assert self._param_array is not None
+
         # Process in chunks
         results = np.empty(n_samples, dtype=np.float64)
 
@@ -254,8 +260,8 @@ class ParallelLikelihood:
 
 
 # Global worker state
-_worker_param_array = None
-_worker_likelihood_fn = None
+_worker_param_array: Optional[np.ndarray] = None
+_worker_likelihood_fn: Optional[Callable] = None
 
 
 def _worker_init(param_shm_name: str, max_batch_size: int, param_dim: int, likelihood_fn: Callable):
@@ -282,6 +288,9 @@ def _worker_process(work_range: tuple) -> np.ndarray:
     global _worker_param_array, _worker_likelihood_fn
 
     start_idx, end_idx = work_range
+
+    # _worker_init ran in this process before any work is dispatched
+    assert _worker_param_array is not None and _worker_likelihood_fn is not None
 
     # Extract work chunk from shared memory (zero-copy view)
     work_params = _worker_param_array[start_idx:end_idx]

@@ -1,8 +1,10 @@
 """Mass matrix representations for Hamiltonian Monte Carlo."""
 
 from enum import Enum
+from typing import Optional
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 
 class MassMatrixType(Enum):
@@ -44,8 +46,14 @@ class MassMatrix:
     """
 
     def __init__(
-        self, ndim, matrix_type=MassMatrixType.UNIT, diagonal=None, dense=None, *, inverse=None
-    ):
+        self,
+        ndim: int,
+        matrix_type: MassMatrixType = MassMatrixType.UNIT,
+        diagonal: Optional[ArrayLike] = None,
+        dense: Optional[ArrayLike] = None,
+        *,
+        inverse: Optional[ArrayLike] = None,
+    ) -> None:
         self.ndim = ndim
         self.matrix_type = matrix_type
 
@@ -78,7 +86,7 @@ class MassMatrix:
         else:
             raise ValueError(f"Unknown matrix type: {matrix_type}")
 
-    def sample_momentum(self, rng):
+    def sample_momentum(self, rng: np.random.Generator) -> np.ndarray:
         """Draw p ~ N(0, M).
 
         Parameters
@@ -96,7 +104,7 @@ class MassMatrix:
             return self._cholesky @ z
         return self._sqrt_diag * z
 
-    def kinetic_energy(self, p):
+    def kinetic_energy(self, p: np.ndarray) -> float:
         """Compute 0.5 * p^T M^{-1} p.
 
         Parameters
@@ -113,7 +121,7 @@ class MassMatrix:
             return 0.5 * p @ self._inv @ p
         return 0.5 * np.sum(self._inv_diag * p**2)
 
-    def inverse_multiply(self, p):
+    def inverse_multiply(self, p: np.ndarray) -> np.ndarray:
         """Compute M^{-1} p (velocity).
 
         Parameters
@@ -131,7 +139,9 @@ class MassMatrix:
         return self._inv_diag * p
 
     @classmethod
-    def from_covariance(cls, cov, matrix_type=MassMatrixType.DIAGONAL):
+    def from_covariance(
+        cls, cov: ArrayLike, matrix_type: MassMatrixType = MassMatrixType.DIAGONAL
+    ) -> "MassMatrix":
         """Build mass matrix from a posterior covariance estimate.
 
         Follows Stan's convention: the inverse metric equals the posterior
@@ -182,7 +192,9 @@ class MassMatrix:
             raise ValueError(f"Unknown matrix type: {matrix_type}")
 
     @classmethod
-    def from_precision(cls, precision, matrix_type=MassMatrixType.DIAGONAL):
+    def from_precision(
+        cls, precision: ArrayLike, matrix_type: MassMatrixType = MassMatrixType.DIAGONAL
+    ) -> "MassMatrix":
         """Build mass matrix directly from a precision (inverse-covariance) matrix.
 
         Stores M = precision without any inversion. This is the correct

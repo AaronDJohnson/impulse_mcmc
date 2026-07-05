@@ -35,7 +35,7 @@ _INSTALL_HINT = (
 
 def _require_coppuccino():
     try:
-        from coppuccino import log_prob, normalizing_flows_fit, sample  # type: ignore
+        from coppuccino import log_prob, normalizing_flows_fit, sample
     except ImportError as e:
         raise ImportError(_INSTALL_HINT) from e
     return normalizing_flows_fit, sample, log_prob
@@ -200,10 +200,13 @@ class NormalizingFlowProposal:
             # interval. Common cause: degenerate samples or marginal collapse.
             logger.warning("NF proposal refit failed (%s); keeping previous flow", e)
 
-    def __call__(self, chain_stats: ChainStats):
+    def __call__(self, chain_stats: ChainStats) -> tuple[np.ndarray, float]:
         if chain_stats.chain_index == 0:
             self._call_count += 1
         self._maybe_fit(chain_stats)
+
+        # ChainStats.__post_init__ / update_sample guarantee this is set
+        assert chain_stats.current_sample is not None
 
         if self.flow is None:
             # No flow yet — return current sample with qxy=0, a no-op that's

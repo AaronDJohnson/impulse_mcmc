@@ -5,8 +5,10 @@ sample() runs the loop, load_chain() reads results.
 """
 
 import os
+from typing import Callable, Optional, Union
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 from tqdm import tqdm
 
 from impulse.nuts.core import NUTSState, nuts_step
@@ -64,19 +66,19 @@ class NUTSSampler:
 
     def __init__(
         self,
-        ndim,
-        logp_and_grad,
-        num_warmup=1000,
-        mass_matrix_type="diagonal",
-        target_accept=0.8,
-        max_tree_depth=10,
-        initial_step_size=None,
-        seed=None,
-        outdir="./chains",
-        save_freq=1000,
-        resume=False,
-        save_warmup=False,
-    ):
+        ndim: int,
+        logp_and_grad: Callable,
+        num_warmup: int = 1000,
+        mass_matrix_type: Union[str, MassMatrixType] = "diagonal",
+        target_accept: float = 0.8,
+        max_tree_depth: int = 10,
+        initial_step_size: Optional[float] = None,
+        seed: Optional[int] = None,
+        outdir: str = "./chains",
+        save_freq: int = 1000,
+        resume: bool = False,
+        save_warmup: bool = False,
+    ) -> None:
         self.ndim = ndim
         self.logp_and_grad = logp_and_grad
         self.num_warmup = num_warmup
@@ -99,10 +101,10 @@ class NUTSSampler:
         self.rng = np.random.default_rng(seq)
 
         # State (initialized in sample())
-        self.state = None
-        self._chain_data = None
+        self.state: Optional[NUTSState] = None
+        self._chain_data: Optional[np.ndarray] = None
 
-    def sample(self, initial_position, num_iterations):
+    def sample(self, initial_position: ArrayLike, num_iterations: int) -> None:
         """Run NUTS sampling with warmup.
 
         Parameters
@@ -149,7 +151,8 @@ class NUTSSampler:
             initial_step_size=step_size,
         )
 
-        warmup_samples = [] if self.save_warmup else None
+        # only populated (and read) when save_warmup is set
+        warmup_samples: list[np.ndarray] = []
 
         for i in tqdm(range(self.num_warmup), desc="Warmup"):
             self.state = nuts_step(
@@ -225,9 +228,10 @@ class NUTSSampler:
         self._total_iterations = num_iterations
         self._warmup_saved = self.save_warmup
 
-    def _state_to_row(self):
+    def _state_to_row(self) -> NDArray[np.float64]:
         """Convert current state to a chain row."""
         s = self.state
+        assert s is not None  # only called from sample() after state is set
         return np.concatenate(
             [
                 s.position,
@@ -243,12 +247,13 @@ class NUTSSampler:
             ]
         )
 
-    def _flush_to_disk(self, filepath, start, end):
+    def _flush_to_disk(self, filepath: str, start: int, end: int) -> None:
         """Write rows [start, end) to disk."""
+        assert self._chain_data is not None  # allocated in sample()
         with open(filepath, "a") as fp:
             np.savetxt(fp, self._chain_data[start:end], fmt="%.18e")
 
-    def load_chain(self):
+    def load_chain(self) -> dict:
         """Load saved chain from disk.
 
         Returns
@@ -276,7 +281,7 @@ class NUTSSampler:
             "mean_accept_prob": data[:, self.ndim + 6],
         }
 
-    def get_diagnostics(self):
+    def get_diagnostics(self) -> dict:
         """Summary diagnostics from the sampling run.
 
         Returns
@@ -288,6 +293,7 @@ class NUTSSampler:
         """
         if self._chain_data is None:
             raise RuntimeError("No sampling data available. Run sample() first.")
+        assert self.state is not None  # set alongside _chain_data in sample()
 
         # Only look at post-warmup samples
         if self._warmup_saved:

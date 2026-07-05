@@ -1,7 +1,7 @@
 import logging
 import os
 import warnings
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 import numpy as np
 from tqdm import tqdm
@@ -22,8 +22,9 @@ from impulse.wrapping import PeriodicSpec, WrapSpec
 # checkpointed value on resume) from an explicitly passed value — including
 # an explicit ``None`` (adapt forever), which must override a checkpointed
 # freeze on purpose, not by accident.  Never stored on a sampler instance,
-# so it can never end up inside a pickled checkpoint.
-_UNSET = object()
+# so it can never end up inside a pickled checkpoint.  Typed ``Any`` so it
+# can stand in as the default for ``Optional[int]`` parameters.
+_UNSET: Any = object()
 
 
 def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:

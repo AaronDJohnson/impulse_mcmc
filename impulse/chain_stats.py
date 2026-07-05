@@ -273,6 +273,10 @@ class ChainStats:
         num_params : int
             Number of continuous parameters per source.
         """
+        # __post_init__ guarantees these are set on any constructed instance
+        assert (
+            self.groups is not None and self.sample_cov is not None and self.sample_mean is not None
+        )
         self._num_models = num_models
         self._num_params = num_params
         self._nmodel_idx = num_models * num_params  # last element of position
@@ -302,14 +306,19 @@ class ChainStats:
                 buffer=np.zeros((self.buffer_size, self.ndim)),
             )
 
-    def __setstate__(self, state):
+    def __setstate__(self, state: dict) -> None:
         """Restore from pickle, recomputing proposal_L for old checkpoints."""
         self.__dict__.update(state)
         if not hasattr(self, "proposal_L") or self.proposal_L is None:
+            # any pickled instance went through __post_init__, so these are set
+            assert self.groups is not None and self.svd_U is not None and self.svd_S is not None
             self.proposal_L = [None] * len(self.groups)
             for ct, group in enumerate(self.groups):
-                sqrt_s = np.sqrt(np.maximum(self.svd_S[ct], 0.0))
-                self.proposal_L[ct] = self.svd_U[ct] * sqrt_s[None, :]
+                svd_u = self.svd_U[ct]
+                svd_s = self.svd_S[ct]
+                assert svd_u is not None and svd_s is not None
+                sqrt_s = np.sqrt(np.maximum(svd_s, 0.0))
+                self.proposal_L[ct] = svd_u * sqrt_s[None, :]
         # Recompute proposal_L for per-model states
         if hasattr(self, "_per_model") and self._per_model is not None:
             for pm in self._per_model.values():

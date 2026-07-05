@@ -59,7 +59,7 @@ class ProductSpace:
         self.ndim = len(self.all_params)
 
         # get indices for each model
-        self.model_params = []
+        self.model_params: list[list[int]] = []
         for i in range(self.num_models):
             self.model_params.append([])
             for param in param_names[i]:

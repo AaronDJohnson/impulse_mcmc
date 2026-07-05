@@ -283,6 +283,9 @@ def am(chain_stats: ChainStats) -> Tuple[np.ndarray, float]:
     - Falls back to identity matrix if covariance is not yet reliable
     """
     rng = chain_stats.rng
+    # ChainStats.__post_init__ / update_sample guarantee these are set
+    assert chain_stats.current_sample is not None
+    assert chain_stats.groups is not None and chain_stats.proposal_L is not None
     q = chain_stats.current_sample.copy()
     qxy = 0
 
@@ -295,7 +298,7 @@ def am(chain_stats: ChainStats) -> Tuple[np.ndarray, float]:
 
     # large jump
     if prob > 0.97:
-        scale = 10
+        scale = 10.0
 
     # small jump
     elif prob > 0.9:
@@ -309,7 +312,9 @@ def am(chain_stats: ChainStats) -> Tuple[np.ndarray, float]:
     group = chain_stats.groups[jumpind]
     neff = len(group)
     cd = 2.4 / math.sqrt(2 * neff) * scale
-    q[group] += cd * (chain_stats.proposal_L[jumpind] @ rng.standard_normal(neff))
+    proposal_L = chain_stats.proposal_L[jumpind]
+    assert proposal_L is not None
+    q[group] += cd * (proposal_L @ rng.standard_normal(neff))
 
     return q, qxy
 
@@ -350,6 +355,9 @@ def scam(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     - Complementary to AM and DE proposals in the proposal mix
     """
     rng = chain_stats.rng
+    # ChainStats.__post_init__ / update_sample guarantee these are set
+    assert chain_stats.current_sample is not None
+    assert chain_stats.groups is not None and chain_stats.proposal_L is not None
     q = chain_stats.current_sample.copy()
     qxy = 0
 
@@ -362,7 +370,7 @@ def scam(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
 
     # large jump
     if prob > 0.97:
-        scale = 10
+        scale = 10.0
 
     # small jump
     elif prob > 0.9:
@@ -376,9 +384,9 @@ def scam(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     ind = rng.integers(0, ndim)
     cd = _SQRT2_INV * scale
 
-    q[chain_stats.groups[jumpind]] += (
-        rng.standard_normal() * cd * chain_stats.proposal_L[jumpind][:, ind]
-    )
+    proposal_L = chain_stats.proposal_L[jumpind]
+    assert proposal_L is not None
+    q[chain_stats.groups[jumpind]] += rng.standard_normal() * cd * proposal_L[:, ind]
 
     return q, qxy
 
@@ -419,6 +427,8 @@ def de(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     - Based on differential evolution optimization algorithm principles
     """
     rng = chain_stats.rng
+    # ChainStats.__post_init__ / update_sample guarantee these are set
+    assert chain_stats.current_sample is not None and chain_stats.groups is not None
     # get old parameters
     q = chain_stats.current_sample.copy()
     qxy = 0
@@ -548,6 +558,8 @@ class EarlyDE:
 
     def __call__(self, chain_stats: ChainStats) -> tuple[np.ndarray, float]:
         rng = chain_stats.rng
+        # ChainStats.__post_init__ / update_sample guarantee these are set
+        assert chain_stats.current_sample is not None and chain_stats.groups is not None
         q = chain_stats.current_sample.copy()
 
         # When per-model statistics are active, update_sample() has swapped
@@ -637,6 +649,8 @@ def gaussian(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     - Simpler than adaptive proposals but useful for initial exploration
     """
     rng = chain_stats.rng
+    # ChainStats.__post_init__ / update_sample guarantee these are set
+    assert chain_stats.current_sample is not None and chain_stats.groups is not None
     q = chain_stats.current_sample.copy()
     qxy = 0
 
@@ -684,6 +698,8 @@ class SourceSwapProposal:
 
     def __call__(self, chain_stats: ChainStats) -> tuple[np.ndarray, float]:
         rng = chain_stats.rng
+        # ChainStats.__post_init__ / update_sample guarantee this is set
+        assert chain_stats.current_sample is not None
         q = chain_stats.current_sample.copy()
         qxy = 0
         nmodel = int(np.rint(q[-1]))

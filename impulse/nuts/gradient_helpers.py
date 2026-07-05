@@ -1,9 +1,11 @@
 """Gradient utilities for NUTS sampler."""
 
+from typing import Callable, Optional
+
 import numpy as np
 
 
-def numerical_gradient(logp_fn, x, epsilon=1e-6):
+def numerical_gradient(logp_fn: Callable, x: np.ndarray, epsilon: float = 1e-6) -> np.ndarray:
     """Central-difference gradient approximation.
 
     Parameters
@@ -30,7 +32,7 @@ def numerical_gradient(logp_fn, x, epsilon=1e-6):
     return grad
 
 
-def make_logp_and_grad_numerical(logp_fn, epsilon=1e-6):
+def make_logp_and_grad_numerical(logp_fn: Callable, epsilon: float = 1e-6) -> Callable:
     """Wrap a scalar logp function into (x) -> (logp, grad) interface.
 
     Parameters
@@ -54,7 +56,13 @@ def make_logp_and_grad_numerical(logp_fn, epsilon=1e-6):
     return logp_and_grad
 
 
-def compose_logp_and_grad(lnlike, lnprior, lnlike_grad=None, lnprior_grad=None, epsilon=1e-6):
+def compose_logp_and_grad(
+    lnlike: Callable,
+    lnprior: Callable,
+    lnlike_grad: Optional[Callable] = None,
+    lnprior_grad: Optional[Callable] = None,
+    epsilon: float = 1e-6,
+) -> Callable:
     """Combine separate likelihood/prior into single logp_and_grad callable.
 
     Falls back to numerical differentiation for any missing gradient function.

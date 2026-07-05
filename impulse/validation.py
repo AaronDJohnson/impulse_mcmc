@@ -10,8 +10,10 @@ Provides tools for validating MCMC samplers via SBC:
 
 import shutil
 import tempfile
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 
 def _require_matplotlib():
@@ -47,7 +49,7 @@ def _require_matplotlib():
 # ---------------------------------------------------------------------------
 
 
-def compute_sbc_rank(true_value, posterior_samples):
+def compute_sbc_rank(true_value: ArrayLike, posterior_samples: ArrayLike) -> np.ndarray:
     """
     Count posterior samples less than the true value, per dimension.
 
@@ -68,7 +70,7 @@ def compute_sbc_rank(true_value, posterior_samples):
     return np.sum(posterior_samples < true_value, axis=0)
 
 
-def compute_sbc_quantile(true_value, posterior_samples):
+def compute_sbc_quantile(true_value: ArrayLike, posterior_samples: ArrayLike) -> np.ndarray:
     """
     Quantile rank of the true value among posterior samples.
 
@@ -89,7 +91,11 @@ def compute_sbc_quantile(true_value, posterior_samples):
     return ranks / posterior_samples.shape[0]
 
 
-def compute_model_pit(true_model_index, posterior_probs, rng=None):
+def compute_model_pit(
+    true_model_index: int,
+    posterior_probs: ArrayLike,
+    rng: Optional[np.random.Generator] = None,
+) -> float:
     """
     Randomized probability integral transform for a discrete model index.
 
@@ -119,7 +125,7 @@ def compute_model_pit(true_model_index, posterior_probs, rng=None):
     return p_below + u * p_at
 
 
-def ecdf(x):
+def ecdf(x: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     """
     Empirical cumulative distribution function.
 
@@ -147,7 +153,12 @@ def ecdf(x):
 # ---------------------------------------------------------------------------
 
 
-def sbc_ecdf_plot(quantiles, param_names=None, ax=None, alpha=0.05):
+def sbc_ecdf_plot(
+    quantiles: ArrayLike,
+    param_names: Optional[Sequence[str]] = None,
+    ax: Optional[Any] = None,
+    alpha: float = 0.05,
+) -> Any:
     """
     ECDF of SBC quantile ranks vs the Uniform(0,1) diagonal.
 
@@ -202,7 +213,11 @@ def sbc_ecdf_plot(quantiles, param_names=None, ax=None, alpha=0.05):
     return ax
 
 
-def coverage_plot(quantiles, nominal_levels=None, ax=None):
+def coverage_plot(
+    quantiles: ArrayLike,
+    nominal_levels: Optional[ArrayLike] = None,
+    ax: Optional[Any] = None,
+) -> Any:
     """
     Actual vs nominal coverage of credible intervals.
 
@@ -255,7 +270,12 @@ def coverage_plot(quantiles, nominal_levels=None, ax=None):
     return ax
 
 
-def rank_histogram(ranks, n_posterior_samples, param_names=None, axes=None):
+def rank_histogram(
+    ranks: ArrayLike,
+    n_posterior_samples: int,
+    param_names: Optional[Sequence[str]] = None,
+    axes: Optional[Any] = None,
+) -> Any:
     """
     Histogram of SBC ranks (should be approximately flat).
 
@@ -308,14 +328,14 @@ def rank_histogram(ranks, n_posterior_samples, param_names=None, axes=None):
 
 
 def run_sbc_continuous(
-    sampler_factory,
-    prior_draw,
-    data_generator,
-    n_simulations=200,
-    burn=500,
-    thin=1,
-    seed=None,
-):
+    sampler_factory: Callable,
+    prior_draw: Callable,
+    data_generator: Callable,
+    n_simulations: int = 200,
+    burn: int = 500,
+    thin: int = 1,
+    seed: Optional[int] = None,
+) -> dict:
     """
     Run SBC for continuous-parameter samplers.
 
@@ -354,10 +374,10 @@ def run_sbc_continuous(
 
     rng = np.random.default_rng(seed)
 
-    all_ranks = []
-    all_quantiles = []
-    all_true = []
-    n_posterior = None
+    all_ranks: list[np.ndarray] = []
+    all_quantiles: list[np.ndarray] = []
+    all_true: list[np.ndarray] = []
+    n_posterior: Optional[int] = None
 
     for i in iterator:
         theta_true = prior_draw(rng)
@@ -402,15 +422,15 @@ def run_sbc_continuous(
 
 
 def run_sbc_model_selection(
-    sampler_factory,
-    model_prior_draw,
-    param_prior_draw,
-    data_generator,
-    num_models,
-    n_simulations=200,
-    burn=2000,
-    seed=None,
-):
+    sampler_factory: Callable,
+    model_prior_draw: Callable,
+    param_prior_draw: Callable,
+    data_generator: Callable,
+    num_models: int,
+    n_simulations: int = 200,
+    burn: int = 2000,
+    seed: Optional[int] = None,
+) -> dict:
     """
     Run SBC for model-selection (RJMCMC) samplers.
 

@@ -5,6 +5,7 @@ U-turn detection and divergence tracking.
 """
 
 from dataclasses import dataclass, field
+from typing import Callable, Tuple
 
 import numpy as np
 
@@ -57,7 +58,14 @@ class NUTSState:
     mean_accept_prob: float = 0.0
 
 
-def leapfrog(position, momentum, grad, step_size, mass_matrix, logp_and_grad):
+def leapfrog(
+    position: np.ndarray,
+    momentum: np.ndarray,
+    grad: np.ndarray,
+    step_size: float,
+    mass_matrix: MassMatrix,
+    logp_and_grad: Callable,
+) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray]:
     """Single leapfrog integration step.
 
     Parameters
@@ -95,19 +103,19 @@ def leapfrog(position, momentum, grad, step_size, mass_matrix, logp_and_grad):
 
 
 def _build_tree(
-    position,
-    momentum,
-    grad,
-    logp,
-    depth,
-    step_size,
-    direction,
-    mass_matrix,
-    logp_and_grad,
-    H0,
-    max_delta_energy,
-    rng,
-):
+    position: np.ndarray,
+    momentum: np.ndarray,
+    grad: np.ndarray,
+    logp: float,
+    depth: int,
+    step_size: float,
+    direction: int,
+    mass_matrix: MassMatrix,
+    logp_and_grad: Callable,
+    H0: float,
+    max_delta_energy: float,
+    rng: np.random.Generator,
+) -> dict:
     """Recursively build a binary trajectory tree (multinomial sampling).
 
     Parameters
@@ -266,7 +274,13 @@ def _build_tree(
     return inner
 
 
-def nuts_step(state, logp_and_grad, rng, max_tree_depth=10, max_delta_energy=1000.0):
+def nuts_step(
+    state: NUTSState,
+    logp_and_grad: Callable,
+    rng: np.random.Generator,
+    max_tree_depth: int = 10,
+    max_delta_energy: float = 1000.0,
+) -> NUTSState:
     """Perform one full NUTS transition.
 
     Parameters
