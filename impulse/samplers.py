@@ -6,7 +6,7 @@ neighbour swaps with automatic temperature-ladder adaptation, periodic
 chain saving, and bit-exact pickle-based checkpoint/resume. The
 :meth:`PTSampler.from_rjmcmc` constructor pre-wires a sampler for
 reversible-jump model selection (combined birth/death kernel, model-index
-jump, source swap, EarlyDE). Module-level helpers — :func:`setup_seeds`,
+jump, source swap, min-fill-gated DE). Module-level helpers — :func:`setup_seeds`,
 :func:`setup_chain_stats`, :func:`setup_standard_jumps`, and
 :func:`setup_initial_position` — build the per-chain RNGs, statistics,
 proposal mixtures, and initial positions, and are shared with
@@ -79,6 +79,10 @@ class PTSampler(_PTSamplerBase):
         Relative weight for adaptive Metropolis proposals.
     de_weight : float, default 50
         Relative weight for differential evolution proposals.
+    de_min_fill : int, default 100
+        Minimum number of history-buffer samples before the differential
+        evolution move activates; below the threshold ``de`` returns the
+        current position unchanged. See :func:`impulse.proposals.de`.
     seed : int, optional
         Random seed for reproducible sampling.
     outdir : str, default './chains'
@@ -237,13 +241,11 @@ class PTSampler(_PTSamplerBase):
         scam_weight : float
             Relative weight for single-component AM proposals.
         de_weight : float
-            Relative weight for the differential evolution move.  In RJ
-            configurations this weight is given to the min-fill-gated
-            :class:`~impulse.proposals.EarlyDE` variant rather than the
-            stock ``de`` (see Notes).
+            Relative weight for the min-fill-gated differential evolution
+            move (see Notes).
         de_min_fill : int
             Minimum per-model buffer fill before the DE difference move
-            activates; see :class:`~impulse.proposals.EarlyDE`.
+            activates; see :func:`impulse.proposals.de`.
         **kwargs
             Additional keyword arguments passed to ``PTSampler.__init__``
             (e.g. ``ntemps``, ``seed``, ``outdir``).
@@ -251,9 +253,9 @@ class PTSampler(_PTSamplerBase):
         Returns
         -------
         PTSampler
-            Sampler with birth, death, nmodel_jump, source_swap, and
-            early-DE proposals already registered (see Notes for when
-            they are skipped).
+            Sampler with birth-death, nmodel_jump, and source_swap
+            proposals registered on top of the standard continuous jumps
+            (see Notes for when they are skipped).
 
         Notes
         -----
@@ -261,24 +263,20 @@ class PTSampler(_PTSamplerBase):
         birth-death kernel, the model-index jump, and the source-swap
         proposal are all skipped — none is meaningful with one model, and
         the birth-death kernel itself rejects ``max_sources < 2`` — so
-        only the standard continuous jumps (AM, SCAM, early-DE) are
+        only the standard continuous jumps (AM, SCAM, DE) are
         registered.  The birth-death kernel is also skipped when
         ``birth_weight + death_weight == 0``.
 
-        The stock ``de`` jump requires a completely FULL sample buffer
-        (more than ``buffer_size`` samples in the current model's buffer,
-        50,000 by default); with per-model statistics the run's samples
-        are split across all model indices, so at realistic run lengths
-        no model's buffer ever fills and ``JumpProposals`` silently
-        substitutes ``gaussian`` for every ``de`` selection.  ``de`` is
-        therefore registered with weight 0 (never selected) and
-        ``de_weight`` goes to :class:`~impulse.proposals.EarlyDE`, which
-        runs the identical difference move as soon as the current model's
-        buffer holds ``de_min_fill`` samples.  This move is what diffuses
-        along within-model degeneracy ridges (e.g. amplitude-splitting
-        ridges in source-counting problems) that random-walk proposals
-        traverse too slowly, and without it model posteriors can be
-        metastably wrong at realistic run lengths.
+        The ``de`` move is min-fill-gated: with per-model statistics the
+        run's samples are split across all model indices, so no model's
+        buffer ever fills completely at realistic run lengths, and ``de``
+        instead activates as soon as the current model's buffer holds
+        ``de_min_fill`` samples (returning the current position unchanged
+        below the threshold).  This move is what diffuses along
+        within-model degeneracy ridges (e.g. amplitude-splitting ridges
+        in source-counting problems) that random-walk proposals traverse
+        too slowly, and without it model posteriors can be metastably
+        wrong at realistic run lengths.
 
         Examples
         --------
@@ -300,10 +298,8 @@ class PTSampler(_PTSamplerBase):
             sample_mean=sample_mean,
             am_weight=am_weight,
             scam_weight=scam_weight,
-            # stock de is gated on buffer_full, which per-model buffers
-            # never reach at realistic run lengths; the min-fill-gated
-            # EarlyDE registered below carries de_weight instead
-            de_weight=0,
+            de_weight=de_weight,
+            de_min_fill=de_min_fill,
             **kwargs,
         )
         _register_rjmcmc_jumps(
@@ -313,8 +309,6 @@ class PTSampler(_PTSamplerBase):
             death_weight=death_weight,
             nmodel_weight=nmodel_weight,
             swap_weight=swap_weight,
-            de_weight=de_weight,
-            de_min_fill=de_min_fill,
         )
         return sampler
 
@@ -345,7 +339,7 @@ class PTSampler(_PTSamplerBase):
             registered proposal — so use a module-level function or a
             callable class, never a closure or lambda. Callable classes
             must define a ``__name__`` attribute; it keys acceptance-rate
-            reports and the internal DE buffer-fallback check.
+            reports.
         weight : float
             Relative weight for this proposal type (normalized against all
             registered proposals).

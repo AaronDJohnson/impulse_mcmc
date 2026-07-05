@@ -229,7 +229,7 @@ class TestPtStep:
 
         initial_nswaps = ptstate.nswaps
 
-        new_state = pt_step(sample_state_3d, ptstate, simple_likelihood, simple_prior, rng)
+        new_state = pt_step(sample_state_3d, ptstate, rng)
 
         # Check output structure
         assert isinstance(new_state, SamplerState)
@@ -254,7 +254,7 @@ class TestPtStep:
         initial_swap_accept = ptstate.swap_accept.copy()
         initial_nswaps = ptstate.nswaps
 
-        new_state = pt_step(sample_state_3d, ptstate, simple_likelihood, simple_prior, rng)
+        new_state = pt_step(sample_state_3d, ptstate, rng)
 
         # nswaps increments by 1 per sweep (not per pair)
         assert ptstate.nswaps == initial_nswaps + 1
@@ -277,7 +277,7 @@ class TestPtStep:
 
         rng = np.random.default_rng(42)
 
-        new_state = pt_step(state, ptstate, simple_likelihood, simple_prior, rng)
+        new_state = pt_step(state, ptstate, rng)
 
         # Positions should still be the same set, just potentially reordered
         original_set = set(tuple(pos) for pos in positions)
@@ -301,7 +301,7 @@ class TestPtStep:
 
         rng = np.random.default_rng(42)
 
-        new_state = pt_step(state, ptstate, simple_likelihood, simple_prior, rng)
+        new_state = pt_step(state, ptstate, rng)
 
         # Should return essentially unchanged state
         np.testing.assert_array_equal(new_state.positions, positions)
@@ -318,7 +318,7 @@ class TestPtStep:
         rng = np.random.default_rng(42)
 
         with pytest.raises(ValueError, match="PTState ladder is not initialized"):
-            pt_step(sample_state_2d, ptstate, simple_likelihood, simple_prior, rng)
+            pt_step(sample_state_2d, ptstate, rng)
 
     def test_pt_step_probability_recalculation(
         self, sample_state_3d, simple_likelihood, simple_prior
@@ -330,7 +330,7 @@ class TestPtStep:
         # Force a specific swap scenario by setting up the state
         original_lnprobs = sample_state_3d.lnprobs.copy()
 
-        new_state = pt_step(sample_state_3d, ptstate, simple_likelihood, simple_prior, rng)
+        new_state = pt_step(sample_state_3d, ptstate, rng)
 
         # Probabilities should be recalculated (even if no swaps occurred)
         # Check that they follow the correct formula: lnprob = lnprior + lnlike/temp
@@ -350,7 +350,7 @@ class TestPtStep:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
-            new_state = pt_step(state, ptstate, simple_likelihood, simple_prior, rng)
+            new_state = pt_step(state, ptstate, rng)
 
         # -inf-likelihood position can never move to a finite temperature
         assert ptstate.swap_accept[0] == 0
@@ -376,7 +376,7 @@ class TestPtStep:
         # Run multiple PT steps to see swap behavior
         total_swaps = 0
         for _ in range(100):
-            state = pt_step(state, ptstate, simple_likelihood, simple_prior, rng)
+            state = pt_step(state, ptstate, rng)
             total_swaps += ptstate.swap_accept[0]
 
         # Should have some swaps due to large temperature difference

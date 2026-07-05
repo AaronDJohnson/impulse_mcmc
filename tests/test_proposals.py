@@ -5,6 +5,8 @@ import pytest
 
 from impulse.chain_stats import ChainStats
 from impulse.proposals import (
+    DE_MIN_FILL,
+    DEProposal,
     EarlyDE,
     JumpProposals,
     ProposalBundle,
@@ -87,21 +89,21 @@ class TestJumpProposals:
         assert new_sample.shape == (2,)
         assert isinstance(qxy, (int, float, np.number))
 
-    def test_call_de_disabled_when_buffer_not_full(self, chain_stats_2d, sample_state_2d):
-        """Test that DE proposal is avoided when buffer is not full"""
+    def test_call_de_runs_as_registered_with_empty_buffer(self, chain_stats_2d, sample_state_2d):
+        """The gaussian substitution for proposals named 'de' is GONE.
+
+        Registering de with an empty buffer runs de's own min-fill
+        identity path — the current position comes back unchanged —
+        instead of silently swapping in a gaussian random walk.
+        """
         jp = JumpProposals(chain_stats_2d)
-        jp.add_jump(am, 0.1)
-        jp.add_jump(de, 0.9)  # High weight for DE
+        jp.add_jump(de, 1.0)  # only DE
 
-        chain_stats_2d.current_sample = sample_state_2d.positions[0]
-        chain_stats_2d.buffer_full = False
-
-        # Set a fixed seed to make test deterministic
         chain_stats_2d.rng = np.random.default_rng(42)
 
-        # Should fall back to AM even though DE has higher weight
         new_sample, qxy = jp(sample_state_2d)
-        assert isinstance(new_sample, np.ndarray)
+        np.testing.assert_array_equal(new_sample, sample_state_2d.positions[0])
+        assert qxy == 0.0
 
 
 class TestProposalBundle:
@@ -247,8 +249,8 @@ class TestProposalFunctions:
         assert new_sample.shape == (4,)
         assert qxy == 0
 
-    def test_de_basic_with_full_buffer(self):
-        """Test differential evolution proposal with full buffer"""
+    def test_de_basic_with_filled_buffer(self):
+        """Test differential evolution proposal with enough buffered history"""
         ptstate = PTState(ndim=2, ntemps=3)
         rng = np.random.default_rng(42)
 
@@ -262,10 +264,10 @@ class TestProposalFunctions:
 
         # Fill buffer with sample data
         chain_stats._buffer = np.random.randn(10, 2)
-        chain_stats.buffer_full = True
+        chain_stats.sample_total = 10
         chain_stats.current_sample = np.array([0.0, 0.0])
 
-        new_sample, qxy = de(chain_stats)
+        new_sample, qxy = de(chain_stats, min_fill=10)
 
         assert isinstance(new_sample, np.ndarray)
         assert new_sample.shape == (2,)
@@ -280,13 +282,13 @@ class TestProposalFunctions:
 
         # Fill buffer with diverse samples
         chain_stats._buffer = np.random.randn(20, 2) * 2
-        chain_stats.buffer_full = True
+        chain_stats.sample_total = 20
         chain_stats.current_sample = np.array([0.0, 0.0])
 
         # Test multiple proposals to see scale variation
         proposals = []
         for _ in range(50):
-            new_sample, _ = de(chain_stats)
+            new_sample, _ = de(chain_stats, min_fill=20)
             proposals.append(new_sample)
 
         proposals = np.array(proposals)
@@ -298,7 +300,7 @@ class TestProposalFunctions:
     def test_proposal_functions_return_types(self, chain_stats_2d):
         """Test that all proposal functions return correct types"""
         chain_stats_2d.current_sample = np.array([0.0, 0.0])
-        chain_stats_2d.buffer_full = True
+        chain_stats_2d.sample_total = chain_stats_2d.buffer_size  # DE buffer filled
         chain_stats_2d._buffer = np.random.randn(chain_stats_2d.buffer_size, 2)
 
         for proposal_func in [am, scam, de]:
@@ -312,7 +314,7 @@ class TestProposalFunctions:
         """Test that proposal functions don't modify input"""
         original_sample = np.array([1.0, -1.0])
         chain_stats_2d.current_sample = original_sample.copy()
-        chain_stats_2d.buffer_full = True
+        chain_stats_2d.sample_total = chain_stats_2d.buffer_size  # DE buffer filled
         chain_stats_2d._buffer = np.random.randn(chain_stats_2d.buffer_size, 2)
 
         for proposal_func in [am, scam, de]:
@@ -322,6 +324,63 @@ class TestProposalFunctions:
 
             # Current sample should be unchanged by proposal
             np.testing.assert_array_equal(before_call, after_call)
+
+    def test_de_identity_below_default_min_fill(self, chain_stats_2d):
+        """Below the module default DE_MIN_FILL the stock de is the identity."""
+        chain_stats_2d.current_sample = np.array([1.0, 2.0])
+        chain_stats_2d._buffer[-50:] = np.random.default_rng(1).random((50, 2))
+        chain_stats_2d.sample_total = 50
+        assert chain_stats_2d.sample_total < DE_MIN_FILL
+
+        new_sample, qxy = de(chain_stats_2d)
+
+        np.testing.assert_array_equal(new_sample, chain_stats_2d.current_sample)
+        assert new_sample is not chain_stats_2d.current_sample  # a copy, not an alias
+        assert qxy == 0.0
+
+    def test_de_draws_from_buffer_tail(self):
+        """Above min_fill the move is a difference of two TAIL buffer rows.
+
+        The circular buffer fills from the tail, so the head of a
+        partially filled buffer is zero padding; drawing from the head
+        would produce degenerate near-zero jumps.
+        """
+        ptstate = PTState(ndim=2, ntemps=3)
+        rng = np.random.default_rng(5)
+        cs = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=100)
+        n_filled = 20
+        # head of buffer left as zero padding; tail holds the history
+        cs._buffer[-n_filled:] = 5.0 + np.random.default_rng(7).random((n_filled, 2))
+        cs.sample_total = n_filled
+        cs.current_sample = np.array([1.0, 2.0])
+
+        moved = 0
+        for _ in range(50):
+            new_sample, qxy = de(cs, min_fill=10)
+            assert qxy == 0.0
+            delta = new_sample - cs.current_sample
+            if np.any(delta != 0.0):
+                moved += 1
+                # every delta must be a scaled difference of tail rows:
+                # tail values are in [5, 6], so |row_i - row_j| < 1 per
+                # coordinate and scale <= 1  =>  |delta| < 1.  A head
+                # (zero-padding) row would give |delta| >= 4.
+                assert np.max(np.abs(delta)) < 1.0
+        assert moved > 0
+
+    def test_de_proposal_class(self):
+        """DEProposal is the picklable carrier for a custom min_fill, named 'de'."""
+        prop = DEProposal(min_fill=25)
+        assert prop.__name__ == "de"
+        assert prop.min_fill == 25
+        restored = pickle.loads(pickle.dumps(prop))
+        assert isinstance(restored, DEProposal)
+        assert restored.min_fill == 25
+
+    def test_de_proposal_min_fill_validation(self):
+        """min_fill < 2 cannot produce two distinct rows and must raise."""
+        with pytest.raises(ValueError, match="min_fill"):
+            DEProposal(min_fill=1)
 
     def test_am_covariance_scaling(self, chain_stats_2d):
         """Test that AM uses proper covariance scaling"""
@@ -450,22 +509,29 @@ class TestProposalAcceptanceTracking:
                 rates[name]["accepts"] / rates[name]["calls"], abs=1e-12
             )
 
-    def test_de_fallback_attributed_to_de_slot(self, sample_state_2d):
-        """When DE falls back to gaussian, the call is still counted under the DE slot."""
+    def test_de_identity_path_attributed_to_de_slot(self, sample_state_2d):
+        """With an empty buffer, de runs its own min-fill identity path.
+
+        The old gaussian substitution for proposals named 'de' is gone:
+        every selection runs de itself (here: the identity kernel, since
+        the buffer holds no samples) and stays counted under de's slot.
+        """
         ptstate = PTState(ndim=2, ntemps=3)
         rng = np.random.default_rng(7)
         cs = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=50)
-        cs.buffer_full = False  # force DE to always fall back
 
         jp = JumpProposals(cs)
-        jp.add_jump(de, 1.0)  # only DE, but it will always fall back to gaussian
+        jp.add_jump(de, 1.0)  # only DE; empty buffer -> identity kernel
 
         for _ in range(20):
-            jp(sample_state_2d)
+            new_sample, qxy = jp(sample_state_2d)
+            # identity path, NOT a gaussian move: position comes back unchanged
+            np.testing.assert_array_equal(new_sample, sample_state_2d.positions[0])
+            assert qxy == 0.0
 
         assert jp._proposal_calls[0] == 20  # all counted under de's slot
         assert jp._last_proposal_idx == 0
-        # gaussian is not in proposal_list, so it should have no slot
+        # gaussian was never involved, so it has no slot
         rates = jp.acceptance_rates()
         assert "de" in rates
         assert "gaussian" not in rates
@@ -672,12 +738,18 @@ class TestEarlyDE:
             buffer_size=buffer_size,
         )
 
-    def test_name_is_not_de(self):
-        """__name__ must differ from 'de': JumpProposals substitutes gaussian
-        for proposals named 'de' whenever the buffer is not full, which would
-        defeat the min-fill gating."""
+    def test_name_is_early_de(self):
+        """The compat alias keeps its historical reporting name.
+
+        Old RJ configurations register both a weight-0 'de' and an
+        'early_de'; keeping the names distinct avoids colliding
+        acceptance-report keys when such checkpoints are resumed.  (The
+        old gaussian substitution keyed on the name 'de' is gone.)
+        """
         prop = make_early_de()
         assert prop.__name__ == "early_de"
+        # thin alias: same implementation as the unified DE carrier class
+        assert isinstance(prop, DEProposal)
 
     def test_identity_below_min_fill(self):
         """Below min_fill the proposal is the identity kernel with qxy=0."""

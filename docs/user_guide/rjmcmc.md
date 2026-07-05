@@ -132,13 +132,14 @@ SCAM):
   index, giving direct jumps between any two models.
 - **`source_swap_proposal`** (weight `swap_weight`): swaps two source
   blocks, mixing over label permutations.
-- **`early_de`** (weight `de_weight`): with per-model statistics the run's
-  history is split across model indices, so the stock DE proposal's
-  "buffer full" gate would never open at realistic run lengths.
-  `EarlyDE` runs the identical difference move
-  once the current model's buffer holds `de_min_fill` samples
-  (default 100). This is the move that diffuses along within-model
-  degeneracy ridges; without it model posteriors can be metastably wrong.
+- **`de`** (weight `de_weight`): the min-fill-gated differential-evolution
+  move. With per-model statistics the run's history is split across model
+  indices, so a full-buffer gate would never open at realistic run
+  lengths; `de` instead activates once the current model's buffer holds
+  `de_min_fill` samples (default 100, a `from_rjmcmc` argument). This is
+  the move that diffuses along within-model degeneracy ridges; without it
+  model posteriors can be metastably wrong. Runs from earlier 2.0-dev
+  builds reported this move under the acceptance key `early_de`.
 
 Parameter groups are set to one group per source, **excluding the model
 index**, so continuous moves never touch `nmodel`.

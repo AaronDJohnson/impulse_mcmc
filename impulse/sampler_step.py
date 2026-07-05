@@ -111,8 +111,6 @@ def vectorized_mh_step(
 def pt_step(
     state: SamplerState,
     ptstate: PTState,
-    lnlike_fn: Callable,
-    lnprior_fn: Callable,
     rng: np.random.Generator,
 ) -> SamplerState:
     """
@@ -127,10 +125,6 @@ def pt_step(
         Current state with positions and log-likelihoods for all chains.
     ptstate : PTState
         Parallel tempering state containing temperature ladder and swap statistics.
-    lnlike_fn : callable
-        Log-likelihood function (used to recompute likelihoods after swaps).
-    lnprior_fn : callable
-        Log-prior function (used to recompute priors after swaps).
     rng : np.random.Generator
         Random number generator for swap acceptance decisions.
 
@@ -143,7 +137,7 @@ def pt_step(
     --------
     >>> # Called periodically during sampling
     >>> if iteration % swap_steps == 0:
-    ...     state = pt_step(state, ptstate, likelihood_fn, prior_fn, rng)
+    ...     state = pt_step(state, ptstate, rng)
     >>> swap_acceptance = ptstate.swap_accept.sum() / ptstate.nswaps
 
     Notes

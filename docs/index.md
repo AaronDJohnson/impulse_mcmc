@@ -27,8 +27,8 @@ cold_samples = chain["samples"][0]   # (nsamples, ndim) cold chain
 
 - **Parallel tempering** with an automatically constructed, adaptively tuned
   temperature ladder (optionally topped by an infinite-temperature chain).
-- **Adaptive proposals** — AM, SCAM, differential evolution, and a
-  min-fill-gated EarlyDE variant for reversible-jump runs.
+- **Adaptive proposals** — AM, SCAM, and min-fill-gated differential
+  evolution that stays active in reversible-jump runs.
 - **Reversible-jump MCMC** via a product-space embedding with an exact
   combined birth/death kernel (`PTSampler.from_rjmcmc`).
 - **NUTS** — standalone (`NUTSSampler`) or interleaved with PT and RJ moves

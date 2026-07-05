@@ -111,9 +111,7 @@ proposal** (see {doc}`checkpointing`). Therefore:
 - **Don't use closures or lambdas** as proposals: they can't be pickled,
   so the first checkpoint write (every `save_freq` iterations) fails.
 - Give the class a `__name__` class attribute. It labels the proposal in
-  acceptance-rate reports, and it must **not** be `"de"` — the jump
-  selector substitutes a plain Gaussian for anything named `de` until the
-  history buffer is completely full.
+  acceptance-rate reports.
 - Anything the instance holds must itself be picklable (arrays, floats,
   module-level functions are fine; open files and RNGs of your own are
   not — use `chain_stats.rng`).

@@ -91,23 +91,23 @@ class TestFromRJMCMC:
         )
         assert sampler.ndim == NDIM
         # standard (am, scam, de) + combined birth-death + nmodel + swap
-        # + early_de = 7 (birth and death are ONE kernel: schedule-driven
-        # selection inside the kernel is what keeps detailed balance under
-        # constant weights; early_de is the min-fill-gated DE that carries
-        # de_weight, with stock de registered at weight 0)
+        # = 6 (birth and death are ONE kernel: schedule-driven selection
+        # inside the kernel is what keeps detailed balance under constant
+        # weights; de is the unified min-fill-gated DE and carries
+        # de_weight directly — no weight-0 placeholder, no early_de)
         n_proposals = len(sampler.proposal_bundle.jump_proposals[0].proposal_list)
-        assert n_proposals == 7
+        assert n_proposals == 6
         names = [p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list]
         assert "birth_death" in names
-        assert "early_de" in names
+        assert "early_de" not in names
         assert "birth_proposal" not in names
         assert "death_proposal" not in names
-        # stock de must never be selected: its per-model buffer never
-        # fills at realistic run lengths (JumpProposals would silently
-        # substitute gaussian for every selection)
+        # the unified de is selectable: it carries de_weight, activating
+        # its difference move once the per-model buffer holds de_min_fill
+        # samples (no hidden gaussian substitution exists anymore)
         jp = sampler.proposal_bundle.jump_proposals[0]
         de_idx = names.index("de")
-        assert jp.proposal_probs[de_idx] == 0.0
+        assert jp.proposal_probs[de_idx] > 0.0
 
     def test_single_model_space_constructs(self, outdir):
         """Regression: a single-model space must construct successfully.
@@ -127,7 +127,7 @@ class TestFromRJMCMC:
         sampler = PTSampler.from_rjmcmc(space, ntemps=3, seed=42, outdir=outdir)
         assert sampler.ndim == NUM_PARAMS + 1
         names = sorted(p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list)
-        assert names == ["am", "de", "early_de", "scam"]
+        assert names == ["am", "de", "scam"]
 
     def test_zero_birth_death_weight_skips_kernel(self, rjmcmc_space, outdir):
         """birth_weight + death_weight == 0: the birth-death kernel is

@@ -145,14 +145,14 @@ class TestRJPTSamplerBasic:
         )
         assert sampler.ndim == rjmcmc_space.ndim
         assert sampler._rjmcmc_space is rjmcmc_space
-        # 3 standard + combined birth-death + nmodel + swap + early_de = 7
-        # (early_de carries de_weight; stock de stays at weight 0 because
-        # per-model buffers never reach buffer_full at realistic lengths)
+        # 3 standard + combined birth-death + nmodel + swap = 6 (the
+        # unified min-fill-gated de carries de_weight directly; no
+        # early_de registration, no weight-0 stock-de placeholder)
         n_proposals = len(sampler.proposal_bundle.jump_proposals[0].proposal_list)
-        assert n_proposals == 7
+        assert n_proposals == 6
         names = [p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list]
         assert "birth_death" in names
-        assert "early_de" in names
+        assert "early_de" not in names
         assert "birth_proposal" not in names
         assert "death_proposal" not in names
 
@@ -178,7 +178,7 @@ class TestRJPTSamplerBasic:
         )
         assert sampler.ndim == NUM_PARAMS + 1
         names = sorted(p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list)
-        assert names == ["am", "de", "early_de", "scam"]
+        assert names == ["am", "de", "scam"]
 
     def test_from_rjmcmc_per_source_cov(self, rjmcmc_space, temp_dir):
         """Per-source sample_cov is expanded to full product space."""

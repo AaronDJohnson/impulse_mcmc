@@ -28,8 +28,18 @@ rewrite and shares no API with it.
   `birth_proposal` / `death_proposal` keys in acceptance-rate reports are
   replaced by a single `birth_death` key.
 - Chains are bit-different from 1.x runs at the same seed (RNG stream
-  changes from the combined birth/death kernel and the new EarlyDE
-  proposal).
+  changes from the combined birth/death kernel and the min-fill-gated
+  `de` move). Default-configuration chains also differ from earlier
+  2.0.0-dev builds at the same seed: `de` now actually runs once its
+  history buffer holds `de_min_fill` samples (default 100), where
+  earlier builds silently substituted a plain Gaussian for every `de`
+  selection until the buffer was completely full (more than
+  `buffer_size` samples, 50,000 by default — never reached at realistic
+  run lengths).
+- `impulse.sampler_step.pt_step` drops its unused `lnlike_fn` /
+  `lnprior_fn` parameters (PT swaps only permute cached values; nothing
+  was ever recomputed), and the never-used `ChainStats.proposals_ready`
+  property is removed.
 - matplotlib is no longer a hard dependency. The plotting helpers in
   `impulse.validation` now require the `plots` extra
   (`pip install impulse-mcmc[plots]`); the numeric SBC functions remain
@@ -37,6 +47,17 @@ rewrite and shares no API with it.
 
 ### Fixed
 
+- Differential evolution never ran at realistic run lengths: the stock
+  `de` was gated on a completely full history buffer (more than
+  `buffer_size` samples, 50,000 by default) and the jump selector
+  silently substituted a plain Gaussian for every `de` selection — the
+  substitution is what hid the dead move. `de` is now min-fill-gated
+  (the difference move activates once the buffer holds `de_min_fill`
+  samples, default 100, and the proposal returns the current position
+  unchanged below the threshold), the hidden Gaussian substitution is
+  removed entirely (the selected proposal always runs as registered),
+  and `from_rjmcmc` no longer registers a weight-0 stock `de`
+  placeholder — the unified `de` carries `de_weight` directly.
 - RJMCMC detailed balance: the default birth/death configuration biased
   model posteriors toward boundary models and fewer sources. Birth and
   death are now a single combined kernel with exact Hastings terms for the
@@ -72,10 +93,15 @@ rewrite and shares no API with it.
   smoothed step size), and flow refits after the given iteration. Default
   `None` preserves the historical adapt-forever behavior; resume keeps the
   checkpointed value unless `num_adapt` is passed explicitly.
-- EarlyDE: a min-fill-gated differential-evolution proposal drawing from
-  the filled tail of the per-model buffer, registered by `from_rjmcmc`
-  (`de_min_fill`). This gives reversible-jump runs a ridge-following move
-  at realistic run lengths and fixes metastable continuous mixing.
+- Min-fill-gated differential evolution: `de` draws from the filled tail
+  of the (per-model, in RJ configurations) history buffer and activates
+  once it holds `min_fill` samples, configurable per sampler via the new
+  `de_min_fill` constructor argument on `PTSampler` / `RJPTSampler` and
+  their `from_rjmcmc` constructors. This gives reversible-jump runs a
+  ridge-following move at realistic run lengths and fixes metastable
+  continuous mixing. `EarlyDE` / `make_early_de` remain as
+  backward-compatibility aliases for the same implementation
+  (`impulse.proposals.DEProposal` is the configurable carrier class).
 - Reproducibility guarantees, enforced by tests: identical seeds produce
   bit-identical chains, and an interrupted-then-resumed run matches an
   uninterrupted one bit-exactly for both samplers.

@@ -566,3 +566,87 @@ class TestNmodelJump:
         chain_stats.current_sample = _make_sample(1, chain_stats.rng)
         _, qxy = jump(chain_stats)
         assert qxy == 0.0
+
+
+# ---------------------------------------------------------------------------
+# ParameterLayout plumbing
+# ---------------------------------------------------------------------------
+
+
+class TestProposalLayoutPlumbing:
+    """The proposals consume one ParameterLayout instead of re-deriving it."""
+
+    def _birth_death(self):
+        return (
+            make_birth_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior),
+            make_death_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior),
+        )
+
+    def test_birth_death_layout_property(self):
+        from impulse.product_space import ParameterLayout
+
+        birth, death = self._birth_death()
+        expected = ParameterLayout(num_params=NUM_PARAMS, num_models=MAX_SOURCES)
+        assert birth.layout == expected
+        assert death.layout == expected
+        # Serialization format guard: layout is DERIVED from the pickled
+        # num_params/max_sources scalars, never stored, so the checkpoint
+        # attribute set is unchanged and legacy checkpoints work unchanged.
+        assert "layout" not in vars(birth)
+        assert "layout" not in vars(death)
+
+    def test_nmodel_jump_layout_optional_and_identical(self, chain_stats):
+        from impulse.product_space import ParameterLayout
+
+        layout = ParameterLayout(num_params=NUM_PARAMS, num_models=MAX_SOURCES)
+        sample = _make_sample(0, np.random.default_rng(3))
+        with_layout = make_nmodel_jump(MAX_SOURCES, layout=layout)
+        without_layout = make_nmodel_jump(MAX_SOURCES)
+        q1, qxy1 = with_layout(_stats_stub(np.random.default_rng(7), sample.copy()))
+        q2, qxy2 = without_layout(_stats_stub(np.random.default_rng(7), sample.copy()))
+        np.testing.assert_array_equal(q1, q2)
+        assert qxy1 == qxy2 == 0.0
+        # only the model index moved
+        np.testing.assert_array_equal(q1[: layout.nmodel_index], sample[: layout.nmodel_index])
+
+    def test_nmodel_jump_legacy_unpickle_backfill(self):
+        # Pre-layout checkpoints hold NmodelJump instances without the
+        # ``layout`` attribute; __getattr__ back-fills None and the jump
+        # still works (the write targets the trailing coordinate).
+        jump = make_nmodel_jump(MAX_SOURCES)
+        vars(jump).pop("layout", None)
+        rng = np.random.default_rng(11)
+        q, qxy = jump(_stats_stub(rng, _make_sample(0, np.random.default_rng(4))))
+        assert jump.layout is None
+        assert 0 <= int(np.rint(q[-1])) < MAX_SOURCES
+        assert qxy == 0.0
+
+    def test_source_swap_layout_injection(self):
+        from impulse.product_space import ParameterLayout
+        from impulse.proposals import make_source_swap_proposal
+
+        layout = ParameterLayout(num_params=NUM_PARAMS, num_models=MAX_SOURCES)
+        sample = _make_sample(MAX_SOURCES - 1, np.random.default_rng(5))
+        swap_with = make_source_swap_proposal(NUM_PARAMS, layout=layout)
+        swap_without = make_source_swap_proposal(NUM_PARAMS)
+        q1, qxy1 = swap_with(_stats_stub(np.random.default_rng(9), sample.copy()))
+        q2, qxy2 = swap_without(_stats_stub(np.random.default_rng(9), sample.copy()))
+        np.testing.assert_array_equal(q1, q2)
+        assert qxy1 == qxy2 == 0
+        # a swap permutes source blocks; the sorted continuous params and
+        # the model index are invariant
+        np.testing.assert_array_equal(
+            np.sort(q1[: layout.nmodel_index]), np.sort(sample[: layout.nmodel_index])
+        )
+        assert q1[-1] == sample[-1]
+
+    def test_source_swap_legacy_unpickle_backfill(self):
+        from impulse.proposals import make_source_swap_proposal
+
+        swap = make_source_swap_proposal(NUM_PARAMS)
+        vars(swap).pop("layout", None)
+        sample = _make_sample(MAX_SOURCES - 1, np.random.default_rng(6))
+        q, qxy = swap(_stats_stub(np.random.default_rng(13), sample.copy()))
+        assert swap.layout is None
+        assert qxy == 0
+        np.testing.assert_array_equal(np.sort(q[:-1]), np.sort(sample[:-1]))

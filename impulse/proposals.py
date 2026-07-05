@@ -12,25 +12,31 @@ log-posterior ratio in the Metropolis-Hastings acceptance, so positive
 ``qxy`` favors acceptance and symmetric proposals return ``0.0``. Proposals
 must be picklable (checkpoints pickle every registered proposal): use
 module-level functions or callable classes, and give callable classes a
-``__name__`` attribute (it keys acceptance reports and the DE buffer-fallback
-check). The module provides the adaptive kernels :func:`am`, :func:`scam`,
-:func:`de`, and :class:`EarlyDE` (via :func:`make_early_de`), the
-:func:`gaussian` fallback, the RJMCMC label-switching
-:class:`SourceSwapProposal`, and the per-chain :class:`JumpProposals` /
-per-ladder :class:`ProposalBundle` containers that select among registered
-proposals by weight.
+``__name__`` attribute (it keys acceptance-rate reports). The module
+provides the adaptive kernels :func:`am`, :func:`scam`, and the
+min-fill-gated :func:`de` (:class:`DEProposal` registers it with a
+non-default ``min_fill``; :class:`EarlyDE` / :func:`make_early_de` are
+backward-compatibility aliases), the :func:`gaussian` random walk, the
+RJMCMC label-switching :class:`SourceSwapProposal`, and the per-chain
+:class:`JumpProposals` / per-ladder :class:`ProposalBundle` containers
+that select among registered proposals by weight.
 """
 
 import math
 from dataclasses import dataclass
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
 from impulse.chain_stats import ChainStats
+from impulse.product_space import ParameterLayout
 from impulse.sampler_state import SamplerState
 
 _SQRT2_INV = 2.4 / math.sqrt(2)  # constant for SCAM (neff is always 1)
+
+# Module-level default for the DE activation threshold: minimum number of
+# history-buffer samples before :func:`de` runs its difference move.
+DE_MIN_FILL = 100
 
 
 class JumpProposals:
@@ -64,7 +70,9 @@ class JumpProposals:
     Notes
     -----
     - Weights are automatically normalized to probabilities
-    - Differential evolution proposals are disabled until sample buffer is full
+    - The selected proposal always runs as registered; proposals gate
+      themselves (e.g. :func:`de` returns the current position unchanged
+      until its history buffer holds ``min_fill`` samples)
     - Each proposal function should return (new_sample, log_proposal_ratio)
     """
 
@@ -119,9 +127,6 @@ class JumpProposals:
         rng = self.chain_stats.rng
         idx = rng.choice(len(self.proposal_list), p=self.proposal_probs)
         proposal = self.proposal_list[idx]
-        # DE requires a filled sample buffer; fall back to gaussian if unavailable
-        if proposal.__name__ == "de" and not self.chain_stats.buffer_full:
-            proposal = gaussian
         self._last_proposal_idx = idx
         self._proposal_calls[idx] += 1
         new_sample, qxy = proposal(self.chain_stats)
@@ -414,118 +419,39 @@ def scam(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     return q, qxy
 
 
-def de(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
+def de(chain_stats: ChainStats, min_fill: int = DE_MIN_FILL) -> tuple[np.ndarray, float]:
     """
-    Differential Evolution proposal using historical samples.
+    Differential-evolution proposal gated on a minimum buffer fill.
 
-    Generates proposals by combining differences between randomly selected
-    past samples, which helps escape local modes and improves mixing in
-    multimodal distributions.
+    Runs the difference move ``x' = x + gamma * (b_mm - b_nn)`` on one
+    parameter group, with ``b_mm``, ``b_nn`` rows of the sample-history
+    buffer.  The move activates as soon as the current buffer holds at
+    least ``min_fill`` samples (module default :data:`DE_MIN_FILL`, 100);
+    below the threshold the proposal returns the current position
+    unchanged (identity kernel) — nothing is substituted for it.  Rows
+    are drawn from the TAIL of the circular buffer (``ChainStats`` fills
+    its buffer from the tail, so the head of a partially filled buffer
+    is zero padding).
+
+    The min-fill gate matters most for RJMCMC: per-model buffers split
+    the run's samples across all model indices, so at realistic run
+    lengths no model's buffer ever fills completely, yet the mixture
+    still needs this history-based, ridge-following move after only
+    ``min_fill`` within-model samples.
 
     Parameters
     ----------
     chain_stats : ChainStats
-        Statistics object containing sample history buffer and random generator.
-
-    Returns
-    -------
-    tuple of (np.ndarray, float)
-        new_position : np.ndarray
-            Proposed parameter values based on sample history.
-        log_proposal_ratio : float
-            Always 0 due to proposal symmetry.
-
-    Examples
-    --------
-    >>> # Only called when sample buffer is sufficiently full
-    >>> if chain_stats.buffer_full:
-    ...     new_pos, log_ratio = de(chain_stats)
-
-    Notes
-    -----
-    - Requires sufficient sample history (buffer_full = True)
-    - Formula: X_new = X_current + γ(X_a - X_b) for random past samples X_a, X_b
-    - Scale factors: 1.0 (50% chance, mode jump) or random × 2.4/√(2d) (50% chance)
-    - Particularly effective for multimodal and highly correlated distributions
-    - Based on differential evolution optimization algorithm principles
-    """
-    rng = chain_stats.rng
-    # ChainStats.__post_init__ / update_sample guarantee these are set
-    assert chain_stats.current_sample is not None and chain_stats.groups is not None
-    # get old parameters
-    q = chain_stats.current_sample.copy()
-    qxy = 0
-
-    # choose group
-    jumpind = rng.integers(0, len(chain_stats.groups))
-    ndim = len(chain_stats.groups[jumpind])
-
-    # Use actual filled buffer size, not maximum buffer size
-    if chain_stats.buffer_full:
-        bufsize = chain_stats.buffer_size
-    else:
-        bufsize = min(chain_stats.sample_total, chain_stats.buffer_size)
-
-    # draw a random integer from 0 - iter
-    mm = rng.integers(0, bufsize)
-    nn = rng.integers(0, bufsize)
-
-    # make sure mm and nn are not the same iteration
-    while mm == nn:
-        nn = rng.integers(0, bufsize)
-
-    # get jump scale size
-    prob = rng.random()
-
-    # mode jump
-    if prob > 0.5:
-        scale = 1.0
-
-    else:
-        scale = rng.random() * 2.4 / np.sqrt(2 * ndim)
-
-    for ii in range(ndim):
-
-        # jump size
-        sigma = (
-            chain_stats._buffer[mm, chain_stats.groups[jumpind][ii]]
-            - chain_stats._buffer[nn, chain_stats.groups[jumpind][ii]]
-        )
-
-        # jump
-        q[chain_stats.groups[jumpind][ii]] += scale * sigma
-
-    return q, qxy
-
-
-class EarlyDE:
-    """
-    Differential-evolution proposal gated on a minimum buffer fill.
-
-    Runs the same difference move as :func:`de` — ``x' = x + gamma *
-    (b_mm - b_nn)`` on one parameter group, with ``b_mm``, ``b_nn`` rows of
-    the sample-history buffer — but activates as soon as the current
-    buffer holds at least ``min_fill`` samples instead of requiring a
-    completely full buffer (``buffer_full``, i.e. more than ``buffer_size``
-    samples, 50,000 by default).  Rows are drawn from the TAIL of the
-    partially filled buffer (``ChainStats`` fills its circular buffer from
-    the tail, so the head of a partially filled buffer is zero padding
-    that the stock :func:`de` would index).
-
-    This matters most for RJMCMC: per-model buffers split the run's
-    samples across all model indices, so at realistic run lengths no
-    model's buffer ever fills and ``JumpProposals`` silently substitutes
-    :func:`gaussian` for every stock ``de`` selection — the mixture loses
-    its only history-based, ridge-following move.  ``EarlyDE`` restores
-    that move after only ``min_fill`` within-model samples.
-
-    Parameters
-    ----------
-    min_fill : int, default 100
-        Minimum number of buffer samples (for the current model, when
-        per-model statistics are active) before the difference move runs.
-        Must be at least 2 (two distinct rows are needed).  Below the
-        threshold the proposal returns the current sample unchanged.
+        Statistics object containing the sample-history buffer and random
+        generator.  When per-model statistics are active (RJMCMC),
+        ``update_sample`` has already swapped in the CURRENT model's
+        buffer and sample count, so the gate applies per model.
+    min_fill : int, default DE_MIN_FILL (100)
+        Minimum number of buffered samples before the difference move
+        runs.  Values below 2 are treated as 2 (two distinct rows are
+        needed).  To register the move with a non-default threshold use
+        :class:`DEProposal` (the samplers' ``de_min_fill`` argument does
+        this for you).
 
     Returns
     -------
@@ -538,7 +464,8 @@ class EarlyDE:
 
     Examples
     --------
-    >>> sampler.add_custom_jump(make_early_de(min_fill=100), weight=15)
+    >>> new_pos, log_ratio = de(chain_stats)
+    >>> # identity below min_fill, difference move above it
 
     Notes
     -----
@@ -552,26 +479,79 @@ class EarlyDE:
     ``qxy = log[q(x|x') / q(x'|x)] = 0``.  Below ``min_fill`` the kernel is
     the identity, which trivially satisfies detailed balance (``qxy = 0``).
 
+    Scale schedule: ``gamma = 1`` (mode jump, 50% of draws) or
+    ``uniform(0, 1) * 2.4 / sqrt(2 d)`` with ``d`` the group size.
+
     The proposal only ever modifies entries of one continuous-parameter
     group.  In RJ configurations the groups exclude the model index (both
     ``get_default_groups`` and the per-model groups swapped in by
     ``ChainStats.update_sample``), so ``nmodel`` is never touched and the
     trans-dimensional birth/death kernel's exactness is unaffected.
 
-    Like the stock :func:`de`, using the chain's own history makes this an
-    adaptive proposal; the buffer update cadence satisfies diminishing
-    adaptation in the usual way.
+    Using the chain's own history makes this an adaptive proposal; the
+    buffer update cadence satisfies diminishing adaptation in the usual
+    way.
+    """
+    rng = chain_stats.rng
+    # ChainStats.__post_init__ / update_sample guarantee these are set
+    assert chain_stats.current_sample is not None and chain_stats.groups is not None
+    q = chain_stats.current_sample.copy()
 
-    ``__name__`` is ``'early_de'``, NOT ``'de'``: ``JumpProposals.__call__``
-    substitutes :func:`gaussian` for any proposal named ``'de'`` whose
-    buffer is not full, whereas ``EarlyDE`` gates itself on ``min_fill``.
-    Picklable callable class per the proposal interface (checkpoints
-    pickle every registered proposal).
+    # When per-model statistics are active, update_sample() has swapped
+    # in the CURRENT model's buffer and sample_total.
+    n_filled = min(chain_stats.sample_total, chain_stats.buffer_size)
+    if n_filled < max(min_fill, 2):
+        return q, 0.0
+
+    # tail of the circular buffer = the filled portion
+    buf = chain_stats._buffer[-n_filled:]
+
+    # choose group
+    jumpind = rng.integers(0, len(chain_stats.groups))
+    group = list(chain_stats.groups[jumpind])
+    ndim = len(group)
+
+    # two distinct history rows
+    mm = rng.integers(0, n_filled)
+    nn = rng.integers(0, n_filled)
+    while mm == nn:
+        nn = rng.integers(0, n_filled)
+
+    # get jump scale size
+    if rng.random() > 0.5:
+        scale = 1.0  # mode jump
+    else:
+        scale = rng.random() * 2.4 / np.sqrt(2 * ndim)
+
+    q[group] += scale * (buf[mm, group] - buf[nn, group])
+    return q, 0.0
+
+
+class DEProposal:
+    """
+    Picklable differential-evolution proposal with a configurable ``min_fill``.
+
+    Callable-class wrapper around :func:`de` for registering the
+    difference move with a non-default activation threshold (checkpoints
+    pickle every registered proposal, so the threshold must live on a
+    picklable object rather than in a closure).  ``__name__`` is ``'de'``,
+    so acceptance-rate reports key it identically to the module-level
+    :func:`de`.
+
+    Parameters
+    ----------
+    min_fill : int, default DE_MIN_FILL (100)
+        Minimum number of buffered samples before the difference move
+        runs.  Must be at least 2 (two distinct rows are needed).
+
+    Examples
+    --------
+    >>> sampler.add_custom_jump(DEProposal(min_fill=200), weight=15)
     """
 
-    __name__ = "early_de"
+    __name__ = "de"
 
-    def __init__(self, min_fill: int = 100):
+    def __init__(self, min_fill: int = DE_MIN_FILL):
         if min_fill < 2:
             raise ValueError(
                 f"min_fill must be >= 2 (two distinct buffer rows are "
@@ -580,50 +560,44 @@ class EarlyDE:
         self.min_fill = int(min_fill)
 
     def __call__(self, chain_stats: ChainStats) -> tuple[np.ndarray, float]:
-        rng = chain_stats.rng
-        # ChainStats.__post_init__ / update_sample guarantee these are set
-        assert chain_stats.current_sample is not None and chain_stats.groups is not None
-        q = chain_stats.current_sample.copy()
-
-        # When per-model statistics are active, update_sample() has swapped
-        # in the CURRENT model's buffer and sample_total.
-        n_filled = min(chain_stats.sample_total, chain_stats.buffer_size)
-        if n_filled < self.min_fill:
-            return q, 0.0
-
-        # tail of the circular buffer = the filled portion
-        buf = chain_stats._buffer[-n_filled:]
-
-        # choose group
-        jumpind = rng.integers(0, len(chain_stats.groups))
-        group = list(chain_stats.groups[jumpind])
-        ndim = len(group)
-
-        # two distinct history rows
-        mm = rng.integers(0, n_filled)
-        nn = rng.integers(0, n_filled)
-        while mm == nn:
-            nn = rng.integers(0, n_filled)
-
-        # get jump scale size (same schedule as the stock de)
-        if rng.random() > 0.5:
-            scale = 1.0  # mode jump
-        else:
-            scale = rng.random() * 2.4 / np.sqrt(2 * ndim)
-
-        q[group] += scale * (buf[mm, group] - buf[nn, group])
-        return q, 0.0
+        return de(chain_stats, min_fill=self.min_fill)
 
 
-def make_early_de(min_fill: int = 100) -> EarlyDE:
+class EarlyDE(DEProposal):
     """
-    Create a min-fill-gated differential-evolution proposal.
+    Backward-compatibility alias for :class:`DEProposal`.
+
+    Historically the stock :func:`de` required a completely FULL buffer
+    (more than ``buffer_size`` samples, 50,000 by default — never reached
+    at realistic run lengths) and ``JumpProposals`` silently substituted
+    :func:`gaussian` for it; ``EarlyDE`` was the separate min-fill-gated
+    variant that restored the difference move.  The min-fill gate now
+    lives in :func:`de` itself and the substitution is gone, so this
+    class remains only for existing
+    ``add_custom_jump(make_early_de(...), ...)`` call sites and for
+    resuming old checkpoints.  It reports under the historical
+    ``'early_de'`` name: old RJ configurations register both a weight-0
+    ``de`` and an ``EarlyDE``, and keeping the names distinct avoids
+    colliding acceptance-report keys on resume.
+    """
+
+    __name__ = "early_de"
+
+
+def make_early_de(min_fill: int = DE_MIN_FILL) -> EarlyDE:
+    """
+    Create a min-fill-gated differential-evolution proposal (compat alias).
+
+    Backward-compatibility factory for :class:`EarlyDE`.  New code should
+    rely on the min-fill-gated :func:`de` that the samplers register
+    (``de_weight`` / ``de_min_fill``) or register :class:`DEProposal`
+    directly.
 
     Parameters
     ----------
-    min_fill : int, default 100
+    min_fill : int, default DE_MIN_FILL (100)
         Minimum buffer fill before the difference move activates; see
-        :class:`EarlyDE`.
+        :func:`de`.
 
     Returns
     -------
@@ -705,6 +679,11 @@ class SourceSwapProposal:
     ----------
     num_params : int, default 3
         Number of parameters per source.
+    layout : ParameterLayout, optional
+        Product-space parameter layout (single source of truth for the
+        source-block slices and the model-index position).  When omitted
+        (legacy construction/checkpoints), the layout is recovered from
+        ``num_params`` and the length of the parameter vector at call time.
 
     Notes
     -----
@@ -716,8 +695,16 @@ class SourceSwapProposal:
 
     __name__ = "source_swap_proposal"
 
-    def __init__(self, num_params: int = 3):
+    def __init__(self, num_params: int = 3, layout: Optional[ParameterLayout] = None):
         self.num_params = num_params
+        self.layout = layout
+
+    def __getattr__(self, name):
+        """Back-fill ``layout`` on instances unpickled from pre-layout checkpoints."""
+        if name == "layout":
+            self.layout = None
+            return None
+        raise AttributeError(name)
 
     def __call__(self, chain_stats: ChainStats) -> tuple[np.ndarray, float]:
         rng = chain_stats.rng
@@ -725,24 +712,32 @@ class SourceSwapProposal:
         assert chain_stats.current_sample is not None
         q = chain_stats.current_sample.copy()
         qxy = 0
-        nmodel = int(np.rint(q[-1]))
+        layout = self.layout
+        if layout is None:
+            # Legacy-constructed instance: recover the layout from the
+            # per-source size and the concrete vector length.
+            layout = ParameterLayout.from_total_dim(self.num_params, q.shape[0])
+        nmodel = layout.model_index_of(q)
         if nmodel == 0:
             return q, qxy
-        swap_source_1 = rng.integers(0, nmodel + 1)
-        swap_source_2 = rng.integers(0, nmodel + 1)
+        swap_source_1 = int(rng.integers(0, nmodel + 1))
+        swap_source_2 = int(rng.integers(0, nmodel + 1))
         if swap_source_1 == swap_source_2:
             return q, qxy
 
-        num_params = self.num_params
-        x = q[num_params * swap_source_1 : num_params * (swap_source_1 + 1)].copy()
-        y = q[num_params * swap_source_2 : num_params * (swap_source_2 + 1)].copy()
+        slice_1 = layout.source_slice(swap_source_1)
+        slice_2 = layout.source_slice(swap_source_2)
+        x = q[slice_1].copy()
+        y = q[slice_2].copy()
 
-        q[num_params * swap_source_1 : num_params * (swap_source_1 + 1)] = y
-        q[num_params * swap_source_2 : num_params * (swap_source_2 + 1)] = x
+        q[slice_1] = y
+        q[slice_2] = x
         return q, qxy
 
 
-def make_source_swap_proposal(num_params: int = 3) -> SourceSwapProposal:
+def make_source_swap_proposal(
+    num_params: int = 3, layout: Optional[ParameterLayout] = None
+) -> SourceSwapProposal:
     """
     Create a reversible-jump proposal for swapping parameters between sources.
 
@@ -750,6 +745,9 @@ def make_source_swap_proposal(num_params: int = 3) -> SourceSwapProposal:
     ----------
     num_params : int, default 3
         Number of parameters per source.
+    layout : ParameterLayout, optional
+        Product-space parameter layout; without it the layout is recovered
+        from ``num_params`` and the vector length at call time.
 
     Returns
     -------
@@ -760,7 +758,7 @@ def make_source_swap_proposal(num_params: int = 3) -> SourceSwapProposal:
     --------
     >>> sampler.add_custom_jump(make_source_swap_proposal(5), weight=25)
     """
-    return SourceSwapProposal(num_params)
+    return SourceSwapProposal(num_params, layout=layout)
 
 
 # Backward-compatible default: 3 parameters per source

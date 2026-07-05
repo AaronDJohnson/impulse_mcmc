@@ -97,10 +97,12 @@ Each chain draws its Metropolis-Hastings move from a weighted mixture:
 
 All three adapt: AM/SCAM from the recursively updated sample covariance
 (refreshed every `cov_update` iterations), DE from a rolling history buffer
-(`buffer_size`, default 50 000). DE only activates once its buffer is full;
-before that a fixed Gaussian fallback is substituted. In reversible-jump
-configurations a min-fill-gated variant, `EarlyDE`, is registered instead
-(see {doc}`rjmcmc`).
+(`buffer_size`, default 50 000). `de` is min-fill-gated: the difference move
+activates once the history buffer holds `min_fill` samples (default 100;
+configurable via the sampler's `de_min_fill` argument), and before that the
+proposal returns the current position unchanged. `EarlyDE` /
+`make_early_de` are backward-compatibility aliases for the same
+implementation (see {doc}`rjmcmc`).
 
 Weights are relative, not percentages:
 

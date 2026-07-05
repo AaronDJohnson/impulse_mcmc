@@ -10,6 +10,8 @@ from typing import Callable, Optional
 
 import numpy as np
 
+from impulse.product_space import ParameterLayout
+
 
 def default_birth_death_probs(nmodel: int, max_sources: int):
     """
@@ -112,19 +114,30 @@ class BirthProposal:
         self.log_prior_density = log_prior_density
         self.prob_schedule = prob_schedule or default_birth_death_probs
 
+    @property
+    def layout(self) -> ParameterLayout:
+        """Product-space parameter layout derived from the stored scalars.
+
+        A property rather than a stored attribute so the pickled attribute
+        set (checkpoint serialization format) is unchanged and instances
+        restored from pre-layout checkpoints get it for free.
+        """
+        return ParameterLayout(num_params=self.num_params, num_models=self.max_sources)
+
     def __call__(self, chain_stats):
         rng = chain_stats.rng
+        layout = self.layout
         q = chain_stats.current_sample.copy()
-        nmodel = int(np.rint(q[-1]))
+        nmodel = layout.model_index_of(q)
 
         if nmodel >= self.max_sources - 1:
             return q, 0.0
 
-        slot = nmodel + 1
-        old_params = q[slot * self.num_params : (slot + 1) * self.num_params].copy()
+        slot = layout.source_slice(nmodel + 1)
+        old_params = q[slot].copy()
         new_params = self.draw_from_prior(rng)
-        q[slot * self.num_params : (slot + 1) * self.num_params] = new_params
-        q[-1] = nmodel + 1
+        q[slot] = new_params
+        layout.set_model_index(q, nmodel + 1)
 
         p_birth_k, _ = self.prob_schedule(nmodel, self.max_sources)
         _, p_death_k1 = self.prob_schedule(nmodel + 1, self.max_sources)
@@ -260,10 +273,21 @@ class DeathProposal:
         self.log_prior_density = log_prior_density
         self.prob_schedule = prob_schedule or default_birth_death_probs
 
+    @property
+    def layout(self) -> ParameterLayout:
+        """Product-space parameter layout derived from the stored scalars.
+
+        A property rather than a stored attribute so the pickled attribute
+        set (checkpoint serialization format) is unchanged and instances
+        restored from pre-layout checkpoints get it for free.
+        """
+        return ParameterLayout(num_params=self.num_params, num_models=self.max_sources)
+
     def __call__(self, chain_stats):
         rng = chain_stats.rng
+        layout = self.layout
         q = chain_stats.current_sample.copy()
-        nmodel = int(np.rint(q[-1]))
+        nmodel = layout.model_index_of(q)
 
         if nmodel <= 0:
             return q, 0.0
@@ -274,7 +298,7 @@ class DeathProposal:
         # move and leaves a residual bias toward fewer sources; see class
         # Notes.)  Mixing across slots is provided by SourceSwapProposal and
         # the within-model moves.
-        slot = slice(nmodel * self.num_params, (nmodel + 1) * self.num_params)
+        slot = layout.source_slice(nmodel)
         killed_params = q[slot].copy()
 
         # Refresh the vacated slot with a fresh draw so inactive slots stay
@@ -283,7 +307,7 @@ class DeathProposal:
         fresh_params = self.draw_from_prior(rng)
         q[slot] = fresh_params
 
-        q[-1] = nmodel - 1
+        layout.set_model_index(q, nmodel - 1)
 
         _, p_death_k = self.prob_schedule(nmodel, self.max_sources)
         p_birth_km1, _ = self.prob_schedule(nmodel - 1, self.max_sources)
@@ -432,7 +456,9 @@ class BirthDeathProposal:
                 )
 
     def __call__(self, chain_stats):
-        nmodel = int(np.rint(chain_stats.current_sample[-1]))
+        # The birth proposal carries the layout (with legacy-checkpoint
+        # back-fill), so read the model index through it.
+        nmodel = self.birth.layout.model_index_of(chain_stats.current_sample)
         p_birth, p_death = self.prob_schedule(nmodel, self.max_sources)
         total = p_birth + p_death
         if total <= 0.0:
@@ -452,17 +478,34 @@ class NmodelJump:
     ----------
     max_sources : int
         Maximum number of sources.
+    layout : ParameterLayout, optional
+        Product-space parameter layout locating the model index.  The
+        model-index write itself is position-independent
+        (:meth:`ParameterLayout.set_model_index` targets the trailing
+        coordinate), so the jump behaves identically without one (legacy
+        construction/checkpoints).
     """
 
     __name__ = "nmodel_jump"
 
-    def __init__(self, max_sources: int):
+    def __init__(self, max_sources: int, layout: Optional[ParameterLayout] = None):
         self.max_sources = max_sources
+        self.layout = layout
+
+    def __getattr__(self, name):
+        """Back-fill ``layout`` on instances unpickled from pre-layout checkpoints."""
+        if name == "layout":
+            self.layout = None
+            return None
+        raise AttributeError(name)
 
     def __call__(self, chain_stats):
         rng = chain_stats.rng
         q = chain_stats.current_sample.copy()
-        q[-1] = rng.integers(0, self.max_sources)
+        # Static: the model-index position is layout-independent (trailing
+        # coordinate), so this also covers legacy instances whose layout
+        # back-fills to None.
+        ParameterLayout.set_model_index(q, rng.integers(0, self.max_sources))
         return q, 0.0
 
 
@@ -609,7 +652,7 @@ def make_birth_death_proposal(
     return BirthDeathProposal(birth, death)
 
 
-def make_nmodel_jump(max_sources: int) -> NmodelJump:
+def make_nmodel_jump(max_sources: int, layout: Optional[ParameterLayout] = None) -> NmodelJump:
     """
     Create a uniform model-index jump proposal.
 
@@ -617,12 +660,15 @@ def make_nmodel_jump(max_sources: int) -> NmodelJump:
     ----------
     max_sources : int
         Maximum number of sources.
+    layout : ParameterLayout, optional
+        Product-space parameter layout locating the model index; without it
+        the proposal writes the trailing coordinate (same position).
 
     Returns
     -------
     NmodelJump
     """
-    return NmodelJump(max_sources)
+    return NmodelJump(max_sources, layout=layout)
 
 
 # ---------------------------------------------------------------------------

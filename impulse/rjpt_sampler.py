@@ -24,6 +24,7 @@ from impulse._pt_base import (
 from impulse.nuts.adapter import PerModelNUTSAdapter
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
+from impulse.proposals import DE_MIN_FILL
 from impulse.resume import checkpoint_sampler, load_rjpt_checkpoint
 from impulse.sampler_state import SamplerState, tempered_lnprobs
 from impulse.utils import prepare_files
@@ -116,8 +117,9 @@ class RJPTSampler(_PTSamplerBase):
         -resumed) runs treat the default exactly like ``None``.
     buffer_size, groups, sample_mean, sample_cov, loglargs, loglkwargs,
     logpargs, logpkwargs, cov_update, save_freq, scam_weight, am_weight,
-    de_weight, seed, outdir, ntemps, swap_steps, min_temp, max_temp,
-    temp_step, ladder, inf_temp, adapt_t0, adapt_nu, resume, vectorized
+    de_weight, de_min_fill, seed, outdir, ntemps, swap_steps, min_temp,
+    max_temp, temp_step, ladder, inf_temp, adapt_t0, adapt_nu, resume,
+    vectorized
         Same as :class:`PTSampler`.
     """
 
@@ -153,6 +155,7 @@ class RJPTSampler(_PTSamplerBase):
         scam_weight: float = 30,
         am_weight: float = 15,
         de_weight: float = 50,
+        de_min_fill: int = DE_MIN_FILL,
         seed: Optional[int] = None,
         outdir: str = "./chains",
         ntemps: int = 21,
@@ -190,6 +193,7 @@ class RJPTSampler(_PTSamplerBase):
             scam_weight=scam_weight,
             am_weight=am_weight,
             de_weight=de_weight,
+            de_min_fill=de_min_fill,
             seed=seed,
             outdir=outdir,
             ntemps=ntemps,
@@ -427,13 +431,10 @@ class RJPTSampler(_PTSamplerBase):
             governed by the space's ``prob_schedule`` (registering them as
             separate constant-weight jumps violates detailed balance).
         am_weight, scam_weight, de_weight : float
-            Relative weights for standard MH proposals.  In RJ
-            configurations ``de_weight`` is given to the min-fill-gated
-            :class:`~impulse.proposals.EarlyDE` variant rather than the
-            stock ``de`` (see Notes).
+            Relative weights for standard MH proposals.
         de_min_fill : int
             Minimum per-model buffer fill before the DE difference move
-            activates; see :class:`~impulse.proposals.EarlyDE`.
+            activates; see :func:`impulse.proposals.de`.
         **kwargs
             Additional keyword arguments forwarded to ``__init__``.
 
@@ -443,15 +444,13 @@ class RJPTSampler(_PTSamplerBase):
         birth-death kernel, the model-index jump, and the source-swap
         proposal are all skipped — none is meaningful with one model, and
         the birth-death kernel itself rejects ``max_sources < 2`` — so
-        only the standard continuous jumps (AM, SCAM, early-DE) are
+        only the standard continuous jumps (AM, SCAM, DE) are
         registered.  The birth-death kernel is also skipped when
         ``birth_weight + death_weight == 0``.
 
-        The stock ``de`` jump requires a completely FULL sample buffer,
-        which per-model buffers never reach at realistic run lengths
-        (``JumpProposals`` silently substitutes ``gaussian``), so ``de``
-        is registered with weight 0 and ``de_weight`` goes to
-        :class:`~impulse.proposals.EarlyDE`; see
+        The ``de`` move is min-fill-gated: it activates as soon as the
+        current model's buffer holds ``de_min_fill`` samples, returning
+        the current position unchanged below the threshold; see
         ``PTSampler.from_rjmcmc`` for the full rationale.
         """
         # Expand per-source sample_cov / sample_mean to full product space
@@ -467,10 +466,8 @@ class RJPTSampler(_PTSamplerBase):
             sample_mean=sample_mean,
             am_weight=am_weight,
             scam_weight=scam_weight,
-            # stock de is gated on buffer_full, which per-model buffers
-            # never reach at realistic run lengths; the min-fill-gated
-            # EarlyDE registered below carries de_weight instead
-            de_weight=0,
+            de_weight=de_weight,
+            de_min_fill=de_min_fill,
             **kwargs,
         )
         sampler._rjmcmc_space = rjmcmc_space
@@ -481,8 +478,6 @@ class RJPTSampler(_PTSamplerBase):
             death_weight=death_weight,
             nmodel_weight=nmodel_weight,
             swap_weight=swap_weight,
-            de_weight=de_weight,
-            de_min_fill=de_min_fill,
         )
         return sampler
 
@@ -516,7 +511,7 @@ class RJPTSampler(_PTSamplerBase):
             registered proposal — so use a module-level function or a
             callable class, never a closure or lambda. Callable classes
             must define a ``__name__`` attribute; it keys acceptance-rate
-            reports and the internal DE buffer-fallback check.
+            reports.
         weight : float
             Relative weight for this proposal (normalized against all
             registered proposals).
@@ -564,9 +559,8 @@ class RJPTSampler(_PTSamplerBase):
         For fixed-dim models, active = all params.
         """
         if self._rjmcmc_space is not None:
-            nmodel = int(np.rint(params[-1]))
-            num_params = self._rjmcmc_space.num_params
-            return np.arange((nmodel + 1) * num_params)
+            layout = self._rjmcmc_space.layout
+            return layout.active_indices(layout.model_index_of(params))
         return np.arange(self.ndim)
 
     def _make_tempered_logp_grad(self, chain_idx, state):
@@ -590,9 +584,8 @@ class RJPTSampler(_PTSamplerBase):
             # Check prior FIRST — cheap and catches out-of-bounds before
             # potentially expensive/unstable gradient computation.
             if self._rjmcmc_space is not None:
-                lp = raw_lnprior(
-                    trial[: self._rjmcmc_space.num_models * self._rjmcmc_space.num_params]
-                )
+                # All source blocks (active and inactive), model index excluded.
+                lp = raw_lnprior(trial[: self._rjmcmc_space.layout.nmodel_index])
             else:
                 lp = raw_lnprior(trial)
 
@@ -609,12 +602,6 @@ class RJPTSampler(_PTSamplerBase):
             return logp, grad
 
         return logp_and_grad, active_idx
-
-    def _get_nuts_cache_key(self, params):
-        """Cache key for step sizes: ``(chain_idx, n_active)``."""
-        if self._rjmcmc_space is not None:
-            return int(np.rint(params[-1]))
-        return self.ndim
 
     def _nuts_step_all_chains(self, state, adapt: bool = True):
         """Run one NUTS transition on each temperature chain.

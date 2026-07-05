@@ -96,14 +96,15 @@ cache is reused instead of recompiling.
 - **Adaptive proposals** — a weighted mixture of adaptive Metropolis (`am_weight`),
   single-component adaptive Metropolis (`scam_weight`), and differential evolution
   (`de_weight`) that learn the target's covariance and history as sampling proceeds.
-- **EarlyDE** — a differential-evolution variant that activates once the sample
-  history buffer holds `min_fill` samples instead of waiting for a completely full
-  buffer. This restores the history-based, ridge-following DE move at realistic run
-  lengths — essential in reversible-jump runs, where per-model buffers never fill —
-  and `from_rjmcmc` registers it automatically (`de_min_fill`). Add it to any
-  sampler with:
-  `from impulse.proposals import make_early_de` then
-  `sampler.add_custom_jump(make_early_de(min_fill), weight)`.
+- **Min-fill-gated DE** — the `de` move activates once the sample history buffer
+  holds `min_fill` samples (default 100, configurable via the sampler's
+  `de_min_fill` argument) instead of waiting for a completely full buffer. This
+  keeps the history-based, ridge-following DE move available at realistic run
+  lengths — essential in reversible-jump runs, where per-model buffers never
+  fill. Below the threshold `de` returns the current position unchanged (no
+  hidden substitution). `EarlyDE` / `make_early_de` are backward-compatibility
+  aliases for the same implementation:
+  `sampler.add_custom_jump(make_early_de(min_fill), weight)` still works.
 - **Temperature-ladder adaptation** — the geometric ladder adapts toward uniform
   swap acceptance between neighbours (`adapt_t0`, `adapt_nu` control the schedule).
 - **`inf_temp=True`** — replaces the hottest rung with a T = ∞ chain that samples
@@ -135,7 +136,7 @@ sampler.sample(np.zeros(2), num_iterations=8000)  # discard the first 5000 as wa
 `PTSampler.from_rjmcmc` wires up the trans-dimensional kernels: one **combined
 birth/death kernel** (separate birth and death jumps would violate detailed
 balance), a uniform model-index jump, a source-swap (label-switching) move, and
-EarlyDE.
+the min-fill-gated `de` move (`de_min_fill`).
 
 The prior contract differs from the likelihood contract:
 

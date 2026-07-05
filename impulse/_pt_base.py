@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 from impulse.chain_stats import ChainStats, MultiChainStats
 from impulse.file_io import ShortChain
 from impulse.input_function_wrapper import _function_wrapper
-from impulse.proposals import JumpProposals, ProposalBundle, am, de, make_early_de, scam
+from impulse.proposals import DE_MIN_FILL, DEProposal, JumpProposals, ProposalBundle, am, de, scam
 from impulse.resume import check_for_checkpoint, checkpoint_sampler
 from impulse.rjmcmc_proposals import migrate_legacy_birth_death
 from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
@@ -153,13 +153,18 @@ def setup_chain_stats(
 
 
 def setup_standard_jumps(
-    multi_chain_stats: MultiChainStats, am_weight, scam_weight, de_weight
+    multi_chain_stats: MultiChainStats,
+    am_weight,
+    scam_weight,
+    de_weight,
+    de_min_fill: int = DE_MIN_FILL,
 ) -> ProposalBundle:
     """
     Configure standard MCMC proposal distributions with specified weights.
 
     Sets up adaptive Metropolis (AM), single-component adaptive Metropolis (SCAM),
-    and differential evolution (DE) proposals for each temperature chain.
+    and the min-fill-gated differential evolution (DE) proposal for each
+    temperature chain.
 
     Parameters
     ----------
@@ -170,7 +175,11 @@ def setup_standard_jumps(
     scam_weight : float
         Relative weight for single-component adaptive Metropolis proposals.
     de_weight : float
-        Relative weight for differential evolution proposals.
+        Relative weight for the differential evolution proposal.
+    de_min_fill : int, default DE_MIN_FILL (100)
+        Minimum number of history-buffer samples before the DE difference
+        move activates; below the threshold ``de`` returns the current
+        position unchanged. See :func:`impulse.proposals.de`.
 
     Returns
     -------
@@ -183,13 +192,17 @@ def setup_standard_jumps(
     >>> bundle = setup_standard_jumps(stats, am_weight=15, scam_weight=30, de_weight=50)
     >>> # Each chain now has three proposal types with specified weights
     """
+    # The stock de already uses the module default; a non-default min_fill
+    # needs a picklable carrier for the threshold (checkpoints pickle every
+    # registered proposal). Both register under the name 'de'.
+    de_jump = de if de_min_fill == DE_MIN_FILL else DEProposal(de_min_fill)
     jumps = [
         JumpProposals(multi_chain_stats.chain_stats[ii]) for ii in range(multi_chain_stats.ntemps)
     ]
     for ii in range(multi_chain_stats.ntemps):
         jumps[ii].add_jump(am, am_weight)
         jumps[ii].add_jump(scam, scam_weight)
-        jumps[ii].add_jump(de, de_weight)
+        jumps[ii].add_jump(de_jump, de_weight)
     return ProposalBundle(jumps)
 
 
@@ -278,24 +291,24 @@ def _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs: dict) -> tuple:
     tuple
         ``(sample_cov, sample_mean)`` expanded (or passed through / None).
     """
+    layout = rjmcmc_space.layout
     sample_cov = kwargs.pop("sample_cov", None)
     if sample_cov is not None:
         sample_cov = np.asarray(sample_cov)
-        if sample_cov.shape == (rjmcmc_space.num_params, rjmcmc_space.num_params):
-            full_cov = np.zeros((rjmcmc_space.ndim, rjmcmc_space.ndim))
-            for i in range(rjmcmc_space.num_models):
-                sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
+        if sample_cov.shape == (layout.num_params, layout.num_params):
+            full_cov = np.zeros((layout.total_dim, layout.total_dim))
+            for i in range(layout.num_models):
+                sl = layout.source_slice(i)
                 full_cov[sl, sl] = sample_cov
-            full_cov[-1, -1] = 1.0  # model index
+            full_cov[layout.nmodel_index, layout.nmodel_index] = 1.0  # model index
             sample_cov = full_cov
     sample_mean = kwargs.pop("sample_mean", None)
     if sample_mean is not None:
         sample_mean = np.asarray(sample_mean)
-        if sample_mean.shape == (rjmcmc_space.num_params,):
-            full_mean = np.zeros(rjmcmc_space.ndim)
-            for i in range(rjmcmc_space.num_models):
-                sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
-                full_mean[sl] = sample_mean
+        if sample_mean.shape == (layout.num_params,):
+            full_mean = np.zeros(layout.total_dim)
+            for i in range(layout.num_models):
+                full_mean[layout.source_slice(i)] = sample_mean
             sample_mean = full_mean
     return sample_cov, sample_mean
 
@@ -308,17 +321,16 @@ def _register_rjmcmc_jumps(
     death_weight: float,
     nmodel_weight: float,
     swap_weight: float,
-    de_weight: float,
-    de_min_fill: int,
 ) -> None:
     """Register the RJ jump set on a freshly constructed sampler.
 
     Shared tail of both ``from_rjmcmc`` classmethods: registers the ONE
     combined birth-death kernel (separate constant-weight birth/death jumps
     violate detailed balance), the model-index jump, and the source-swap
-    proposal for multi-model spaces, the min-fill-gated
-    :class:`~impulse.proposals.EarlyDE` difference move, and enables
-    per-model chain statistics.
+    proposal for multi-model spaces, and enables per-model chain
+    statistics.  The min-fill-gated :func:`~impulse.proposals.de` move is
+    registered by the sampler constructor itself (``de_weight`` /
+    ``de_min_fill``), so no extra DE registration happens here.
     """
     # Trans-dimensional and label-permuting jumps only exist for
     # multi-model spaces: with a single model there is no birth/death
@@ -344,11 +356,10 @@ def _register_rjmcmc_jumps(
             )
         sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
         sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
-    if de_weight > 0:
-        sampler.add_custom_jump(make_early_de(de_min_fill), de_weight)
     sampler.multi_chain_stats.enable_per_model(
         rjmcmc_space.num_models,
         rjmcmc_space.num_params,
+        layout=rjmcmc_space.layout,
     )
 
 
@@ -397,6 +408,7 @@ class _PTSamplerBase:
         scam_weight: float = 30,
         am_weight: float = 15,
         de_weight: float = 50,
+        de_min_fill: int = DE_MIN_FILL,
         seed: Optional[int] = None,
         outdir: str = "./chains",
         ntemps: int = 21,
@@ -461,7 +473,7 @@ class _PTSamplerBase:
             self.ptstate.ladder,
         )
         self.proposal_bundle = setup_standard_jumps(
-            self.multi_chain_stats, am_weight, scam_weight, de_weight
+            self.multi_chain_stats, am_weight, scam_weight, de_weight, de_min_fill=de_min_fill
         )
 
         self.cov_update = cov_update
@@ -776,9 +788,7 @@ class _PTSamplerBase:
                 self._save_flush()
             self.short_chain.add_state(self.state)
             if jj % self.swap_steps == 0 and self.ntemps > 1:
-                self.state = pt_step(
-                    self.state, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1]
-                )
+                self.state = pt_step(self.state, self.ptstate, self.rngs[-1])
                 if adapting:
                     self.ptstate.adapt_ladder()
                     # adapt_ladder mutates the ladder (aliased by state.temps) in

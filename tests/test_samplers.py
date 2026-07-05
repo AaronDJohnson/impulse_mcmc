@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from impulse.chain_stats import MultiChainStats
-from impulse.proposals import ProposalBundle
+from impulse.proposals import DEProposal, ProposalBundle, de
 from impulse.sampler_state import PTState, tempered_lnprobs
 from impulse.samplers import (
     PTSampler,
@@ -176,6 +176,42 @@ class TestSetupStandardJumps:
             expected_probs = np.array([0, 50, 50]) / 100
             np.testing.assert_array_almost_equal(jp.proposal_probs, expected_probs)
 
+    def test_setup_standard_jumps_de_min_fill(self):
+        """DE registration is unified and min-fill-gated.
+
+        With the default de_min_fill the module-level ``de`` function
+        itself is registered; a non-default threshold registers a
+        picklable ``DEProposal`` carrier, still under the name 'de'.
+        There is no weight-0 placeholder and no substitute proposal.
+        """
+        ptstate = PTState(ndim=2, ntemps=2)
+        rngs = setup_seeds(42, 2)
+        multi_stats = setup_chain_stats(
+            ndim=2,
+            ptstate=ptstate,
+            rngs=rngs,
+            groups=None,
+            sample_cov=None,
+            sample_mean=None,
+            buffer_size=1000,
+            temps=ptstate.ladder,
+        )
+
+        default_bundle = setup_standard_jumps(
+            multi_stats, am_weight=15, scam_weight=30, de_weight=50
+        )
+        for jp in default_bundle.jump_proposals:
+            assert jp.proposal_list[2] is de
+
+        custom_bundle = setup_standard_jumps(
+            multi_stats, am_weight=15, scam_weight=30, de_weight=50, de_min_fill=250
+        )
+        for jp in custom_bundle.jump_proposals:
+            de_jump = jp.proposal_list[2]
+            assert isinstance(de_jump, DEProposal)
+            assert de_jump.__name__ == "de"
+            assert de_jump.min_fill == 250
+
 
 class TestSetupInitialPosition:
     """Test suite for setup_initial_position function"""
@@ -308,6 +344,22 @@ class TestPTSampler:
         # Each chain should now have 4 proposals (3 standard + 1 custom)
         for jp in sampler.proposal_bundle.jump_proposals:
             assert len(jp.proposal_list) == 4
+
+    def test_pt_sampler_de_min_fill_passthrough(self, simple_likelihood, simple_prior, temp_dir):
+        """The constructor's de_min_fill reaches the registered DE jump."""
+        sampler = PTSampler(
+            ndim=2,
+            lnlike=simple_likelihood,
+            lnprior=simple_prior,
+            ntemps=2,
+            outdir=temp_dir,
+            de_min_fill=300,
+        )
+        for jp in sampler.proposal_bundle.jump_proposals:
+            de_jump = jp.proposal_list[2]
+            assert isinstance(de_jump, DEProposal)
+            assert de_jump.__name__ == "de"
+            assert de_jump.min_fill == 300
 
     # The sample() loop lives in the shared engine module impulse._pt_base,
     # so tqdm must be patched where it is looked up

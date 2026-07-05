@@ -16,7 +16,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from impulse.online_updates import svd_groups, update_covariance
+from impulse.online_updates import svd_groups
+from impulse.product_space import ParameterLayout
 from impulse.sampler_state import PTState, SamplerState
 from impulse.utils import shift_array
 
@@ -88,7 +89,9 @@ class ChainStats:
     Notes
     -----
     - Automatically maintains SVD decomposition for efficient proposals
-    - Buffer fills gradually and enables DE proposals when full
+    - The circular history buffer fills from the tail; the DE move
+      (:func:`impulse.proposals.de`) starts proposing difference moves
+      once the buffer holds ``min_fill`` samples
     - Temperature-specific statistics help with parallel tempering adaptation
     """
 
@@ -131,24 +134,6 @@ class ChainStats:
         self.svd_U, self.svd_S, self.proposal_L = svd_groups(
             self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L
         )
-
-    @property
-    def proposals_ready(self) -> bool:
-        """True once the buffer is fully filled and adaptive proposals are trustworthy.
-
-        DE (and any other buffer-dependent proposals) should only run when this
-        is True; otherwise they either silently degenerate (zero-padded buffer
-        rows produce near-zero deltas) or, worse, propagate poisoned history.
-        """
-        if hasattr(self, "_per_model") and self._per_model is not None:
-            nmodel = (
-                int(np.rint(self.current_sample[self._nmodel_idx]))
-                if self.current_sample is not None
-                else 0
-            )
-            nmodel = max(0, min(nmodel, self._num_models - 1))
-            return self._per_model[nmodel].buffer_full
-        return self.buffer_full
 
     def update_buffer(self, new_samples: np.ndarray) -> None:
         """
@@ -272,7 +257,9 @@ class ChainStats:
             raise ValueError(f"Singular values for group {group_idx} are not initialized")
         return s
 
-    def enable_per_model(self, num_models: int, num_params: int) -> None:
+    def enable_per_model(
+        self, num_models: int, num_params: int, layout: Optional[ParameterLayout] = None
+    ) -> None:
         """Activate per-model adaptive statistics for RJMCMC.
 
         Creates independent covariance, SVD, and DE-buffer state for each
@@ -285,19 +272,26 @@ class ChainStats:
             Maximum number of models (e.g. ``rjmcmc_space.num_models``).
         num_params : int
             Number of continuous parameters per source.
+        layout : ParameterLayout, optional
+            Product-space parameter layout (e.g. ``rjmcmc_space.layout``);
+            when given it is the single source of truth and the scalar
+            arguments are ignored. Without it, one is built from the
+            scalars.
         """
         # __post_init__ guarantees these are set on any constructed instance
         assert (
             self.groups is not None and self.sample_cov is not None and self.sample_mean is not None
         )
-        self._num_models = num_models
-        self._num_params = num_params
-        self._nmodel_idx = num_models * num_params  # last element of position
+        if layout is None:
+            layout = ParameterLayout(num_params=num_params, num_models=num_models)
+        self._num_models = layout.num_models
+        self._num_params = layout.num_params
+        self._nmodel_idx = layout.nmodel_index  # last element of position
 
         all_groups = self.groups  # full list, one group per source slot
 
         self._per_model: dict[int, _PerModelState] = {}
-        for k in range(num_models):
+        for k in range(self._num_models):
             model_groups = [list(g) for g in all_groups[: k + 1]]
             model_svd_U: list = [None] * len(model_groups)
             model_svd_S: list = [None] * len(model_groups)
@@ -449,7 +443,9 @@ class MultiChainStats:
         """Return singular values for chain `chain_idx` and group `group_idx` (shape (k,))."""
         return self.chain_stats[chain_idx].get_group_S(group_idx)
 
-    def enable_per_model(self, num_models: int, num_params: int) -> None:
+    def enable_per_model(
+        self, num_models: int, num_params: int, layout: Optional[ParameterLayout] = None
+    ) -> None:
         """Activate per-model adaptive statistics on every chain.
 
         Parameters
@@ -458,9 +454,12 @@ class MultiChainStats:
             Maximum number of models.
         num_params : int
             Number of continuous parameters per source.
+        layout : ParameterLayout, optional
+            Product-space parameter layout (single source of truth); the
+            scalars are ignored when it is given.
         """
         for cs in self.chain_stats:
-            cs.enable_per_model(num_models, num_params)
+            cs.enable_per_model(num_models, num_params, layout=layout)
 
     def update_sample(self, state: SamplerState):
         """

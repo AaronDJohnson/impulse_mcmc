@@ -1,7 +1,10 @@
+import dataclasses
+import pickle
+
 import numpy as np
 import pytest
 
-from impulse.product_space import NestedProductSpace, ProductSpace
+from impulse.product_space import NestedProductSpace, ParameterLayout, ProductSpace
 
 
 class TestProductSpace:
@@ -247,6 +250,102 @@ class TestProductSpace:
         assert np.isclose(like_poly1, -4.0)  # -(2^2)
         assert np.isclose(like_poly2, -5.0)  # -(1^2 + 2^2)
         assert np.isclose(like_exp, -5.0)  # -(1^2 + 2^2)
+
+
+class TestParameterLayout:
+    """Test suite for the ParameterLayout single source of truth."""
+
+    def test_derived_fields(self):
+        layout = ParameterLayout(num_params=3, num_models=2)
+        assert layout.num_params == 3
+        assert layout.num_models == 2
+        assert layout.nmodel_index == 6  # num_models * num_params
+        assert layout.total_dim == 7  # nmodel_index + 1
+
+    def test_model_index_of_rint_semantics(self):
+        layout = ParameterLayout(num_params=2, num_models=3)
+        params = np.zeros(layout.total_dim)
+        params[-1] = 1.4
+        assert layout.model_index_of(params) == 1
+        params[-1] = 1.6
+        assert layout.model_index_of(params) == 2
+        # np.rint rounds halves to even
+        params[-1] = 0.5
+        assert layout.model_index_of(params) == 0
+        params[-1] = 1.5
+        assert layout.model_index_of(params) == 2
+        assert isinstance(layout.model_index_of(params), int)
+
+    def test_model_index_of_reads_trailing_coordinate(self):
+        # Legacy call paths (e.g. the NUTS prior hook) pass TRUNCATED
+        # vectors; the historical behavior is to rint the trailing entry.
+        layout = ParameterLayout(num_params=2, num_models=2)
+        truncated = np.array([0.0, 0.0, 0.0, 2.2])  # length nmodel_index
+        assert layout.model_index_of(truncated) == 2
+
+    def test_model_indices_of(self):
+        layout = ParameterLayout(num_params=2, num_models=3)
+        samples = np.zeros((4, layout.total_dim))
+        samples[:, -1] = [0.0, 1.4, 1.6, 2.0]
+        out = layout.model_indices_of(samples)
+        np.testing.assert_array_equal(out, [0, 1, 2, 2])
+        assert out.dtype.kind == "i"
+
+    def test_set_model_index_writes_trailing_coordinate(self):
+        layout = ParameterLayout(num_params=2, num_models=2)
+        params = np.zeros(layout.total_dim)
+        layout.set_model_index(params, 1)
+        assert params[layout.nmodel_index] == 1.0
+        # Position is layout-independent: works without an instance and on
+        # vectors whose length differs from total_dim (legacy fixtures).
+        short = np.zeros(3)
+        ParameterLayout.set_model_index(short, 2)
+        assert short[-1] == 2.0
+        assert short[0] == 0.0 and short[1] == 0.0
+
+    def test_active_slice(self):
+        layout = ParameterLayout(num_params=3, num_models=3)
+        assert layout.active_slice(0) == slice(0, 3)
+        assert layout.active_slice(2) == slice(0, 9)
+
+    def test_source_slice(self):
+        layout = ParameterLayout(num_params=3, num_models=3)
+        assert layout.source_slice(0) == slice(0, 3)
+        assert layout.source_slice(2) == slice(6, 9)
+
+    def test_active_indices(self):
+        layout = ParameterLayout(num_params=2, num_models=3)
+        np.testing.assert_array_equal(layout.active_indices(1), np.arange(4))
+
+    def test_from_total_dim_inverse(self):
+        layout = ParameterLayout(num_params=4, num_models=5)
+        rebuilt = ParameterLayout.from_total_dim(4, layout.total_dim)
+        assert rebuilt == layout
+
+    def test_frozen(self):
+        layout = ParameterLayout(num_params=2, num_models=2)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            layout.num_params = 5
+
+    def test_picklable(self):
+        layout = ParameterLayout(num_params=3, num_models=4)
+        restored = pickle.loads(pickle.dumps(layout))
+        assert restored == layout
+        assert restored.nmodel_index == 12
+
+    def test_nested_product_space_layout_property(self):
+        nps = NestedProductSpace(
+            loglikelihood=lambda x: 0.0,
+            logprior=lambda x: 0.0,
+            num_sources=3,
+            num_params=2,
+        )
+        assert nps.layout == ParameterLayout(num_params=2, num_models=3)
+        assert nps.ndim == nps.layout.total_dim
+        # Serialization format guard: the layout is DERIVED, not a stored
+        # instance attribute, so checkpoint pickles are unchanged and
+        # pre-layout checkpoints get the property for free.
+        assert "layout" not in vars(nps)
 
 
 class TestNestedProductSpace:

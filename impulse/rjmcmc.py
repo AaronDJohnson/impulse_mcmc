@@ -120,10 +120,11 @@ class RJMCMCProductSpace(NestedProductSpace):
             Log-prior value, or ``-inf`` if any parameter is out of bounds
             or the model index is invalid.
         """
-        nmodel = int(np.rint(params[-1]))
+        layout = self.layout
+        nmodel = layout.model_index_of(params)
         if nmodel not in self.nmodels:
             return -np.inf
-        return self.logprior(params[: self.num_models * self.num_params])
+        return self.logprior(params[: layout.nmodel_index])
 
     # ------------------------------------------------------------------
     # Proposal factories
@@ -288,11 +289,11 @@ class RJMCMCProductSpace(NestedProductSpace):
 
     def get_nmodel_jump(self) -> Callable:
         """Return a uniform model-index jump proposal."""
-        return make_nmodel_jump(self.num_models)
+        return make_nmodel_jump(self.num_models, layout=self.layout)
 
     def get_source_swap_proposal(self) -> Callable:
         """Return a source-swap proposal for label switching."""
-        return make_source_swap_proposal(self.num_params)
+        return make_source_swap_proposal(self.num_params, layout=self.layout)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -309,7 +310,8 @@ class RJMCMCProductSpace(NestedProductSpace):
         """
         groups = []
         for i in range(self.num_models):
-            groups.append(list(range(i * self.num_params, (i + 1) * self.num_params)))
+            sl = self.layout.source_slice(i)
+            groups.append(list(range(sl.start, sl.stop)))
         return groups
 
     def model_posterior_probs(self, chain: np.ndarray, burn: int = 0) -> np.ndarray:
@@ -328,7 +330,7 @@ class RJMCMCProductSpace(NestedProductSpace):
         np.ndarray, shape (num_models,)
             Posterior probability for each model (0-indexed).
         """
-        nmodel_samples = np.rint(chain[burn:, -1]).astype(int)
+        nmodel_samples = self.layout.model_indices_of(chain[burn:])
         counts = np.bincount(nmodel_samples, minlength=self.num_models)
         return counts / counts.sum()
 
@@ -350,7 +352,8 @@ class RJMCMCProductSpace(NestedProductSpace):
             prior and the model index set.
         """
         x0 = np.zeros(self.ndim)
+        layout = self.layout
         for i in range(self.num_models):
-            x0[i * self.num_params : (i + 1) * self.num_params] = self.source_prior_draw(rng)
-        x0[-1] = nmodel
+            x0[layout.source_slice(i)] = self.source_prior_draw(rng)
+        layout.set_model_index(x0, nmodel)
         return x0

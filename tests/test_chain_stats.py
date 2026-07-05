@@ -423,3 +423,52 @@ class TestMultiChainStats:
                 expected_size = len(groups[group_idx])
                 assert U.shape == (expected_size, expected_size)
                 assert S.shape == (expected_size,)
+
+
+class TestEnablePerModelLayout:
+    """enable_per_model derives its indices from ParameterLayout."""
+
+    @staticmethod
+    def _make_stats(ndim, groups):
+        ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
+        rng = np.random.default_rng(0)
+        return ChainStats(
+            ndim=ndim,
+            pt_state=ptstate,
+            chain_index=0,
+            rng=rng,
+            groups=groups,
+            buffer_size=10,
+        )
+
+    def test_scalar_and_layout_paths_agree(self):
+        from impulse.product_space import ParameterLayout
+
+        num_models, num_params = 2, 3
+        layout = ParameterLayout(num_params=num_params, num_models=num_models)
+        groups = [list(range(k * num_params, (k + 1) * num_params)) for k in range(num_models)]
+
+        scalar_stats = self._make_stats(layout.total_dim, [list(g) for g in groups])
+        scalar_stats.enable_per_model(num_models, num_params)
+
+        layout_stats = self._make_stats(layout.total_dim, [list(g) for g in groups])
+        layout_stats.enable_per_model(num_models, num_params, layout=layout)
+
+        for stats in (scalar_stats, layout_stats):
+            assert stats._num_models == num_models
+            assert stats._num_params == num_params
+            assert stats._nmodel_idx == layout.nmodel_index == num_models * num_params
+            assert set(stats._per_model) == set(range(num_models))
+
+    def test_multi_chain_forwards_layout(self):
+        from impulse.product_space import ParameterLayout
+
+        num_models, num_params = 2, 2
+        layout = ParameterLayout(num_params=num_params, num_models=num_models)
+        groups = [list(range(k * num_params, (k + 1) * num_params)) for k in range(num_models)]
+        chains = [self._make_stats(layout.total_dim, [list(g) for g in groups]) for _ in range(2)]
+        multi = MultiChainStats(chains)
+        multi.enable_per_model(num_models, num_params, layout=layout)
+        for cs in multi.chain_stats:
+            assert cs._nmodel_idx == layout.nmodel_index
+            assert cs._num_models == num_models
