@@ -38,7 +38,7 @@ from impulse.chain_stats import ChainStats, MultiChainStats
 from impulse.file_io import ShortChain
 from impulse.input_function_wrapper import _function_wrapper
 from impulse.proposals import DE_MIN_FILL, DEProposal, JumpProposals, ProposalBundle, am, de, scam
-from impulse.resume import check_for_checkpoint, checkpoint_sampler
+from impulse.resume import check_for_checkpoint, checkpoint_sampler, restore_state_checkpoint
 from impulse.rjmcmc_proposals import migrate_legacy_birth_death
 from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
 from impulse.sampler_step import pt_step, vectorized_mh_step
@@ -51,6 +51,33 @@ from impulse.wrapping import PeriodicSpec, WrapSpec
 # so it can never end up inside a pickled checkpoint.  Typed ``Any`` so it
 # can stand in as the default for ``Optional[int]`` parameters.
 _UNSET: Any = object()
+
+
+def _jsonable_rng_state(state: Any) -> Any:
+    """Deep-convert a ``bit_generator.state`` mapping to JSON-native types.
+
+    numpy's ``BitGenerator.state`` is a nested dict of Python ``int``\\ s and
+    strings for the stock generators, but numpy integer scalars can appear
+    in some builds.  Recursively cast integers to ``int`` (JSON stores
+    arbitrary-precision ints exactly, so PCG64's 128-bit words survive the
+    round-trip losslessly) and pass strings/floats through unchanged.
+    """
+    if isinstance(state, dict):
+        return {k: _jsonable_rng_state(v) for k, v in state.items()}
+    if isinstance(state, (list, tuple)):
+        return [_jsonable_rng_state(v) for v in state]
+    if isinstance(state, bool):
+        return state
+    if isinstance(state, (int, np.integer)):
+        return int(state)
+    if isinstance(state, (float, np.floating)):
+        return float(state)
+    return state
+
+
+def _rng_state_from_json(state: Any) -> Any:
+    """Inverse of :func:`_jsonable_rng_state` (JSON already yields Python ints)."""
+    return state
 
 
 def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:
@@ -612,17 +639,192 @@ class _PTSamplerBase:
     # ------------------------------------------------------------------
 
     def _load_checkpoint(self, path: str):
-        """Load and return the checkpointed sampler to resume from.
+        """Load and return the checkpointed sampler to resume from (LEGACY pickle).
 
-        Subclasses must override with the matching
-        :mod:`impulse.resume` loader (rebinding their unpicklable
-        callables).
+        Only used on the legacy-``.pkl`` fallback path.  Subclasses must
+        override with the matching :mod:`impulse.resume` loader (rebinding
+        their unpicklable callables).
         """
         raise NotImplementedError
 
     def _write_checkpoint(self) -> None:
-        """Write the end-of-iteration checkpoint pickle."""
+        """Write the end-of-iteration checkpoint (new no-code format by default).
+
+        Delegates to :func:`impulse.resume.checkpoint_sampler`, which writes
+        the array + JSON checkpoint for PT/RJPT samplers and falls back to
+        pickle only for a legacy ``.pkl`` target path.
+        """
         checkpoint_sampler(self, path=self.checkpoint_path)
+
+    # ------------------------------------------------------------------
+    # No-code-execution checkpoint capture / restore
+    # ------------------------------------------------------------------
+
+    def _capture_checkpoint_state(self) -> tuple:
+        """Capture full sampler state as ``(arrays, meta)`` for the new format.
+
+        ``arrays`` maps flat string keys to ``np.ndarray`` (the npz payload);
+        ``meta`` is JSON-serializable and carries scalars, RNG bit-generator
+        states, the ordered proposal names/weights per chain, and every
+        component's non-array state.  Callables and the RJMCMC space are NOT
+        captured — the resume contract reconstructs them.
+        """
+        from impulse import __version__
+
+        arrays: dict = {}
+        meta: dict = {
+            "sampler_class": type(self).__name__,
+            "impulse_version": __version__,
+            "ndim": int(self.ndim),
+            "ntemps": int(self.ntemps),
+            "swap_steps": int(self.swap_steps),
+            "cov_update": int(self.cov_update),
+            "save_freq": int(self.save_freq),
+            "buffer_size": int(self.multi_chain_stats.chain_stats[0].buffer_size),
+            "num_adapt": None if self.num_adapt is None else int(self.num_adapt),
+            "num_adapt_explicit": bool(getattr(self, "_num_adapt_explicit", False)),
+            "last_cov_iter": int(self._last_cov_iter),
+            # Every RNG stream (ntemps chain RNGs + 1 swap RNG). PCG64 state
+            # ints can exceed 2**64; JSON stores Python ints exactly.
+            "rngs": [_jsonable_rng_state(rng.bit_generator.state) for rng in self.rngs],
+        }
+
+        # Sampler state arrays
+        for name, arr in self.state.get_checkpoint_state().items():
+            arrays[f"state.{name}"] = arr
+
+        # PT ladder / swap bookkeeping
+        pt_arrays, pt_meta = self.ptstate.get_checkpoint_state()
+        for k, v in pt_arrays.items():
+            arrays[f"ptstate.{k}"] = v
+        meta["ptstate"] = pt_meta
+
+        # Per-chain adaptive statistics
+        meta["chain_stats"] = []
+        for i, cs in enumerate(self.multi_chain_stats.chain_stats):
+            cs_arrays, cs_meta = cs.get_checkpoint_state()
+            for k, v in cs_arrays.items():
+                arrays[f"cs.c{i}.{k}"] = v
+            meta["chain_stats"].append(cs_meta)
+
+        # Chain-file ring buffer + row counters
+        sc_arrays, sc_meta = self.short_chain.get_checkpoint_state()
+        for k, v in sc_arrays.items():
+            arrays[f"sc.{k}"] = v
+        meta["short_chain"] = sc_meta
+
+        # Proposal names / weights / counters per chain
+        meta["proposal_bundle"] = []
+        for jp in self.proposal_bundle.jump_proposals:
+            probs = jp.proposal_probs
+            meta["proposal_bundle"].append(
+                {
+                    "names": [getattr(p, "__name__", type(p).__name__) for p in jp.proposal_list],
+                    "weights": [float(w) for w in jp.proposal_weights],
+                    "probs": None if probs is None else [float(x) for x in probs],
+                    "calls": [int(x) for x in jp._proposal_calls],
+                    "accepts": [int(x) for x in jp._proposal_accepts],
+                    "last_idx": int(jp._last_proposal_idx),
+                }
+            )
+
+        # Adaptive proposal objects that carry mutable state (e.g. the
+        # normalizing flow). Proposal objects are shared across chains, so
+        # capture from the first chain's list, keyed by list index.
+        stateful: list = []
+        for idx, prop in enumerate(self.proposal_bundle.jump_proposals[0].proposal_list):
+            getter = getattr(prop, "get_checkpoint_state", None)
+            if callable(getter):
+                stateful.append(
+                    {
+                        "idx": idx,
+                        "name": getattr(prop, "__name__", type(prop).__name__),
+                        "state": getter(),
+                    }
+                )
+        meta["stateful_proposals"] = stateful
+
+        # Subclass extras (e.g. RJPT NUTS adapter)
+        self._capture_subclass_state(arrays, meta)
+        return arrays, meta
+
+    def _restore_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        """Restore state captured by :meth:`_capture_checkpoint_state` IN PLACE.
+
+        Mutates the freshly reconstructed sampler's wired objects (RNGs,
+        chain stats, proposal counters, ring buffer, PT ladder, ...) rather
+        than replacing them, so the user's callables, proposal objects, and
+        RJMCMC space are preserved.  Assumes :func:`_verify_checkpoint_metadata`
+        has already confirmed the reconstruction matches.
+        """
+        # RNG streams (restore in place so aliases — chain_stats.rng,
+        # the MH/PT/NUTS streams — all see the restored state)
+        for rng, state in zip(self.rngs, meta["rngs"]):
+            rng.bit_generator.state = _rng_state_from_json(state)
+
+        # Sampler state; re-alias temps to the (restored) ladder exactly as
+        # the running loop does (pt_step returns temps=ptstate.ladder).
+        self.ptstate.set_checkpoint_state(
+            {k[len("ptstate.") :]: v for k, v in arrays.items() if k.startswith("ptstate.")},
+            meta["ptstate"],
+        )
+        state_arrays = {k[len("state.") :]: v for k, v in arrays.items() if k.startswith("state.")}
+        self.state = SamplerState.from_checkpoint_state(state_arrays)
+        assert self.ptstate.ladder is not None  # set_checkpoint_state just wrote it
+        self.state.temps = self.ptstate.ladder
+
+        # Per-chain adaptive statistics
+        for i, cs in enumerate(self.multi_chain_stats.chain_stats):
+            prefix = f"cs.c{i}."
+            cs_arrays = {k[len(prefix) :]: v for k, v in arrays.items() if k.startswith(prefix)}
+            cs.set_checkpoint_state(cs_arrays, meta["chain_stats"][i])
+
+        # Chain-file ring buffer + counters. In the normal resume path
+        # sample() has already created short_chain (with resume=self.resume);
+        # when restore_state_checkpoint is called standalone (advanced use /
+        # tests) build a matching one first so the restore is self-sufficient.
+        if not hasattr(self, "short_chain"):
+            self.short_chain = ShortChain(
+                self.ndim,
+                self.ntemps,
+                self.save_freq,
+                iteration=0,
+                outdir=self.outdir,
+                resume=True,
+                thin=int(meta["short_chain"].get("thin", 1)),
+            )
+        sc_arrays = {k[len("sc.") :]: v for k, v in arrays.items() if k.startswith("sc.")}
+        self.short_chain.set_checkpoint_state(sc_arrays, meta["short_chain"])
+
+        # Proposal counters / weights / probs per chain
+        for jp, jp_meta in zip(self.proposal_bundle.jump_proposals, meta["proposal_bundle"]):
+            jp.proposal_weights = [float(w) for w in jp_meta["weights"]]
+            jp.proposal_probs = (
+                None if jp_meta["probs"] is None else np.array(jp_meta["probs"], dtype=float)
+            )
+            jp._proposal_calls = np.array(jp_meta["calls"], dtype=np.int64)
+            jp._proposal_accepts = np.array(jp_meta["accepts"], dtype=np.int64)
+            jp._last_proposal_idx = int(jp_meta["last_idx"])
+
+        # Stateful proposal objects (shared across chains): restore once on
+        # the object referenced by every chain's list at that index.
+        for entry in meta.get("stateful_proposals", []):
+            prop = self.proposal_bundle.jump_proposals[0].proposal_list[entry["idx"]]
+            setter = getattr(prop, "set_checkpoint_state", None)
+            if callable(setter):
+                setter(entry["state"])
+
+        # Bookkeeping scalars
+        self._last_cov_iter = int(meta["last_cov_iter"])
+
+        # Subclass extras
+        self._restore_subclass_state(arrays, meta)
+
+    def _capture_subclass_state(self, arrays: dict, meta: dict) -> None:
+        """Hook: subclasses add their extra state (default: nothing)."""
+
+    def _restore_subclass_state(self, arrays: dict, meta: dict) -> None:
+        """Hook: subclasses restore their extra state (default: nothing)."""
 
     def _prepare_run(self, resumed: bool) -> None:
         """Hook between resume handling and the sampling loop (default: no-op).
@@ -709,7 +911,6 @@ class _PTSamplerBase:
         if self.resume and self.checkpoint_path is not None:
             _resumed_from_checkpoint = True
             self._logger.info("Resuming from checkpoint: %s", self.checkpoint_path)
-            loaded = self._load_checkpoint(self.checkpoint_path)
             # num_adapt resume semantics: an EXPLICITLY passed constructor
             # value (including an explicit None) wins over the checkpointed
             # value, with a warning when they differ; the default keeps the
@@ -717,30 +918,41 @@ class _PTSamplerBase:
             # freeze would resume a half-frozen kernel (proposals whose
             # frozen state is pickled, e.g. a frozen normalizing flow, stay
             # frozen while everything else adapts again).  getattr guards
-            # the public checkpoint-loader->sample() path, where unpickling
-            # bypasses __init__ (pre-num_adapt checkpoints lack both
-            # attributes).
+            # the public checkpoint-loader->sample() path (legacy pickle),
+            # where unpickling bypasses __init__ (pre-num_adapt checkpoints
+            # lack both attributes).
             constructor_num_adapt = getattr(self, "num_adapt", None)
             num_adapt_explicit = getattr(self, "_num_adapt_explicit", False)
-            constructor_resume = self.resume
-            constructor_checkpoint_path = self.checkpoint_path
-            self.__dict__.update(
-                loaded.__dict__
-            )  # copy the state from the checkpointed sampler to this one
-            # the checkpoint carries the ORIGINAL run's resume flag (often
-            # False) and checkpoint path (None until its first checkpoint);
-            # keep this run's values or later file handling would truncate
-            # instead of append
-            self.resume = constructor_resume
-            self.checkpoint_path = constructor_checkpoint_path
-            checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
+            if str(self.checkpoint_path).endswith(".json"):
+                # New no-code-execution format: verify the reconstructed
+                # sampler matches the checkpoint, then restore STATE into it
+                # in place (the reconstruct-then-restore contract). The
+                # sampler's callables, proposal objects, and RJMCMC space are
+                # kept; only mutable state is overwritten.
+                meta = restore_state_checkpoint(self, self.checkpoint_path)
+                checkpoint_num_adapt = meta.get("num_adapt", None)
+            else:
+                # Legacy pickle fallback (loud security/deprecation warning
+                # emitted by the loader). Replaces state via __dict__.update
+                # exactly as before, keeping this run's resume flag and
+                # checkpoint path (the checkpoint carries the ORIGINAL run's
+                # values — often resume=False and checkpoint_path=None —
+                # which would otherwise truncate instead of append). Future
+                # checkpoints of a pickle-resumed run stay on the .pkl path.
+                loaded = self._load_checkpoint(self.checkpoint_path)
+                constructor_resume = self.resume
+                constructor_checkpoint_path = self.checkpoint_path
+                self.__dict__.update(loaded.__dict__)
+                self.resume = constructor_resume
+                self.checkpoint_path = constructor_checkpoint_path
+                checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
             if num_adapt_explicit:
                 if checkpoint_num_adapt != constructor_num_adapt:
                     self._logger.warning(
                         "Resume: overriding checkpointed num_adapt=%s with "
                         "the resuming constructor's explicitly passed "
                         "num_adapt=%s. Proposals whose frozen state is "
-                        "pickled (e.g. normalizing flows frozen by "
+                        "serialized (e.g. normalizing flows frozen by "
                         "freeze_adaptation) remain frozen regardless: their "
                         "freeze is irreversible and survives the "
                         "checkpoint, so removing or extending the freeze "

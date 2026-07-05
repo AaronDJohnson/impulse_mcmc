@@ -154,6 +154,80 @@ class PerModelNUTSAdapter:
         return adapter
 
     # ------------------------------------------------------------------
+    # No-code-execution checkpoint (npz arrays + JSON metadata)
+    # ------------------------------------------------------------------
+
+    def get_checkpoint_state(self) -> tuple[dict, dict]:
+        """Serialize the adapter to ``(arrays, meta)`` for the new checkpoint.
+
+        Tuple-keyed caches (keyed by ``(chain, n_active)`` or ``n_active``)
+        are flattened into JSON-friendly lists; mass matrices and cold-sample
+        buffers contribute ``np.ndarray`` entries to ``arrays``.  Array keys
+        are local (the sampler prefixes them, e.g. ``nuts.mm.na2.inv_diag``).
+        """
+        arrays: dict = {}
+        meta: dict = {
+            "mass_matrix_adapt_interval": int(self.mass_matrix_adapt_interval),
+            "mass_matrix_min_samples": int(self.mass_matrix_min_samples),
+            "step_size_min": float(self.step_size_min),
+            "step_size_max": float(self.step_size_max),
+            "step_sizes": [[int(c), int(na), float(v)] for (c, na), v in self.step_sizes.items()],
+            "dual_averagers": [
+                [int(c), int(na), da.get_checkpoint_state()]
+                for (c, na), da in self.dual_averagers.items()
+            ],
+            "mass_matrices": [],
+            "sample_buffers": [],
+            "mass_matrix_injected": sorted(int(na) for na in self.mass_matrix_injected),
+            "steps_since_mm_update": [
+                [int(na), int(v)] for na, v in self.steps_since_mm_update.items()
+            ],
+        }
+        for na, mm in self.mass_matrices.items():
+            mm_arrays, mm_meta = mm.get_checkpoint_state()
+            for k, v in mm_arrays.items():
+                arrays[f"mm.na{int(na)}.{k}"] = v
+            meta["mass_matrices"].append([int(na), mm_meta])
+        for na, buf in self.sample_buffers.items():
+            n = len(buf)
+            if n > 0:
+                arrays[f"buf.na{int(na)}"] = np.asarray(buf, dtype=np.float64)
+            meta["sample_buffers"].append([int(na), int(n)])
+        return arrays, meta
+
+    def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        """Restore adapter state from :meth:`get_checkpoint_state` output.
+
+        Adapter config scalars are overwritten with the checkpointed values,
+        then every cache is rebuilt with tuple keys restored.
+        """
+        self.mass_matrix_adapt_interval = meta["mass_matrix_adapt_interval"]
+        self.mass_matrix_min_samples = meta["mass_matrix_min_samples"]
+        self.step_size_min = meta["step_size_min"]
+        self.step_size_max = meta["step_size_max"]
+        self.step_sizes = {(int(c), int(na)): float(v) for c, na, v in meta["step_sizes"]}
+        self.dual_averagers = {
+            (int(c), int(na)): DualAveraging.from_checkpoint_state(s)
+            for c, na, s in meta["dual_averagers"]
+        }
+        self.mass_matrices = {}
+        for na, mm_meta in meta["mass_matrices"]:
+            na = int(na)
+            prefix = f"mm.na{na}."
+            mm_arrays = {k[len(prefix) :]: v for k, v in arrays.items() if k.startswith(prefix)}
+            self.mass_matrices[na] = MassMatrix.from_checkpoint_state(mm_arrays, mm_meta)
+        self.sample_buffers = {}
+        for na, n in meta["sample_buffers"]:
+            na = int(na)
+            if n > 0:
+                buf_arr = np.asarray(arrays[f"buf.na{na}"])
+                self.sample_buffers[na] = [np.array(row, dtype=float) for row in buf_arr]
+            else:
+                self.sample_buffers[na] = []
+        self.mass_matrix_injected = {int(na) for na in meta["mass_matrix_injected"]}
+        self.steps_since_mm_update = {int(na): int(v) for na, v in meta["steps_since_mm_update"]}
+
+    # ------------------------------------------------------------------
     # Step-size / mass-matrix bookkeeping
     # ------------------------------------------------------------------
 

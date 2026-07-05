@@ -44,6 +44,25 @@ rewrite and shares no API with it.
   `impulse.validation` now require the `plots` extra
   (`pip install impulse-mcmc[plots]`); the numeric SBC functions remain
   matplotlib-free.
+- The default checkpoint format changed from a pickle
+  (`sampler_checkpoint.pkl`) to the no-code-execution `sampler_checkpoint.npz`
+  + `sampler_checkpoint.json` pair (see Added). `PTSampler` / `RJPTSampler`
+  now write the new format; `resume=True` prefers it and falls back to a
+  legacy `.pkl` only when no new-format checkpoint is present. Sampling
+  behavior is unchanged and resume stays bit-exact, but the on-disk files
+  differ, and the reconstruct-then-restore contract now *requires* the same
+  proposals to be re-registered before resuming (previously the pickle
+  restored them for you).
+
+### Deprecated
+
+- The pickle checkpoint format (`sampler_checkpoint.pkl`) is deprecated in
+  favor of the no-code-execution `.npz` + `.json` format and is slated for
+  removal in a future 2.x release. `load_checkpoint`, `load_rjpt_checkpoint`,
+  and `load_nuts_checkpoint` still read pickles but now emit a loud
+  security/deprecation warning (unpickling can execute arbitrary code; see
+  [SECURITY.md](SECURITY.md)). `NUTSSampler` checkpointing remains on pickle
+  for now (its checkpointing is separate from the PT engine).
 
 ### Fixed
 
@@ -87,6 +106,23 @@ rewrite and shares no API with it.
 
 ### Added
 
+- No-code-execution checkpoint format (now the default for `PTSampler` /
+  `RJPTSampler`): array state in `sampler_checkpoint.npz`
+  (`numpy.savez_compressed`) plus a schema-versioned `sampler_checkpoint.json`
+  metadata sidecar (`schema_version` starts at 1). Loading uses
+  `numpy.load(..., allow_pickle=False)` and `json.load`, so resuming a
+  checkpoint executes no code — it is as safe as reading a data file, including
+  the automatic `resume=True` load from a shared `outdir`. The format is
+  smaller than the old pickle (savez compression) and carries an explicit
+  schema version in place of implicit pickle-layout compatibility. Resume is
+  *reconstruct then restore*: rebuild the sampler exactly as the original run
+  did (same constructor / `from_rjmcmc` / `add_custom_jump` calls), then
+  `resume=True` verifies the reconstruction matches the checkpoint (class,
+  `ndim`, `ntemps`, and the ordered proposal names and weights) and restores
+  state into it. Bit-exact resume is preserved. New helpers in
+  `impulse.resume`: `save_state_checkpoint`, `restore_state_checkpoint`,
+  `load_state_checkpoint`, and `CHECKPOINT_SCHEMA_VERSION`; a `format` keyword
+  on `checkpoint_sampler` (default new format).
 - `MassMatrix.from_precision` for injecting Fisher/precision matrices.
 - `num_adapt` sampler option: freezes covariance updates, temperature-ladder
   adaptation, mass-matrix and dual-averaging updates (finalized to the

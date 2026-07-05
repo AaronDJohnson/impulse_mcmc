@@ -115,6 +115,18 @@ class SamplerState:
         """Dimensionality of parameter space."""
         return int(self.positions.shape[1])
 
+    # State-array field names, in the order the checkpoint stores them.
+    _CHECKPOINT_FIELDS = ("positions", "lnlikes", "lnpriors", "lnprobs", "accepted", "temps")
+
+    def get_checkpoint_state(self) -> dict:
+        """Return the six state arrays keyed by field name (npz payload)."""
+        return {name: np.asarray(getattr(self, name)) for name in self._CHECKPOINT_FIELDS}
+
+    @classmethod
+    def from_checkpoint_state(cls, arrays: dict) -> "SamplerState":
+        """Rebuild a :class:`SamplerState` from :meth:`get_checkpoint_state`."""
+        return cls(*(np.array(arrays[name]) for name in cls._CHECKPOINT_FIELDS))
+
 
 @dataclass
 class PTState:
@@ -184,6 +196,32 @@ class PTState:
         if self.ladder is None:
             self.ladder = self.compute_temp_ladder()
         self.swap_accept = np.zeros(self.ntemps - 1)  # swap acceptance between chains
+
+    def get_checkpoint_state(self) -> tuple[dict, dict]:
+        """Serialize the mutable PT state to ``(arrays, meta)``.
+
+        Only fields that change during sampling are stored: the (possibly
+        adapted) temperature ladder, the swap-acceptance counters, and the
+        swap count.  ``temp_step`` is derived config but stored so a restore
+        matches the original exactly even if it was computed lazily.
+        """
+        arrays = {
+            "ladder": np.asarray(self.ladder),
+            "swap_accept": np.asarray(self.swap_accept),
+        }
+        meta = {
+            "nswaps": int(self.nswaps),
+            "temp_step": None if self.temp_step is None else float(self.temp_step),
+        }
+        return arrays, meta
+
+    def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        """Restore mutable PT state from :meth:`get_checkpoint_state`."""
+        self.ladder = np.array(arrays["ladder"], dtype=float)
+        self.swap_accept = np.array(arrays["swap_accept"], dtype=float)
+        self.nswaps = int(meta["nswaps"])
+        if meta["temp_step"] is not None:
+            self.temp_step = meta["temp_step"]
 
     def compute_accept_ratio(self):
         """

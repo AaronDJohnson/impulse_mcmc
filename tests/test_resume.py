@@ -11,6 +11,34 @@ import pytest
 from impulse.resume import check_for_checkpoint, checkpoint_sampler, load_checkpoint
 
 
+def _force_legacy_pickle_checkpoint(sampler, outdir):
+    """Rewrite a sampler's auto-written checkpoint as a LEGACY pickle.
+
+    The default checkpoint format is now the no-code-execution ``.npz`` +
+    ``.json`` pair, whose resume path is *reconstruct-then-restore*: it
+    verifies the reconstructed sampler re-registers the SAME proposals and
+    then restores state into them.  The legacy birth/death and 2.0 NUTS
+    -adapter migration scenarios are, by definition, PICKLE checkpoints (the
+    proposals are NOT re-registered on resume — the pickle ``__dict__.update``
+    path is what carried them).  This helper writes a genuine
+    ``sampler_checkpoint.pkl`` and removes the new-format artifacts so
+    ``resume=True`` exercises the legacy pickle fallback that runs those
+    migrations.
+    """
+    pkl = os.path.join(outdir, "sampler_checkpoint.pkl")
+    checkpoint_sampler(
+        sampler,
+        path=pkl,
+        format="pickle",
+        omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
+    )
+    for name in ("sampler_checkpoint.json", "sampler_checkpoint.npz"):
+        p = os.path.join(outdir, name)
+        if os.path.exists(p):
+            os.remove(p)
+    return pkl
+
+
 class _FakeSampler:
     """Simple pickleable stand-in for PTSampler in checkpoint tests."""
 
@@ -595,6 +623,7 @@ class TestResumeLegacyBirthDeathWarning:
         legacy.add_custom_jump(_LegacyNamedProposal("birth_proposal"), weight=5)
         legacy.add_custom_jump(_LegacyNamedProposal("death_proposal"), weight=5)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(legacy, temp_dir)
 
         resuming = self._make_pt(temp_dir, resume=True)
         with pytest.warns(UserWarning, match=self.LEGACY_MATCH):
@@ -614,6 +643,7 @@ class TestResumeLegacyBirthDeathWarning:
         legacy = self._make_rjpt(temp_dir)
         legacy.add_custom_jump(_LegacyNamedProposal("birth_proposal"), weight=5)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(legacy, temp_dir)
 
         resuming = self._make_rjpt(temp_dir, resume=True)
         with pytest.warns(UserWarning, match=self.LEGACY_MATCH):
@@ -790,6 +820,7 @@ class TestResumeLegacyBirthDeathMigration:
         legacy.add_custom_jump(birth, weight=self.BIRTH_WEIGHT)
         legacy.add_custom_jump(death, weight=self.DEATH_WEIGHT)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(legacy, outdir)
         assert check_for_checkpoint(outdir) is not None
         # Weights of the untouched proposals, for comparison after resume.
         pre_weights = [list(jp.proposal_weights) for jp in legacy.proposal_bundle.jump_proposals]
@@ -865,6 +896,7 @@ class TestResumeLegacyBirthDeathMigration:
         legacy.add_custom_jump(_LegacyNamedProposal("birth_proposal"), weight=self.BIRTH_WEIGHT)
         legacy.add_custom_jump(_LegacyNamedProposal("death_proposal"), weight=self.DEATH_WEIGHT)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(legacy, temp_dir)
         pre_weights = [list(jp.proposal_weights) for jp in legacy.proposal_bundle.jump_proposals]
 
         resumed = self._make_pt(temp_dir, resume=True)
@@ -886,6 +918,7 @@ class TestResumeLegacyBirthDeathMigration:
         legacy.add_custom_jump(_LegacyNamedProposal("birth_proposal"), weight=self.BIRTH_WEIGHT)
         legacy.add_custom_jump(_LegacyNamedProposal("death_proposal"), weight=self.DEATH_WEIGHT)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(legacy, temp_dir)
 
         resumed = self._make_rjpt(temp_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
@@ -920,6 +953,7 @@ class TestResumeLegacyBirthDeathMigration:
         legacy.add_custom_jump(birth, weight=self.BIRTH_WEIGHT)
         legacy.add_custom_jump(death, weight=self.DEATH_WEIGHT)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(legacy, outdir)
         assert check_for_checkpoint(outdir) is not None
         return [list(jp.proposal_weights) for jp in legacy.proposal_bundle.jump_proposals]
 
@@ -988,6 +1022,7 @@ class TestResumeLegacyBirthDeathMigration:
         )
         clean.add_custom_jump(kernel, weight=12.0)
         clean.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(clean, temp_dir)
 
         resumed = self._make_pt(temp_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
@@ -1015,6 +1050,7 @@ class TestResumeLegacyBirthDeathMigration:
         )
         clean.add_custom_jump(kernel, weight=12.0)
         clean.sample(np.array([0.1, 0.1]), num_iterations=25)
+        _force_legacy_pickle_checkpoint(clean, temp_dir)
 
         resumed = self._make_rjpt(temp_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
@@ -1104,21 +1140,27 @@ class TestResumeLegacyNUTSAdapterMigration:
         reference = self._make_nuts_rjpt(ref_dir)
         reference.sample(x0, num_iterations=40)
 
-        # Interrupted run: checkpoint at iteration 20, then downgraded
+        # Interrupted run, then written as a LEGACY pickle checkpoint (2.0
+        # checkpoints were pickles) and downgraded to the raw-attribute shape.
         interrupted = self._make_nuts_rjpt(res_dir)
         interrupted.sample(x0, num_iterations=25)
-        ckpt = check_for_checkpoint(res_dir)
-        assert ckpt is not None
+        ckpt = _force_legacy_pickle_checkpoint(interrupted, res_dir)
+        assert check_for_checkpoint(res_dir) == ckpt
         self._downgrade_checkpoint_to_legacy_shape(ckpt)
 
-        # Resume from the 2.0-shaped checkpoint, silently (migration is an
-        # internal representation change: no UserWarning, unlike the legacy
-        # birth/death migration which changes the kernel)
+        # Resume from the 2.0-shaped checkpoint. The adapter migration itself
+        # is silent (an internal representation change, unlike the legacy
+        # birth/death migration which changes the kernel); the only expected
+        # warning is the loud legacy-pickle security/deprecation notice.
         resumed = self._make_nuts_rjpt(res_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resumed.sample(x0, num_iterations=40)
-        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+        user_warnings = [
+            w
+            for w in caught
+            if issubclass(w.category, UserWarning) and "pickle" not in str(w.message).lower()
+        ]
         assert not user_warnings, [str(w.message) for w in user_warnings]
 
         # Adapter reconstructed; raw attributes consumed from __dict__
@@ -1126,7 +1168,9 @@ class TestResumeLegacyNUTSAdapterMigration:
         for legacy_name, _ in self.LEGACY_TO_ADAPTER:
             assert legacy_name not in resumed.__dict__
 
-        # The checkpoint written by the resumed run is in the NEW format
+        # A run resumed from a legacy .pkl keeps writing the pickle format;
+        # the rewritten checkpoint carries the reconstructed adapter (not the
+        # 2.0 raw attributes).
         with open(ckpt, "rb") as fp:
             rewritten = pickle.load(fp)
         assert isinstance(rewritten.__dict__.get("_nuts_adapter"), PerModelNUTSAdapter)

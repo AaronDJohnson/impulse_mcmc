@@ -25,7 +25,7 @@ from impulse.nuts.adapter import PerModelNUTSAdapter
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.proposals import DE_MIN_FILL
-from impulse.resume import checkpoint_sampler, load_rjpt_checkpoint
+from impulse.resume import CheckpointMismatchError, checkpoint_sampler, load_rjpt_checkpoint
 from impulse.sampler_state import SamplerState, tempered_lnprobs
 from impulse.utils import prepare_files
 from impulse.wrapping import PeriodicSpec
@@ -332,6 +332,40 @@ class RJPTSampler(_PTSamplerBase):
             path=self.checkpoint_path,
             omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
         )
+
+    def _capture_subclass_state(self, arrays: dict, meta: dict) -> None:
+        """Add RJPT-specific state (NUTS adapter, diagnostics row count).
+
+        The RJMCMC space and gradient callables are NOT captured — resume
+        reconstructs them via ``from_rjmcmc`` / the constructor.
+        """
+        adapter = self._ensure_nuts_adapter()
+        ad_arrays, ad_meta = adapter.get_checkpoint_state()
+        for k, v in ad_arrays.items():
+            arrays[f"nuts.{k}"] = v
+        meta["nuts_adapter"] = ad_meta
+        meta["nuts_enabled"] = bool(self.nuts_enabled)
+        if hasattr(self, "_nuts_diag_rows_written"):
+            meta["nuts_diag_rows_written"] = int(self._nuts_diag_rows_written)
+
+    def _restore_subclass_state(self, arrays: dict, meta: dict) -> None:
+        """Restore RJPT-specific state into the freshly constructed adapter."""
+        # NUTS on/off is derived from lnlike_grad, not a registered proposal,
+        # so the proposal-name guard cannot catch its absence. Verify it
+        # here: a checkpoint written with NUTS but reconstructed without
+        # lnlike_grad (or vice versa) would silently run a different
+        # RNG-consumption path and diverge from the checkpoint.
+        ck_nuts = meta.get("nuts_enabled")
+        if ck_nuts is not None and bool(ck_nuts) != bool(self.nuts_enabled):
+            raise CheckpointMismatchError(
+                f"nuts_enabled mismatch: checkpoint has nuts_enabled={bool(ck_nuts)} "
+                f"but the reconstructed sampler has nuts_enabled={bool(self.nuts_enabled)}. "
+                "Reconstruct with the same lnlike_grad argument used for the original run."
+            )
+        ad_arrays = {k[len("nuts.") :]: v for k, v in arrays.items() if k.startswith("nuts.")}
+        self._ensure_nuts_adapter().set_checkpoint_state(ad_arrays, meta["nuts_adapter"])
+        if "nuts_diag_rows_written" in meta:
+            self._nuts_diag_rows_written = int(meta["nuts_diag_rows_written"])
 
     def _prepare_run(self, resumed: bool) -> None:
         """Legacy attribute back-fill, NUTS diagnostics setup, NUTS warmup.

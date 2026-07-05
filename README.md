@@ -319,10 +319,14 @@ sampler = PTSampler(ndim=2, lnlike=log_likelihood, lnprior=log_prior,
 sampler.sample([0.0, 0.0], num_iterations=20000)
 ```
 
-Checkpoints are Python **pickles**: loading one can execute arbitrary code, so only
-resume from checkpoints you (or a pipeline you trust) wrote — see
-[SECURITY.md](SECURITY.md) for the full trust boundary, including a warning about
-world-writable `outdir` locations.
+Checkpoints use a **no-code-execution format** by default — `sampler_checkpoint.npz`
+(arrays) plus a schema-versioned `sampler_checkpoint.json` — so loading one is as
+safe as reading a data file. Resume is *reconstruct then restore*: rebuild the
+sampler the same way (same constructor / `from_rjmcmc` / `add_custom_jump` calls),
+then `resume=True` restores state into it. Legacy `sampler_checkpoint.pkl`
+checkpoints still load (with a security/deprecation warning), but unpickling one can
+execute arbitrary code — see [SECURITY.md](SECURITY.md) and the
+[checkpointing guide](docs/user_guide/checkpointing.md) for the full trust boundary.
 
 ## Migrating from 1.x
 

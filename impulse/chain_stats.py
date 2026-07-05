@@ -336,6 +336,100 @@ class ChainStats:
                         sqrt_s = np.sqrt(np.maximum(pm.svd_S[ct], 0.0))
                         pm.proposal_L[ct] = pm.svd_U[ct] * sqrt_s[None, :]
 
+    def get_checkpoint_state(self) -> tuple[dict, dict]:
+        """Serialize the adaptive state to ``(arrays, meta)`` for the checkpoint.
+
+        Captures everything that steers future proposals: running
+        mean/covariance, the per-group SVD factors and precomputed
+        ``proposal_L``, the DE history buffer and its fill counters, and (when
+        per-model statistics are active) the full per-model cache.  Array
+        keys are local; the sampler prefixes them (e.g. ``cs.c3.m1.buffer``).
+        """
+        assert self.groups is not None and self.sample_cov is not None
+        assert self.sample_mean is not None
+        assert self.svd_U is not None and self.svd_S is not None and self.proposal_L is not None
+        arrays: dict = {
+            "sample_cov": np.asarray(self.sample_cov),
+            "sample_mean": np.asarray(self.sample_mean),
+            "buffer": np.asarray(self._buffer),
+        }
+        meta: dict = {
+            "sample_total": int(self.sample_total),
+            "buffer_full": bool(self.buffer_full),
+            "groups": [list(map(int, g)) for g in self.groups],
+            "has_current_sample": self.current_sample is not None,
+        }
+        if self.current_sample is not None:
+            arrays["current_sample"] = np.asarray(self.current_sample)
+        for gi in range(len(self.groups)):
+            arrays[f"svd_U.g{gi}"] = np.asarray(self.svd_U[gi])
+            arrays[f"svd_S.g{gi}"] = np.asarray(self.svd_S[gi])
+            arrays[f"proposal_L.g{gi}"] = np.asarray(self.proposal_L[gi])
+        per_model = getattr(self, "_per_model", None)
+        if per_model is not None:
+            models = []
+            for k, pm in per_model.items():
+                arrays[f"m{k}.sample_cov"] = np.asarray(pm.sample_cov)
+                arrays[f"m{k}.sample_mean"] = np.asarray(pm.sample_mean)
+                arrays[f"m{k}.buffer"] = np.asarray(pm.buffer)
+                for gi in range(len(pm.groups)):
+                    arrays[f"m{k}.svd_U.g{gi}"] = np.asarray(pm.svd_U[gi])
+                    arrays[f"m{k}.svd_S.g{gi}"] = np.asarray(pm.svd_S[gi])
+                    arrays[f"m{k}.proposal_L.g{gi}"] = np.asarray(pm.proposal_L[gi])
+                models.append(
+                    {
+                        "k": int(k),
+                        "sample_total": int(pm.sample_total),
+                        "buffer_full": bool(pm.buffer_full),
+                        "groups": [list(map(int, g)) for g in pm.groups],
+                    }
+                )
+            meta["per_model"] = {
+                "num_models": int(self._num_models),
+                "num_params": int(self._num_params),
+                "nmodel_idx": int(self._nmodel_idx),
+                "models": models,
+            }
+        else:
+            meta["per_model"] = None
+        return arrays, meta
+
+    def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        """Restore adaptive state from :meth:`get_checkpoint_state` output."""
+        self.sample_total = int(meta["sample_total"])
+        self.buffer_full = bool(meta["buffer_full"])
+        self.groups = [np.array(g, dtype=int) for g in meta["groups"]]
+        self.sample_cov = np.array(arrays["sample_cov"], dtype=float)
+        self.sample_mean = np.array(arrays["sample_mean"], dtype=float)
+        self._buffer = np.array(arrays["buffer"], dtype=float)
+        if meta["has_current_sample"]:
+            self.current_sample = np.array(arrays["current_sample"], dtype=float)
+        ng = len(self.groups)
+        self.svd_U = [np.array(arrays[f"svd_U.g{gi}"]) for gi in range(ng)]
+        self.svd_S = [np.array(arrays[f"svd_S.g{gi}"]) for gi in range(ng)]
+        self.proposal_L = [np.array(arrays[f"proposal_L.g{gi}"]) for gi in range(ng)]
+        pm_meta = meta["per_model"]
+        if pm_meta is not None:
+            self._num_models = int(pm_meta["num_models"])
+            self._num_params = int(pm_meta["num_params"])
+            self._nmodel_idx = int(pm_meta["nmodel_idx"])
+            self._per_model = {}
+            for m in pm_meta["models"]:
+                k = int(m["k"])
+                groups = [np.array(g, dtype=int) for g in m["groups"]]
+                ngm = len(groups)
+                self._per_model[k] = _PerModelState(
+                    groups=groups,
+                    sample_cov=np.array(arrays[f"m{k}.sample_cov"], dtype=float),
+                    sample_mean=np.array(arrays[f"m{k}.sample_mean"], dtype=float),
+                    svd_U=[np.array(arrays[f"m{k}.svd_U.g{gi}"]) for gi in range(ngm)],
+                    svd_S=[np.array(arrays[f"m{k}.svd_S.g{gi}"]) for gi in range(ngm)],
+                    proposal_L=[np.array(arrays[f"m{k}.proposal_L.g{gi}"]) for gi in range(ngm)],
+                    buffer=np.array(arrays[f"m{k}.buffer"], dtype=float),
+                    buffer_full=bool(m["buffer_full"]),
+                    sample_total=int(m["sample_total"]),
+                )
+
     def update_sample(self, position: np.ndarray):
         """
         Update current parameter position.

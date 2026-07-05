@@ -75,9 +75,16 @@ The 2.x series follows semver intent:
 - **Internals** — underscore-prefixed names and module paths not re-exported
   in `__all__` — may change in any release without warning.
 - **Checkpoint compatibility** is best-effort across patch and minor
-  versions: checkpoints are pickles of sampler objects (see
-  [SECURITY.md](SECURITY.md)), so internal refactors can break old
-  checkpoints. Don't rely on resuming a long run across an upgrade.
+  versions. The default format is the no-code-execution `sampler_checkpoint.npz`
+  + `sampler_checkpoint.json` pair (see [SECURITY.md](SECURITY.md)), carrying an
+  explicit `schema_version`. Bump `CHECKPOINT_SCHEMA_VERSION` in
+  `impulse/resume.py` and note it in `CHANGELOG.md` whenever the on-disk metadata
+  layout changes incompatibly; the loader must keep reading the current schema and
+  refuse newer ones with a clear error. Resume is *reconstruct then restore*, so
+  changing constructor wiring, proposal registration, or a component's serialized
+  state can break old checkpoints — don't rely on resuming a long run across an
+  upgrade. The legacy pickle format is deprecated (removal targeted for a future
+  2.x release).
 
 User-visible changes should get an entry in `CHANGELOG.md` (Keep a Changelog
 format).

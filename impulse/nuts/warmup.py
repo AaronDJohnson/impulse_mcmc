@@ -99,6 +99,43 @@ class DualAveraging:
         self.h_bar = 0.0
         self.count = 0
 
+    def get_checkpoint_state(self) -> dict:
+        """Serialize every field (all scalars) for the JSON checkpoint metadata.
+
+        Python's ``json`` round-trips finite floats exactly (shortest
+        round-tripping ``repr``), so the restored dual averager continues
+        its schedule bit-identically.
+        """
+        return {
+            "target_accept": float(self.target_accept),
+            "gamma": float(self.gamma),
+            "t0": int(self.t0),
+            "kappa": float(self.kappa),
+            "initial_step_size": float(self.initial_step_size),
+            "log_step": float(self.log_step),
+            "log_step_bar": float(self.log_step_bar),
+            "mu": float(self.mu),
+            "h_bar": float(self.h_bar),
+            "count": int(self.count),
+        }
+
+    @classmethod
+    def from_checkpoint_state(cls, state: dict) -> "DualAveraging":
+        """Rebuild a :class:`DualAveraging` from :meth:`get_checkpoint_state`."""
+        obj = cls(
+            target_accept=state["target_accept"],
+            gamma=state["gamma"],
+            t0=state["t0"],
+            kappa=state["kappa"],
+            initial_step_size=state["initial_step_size"],
+        )
+        obj.log_step = state["log_step"]
+        obj.log_step_bar = state["log_step_bar"]
+        obj.mu = state["mu"]
+        obj.h_bar = state["h_bar"]
+        obj.count = state["count"]
+        return obj
+
 
 def regularized_mass_matrix(
     samples: ArrayLike, ndim: int, mass_matrix_type: MassMatrixType

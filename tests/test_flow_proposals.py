@@ -304,3 +304,32 @@ def test_prior_recovery_2d_normal(tmp_path):
     assert "nf_flow" in rates
     assert rates["nf_flow"]["calls"] > 100
     assert rates["nf_flow"]["accepts"] > 10
+
+
+def test_checkpoint_state_round_trips_flag_and_counters():
+    """get_checkpoint_state / set_checkpoint_state round-trip the mutable
+    adaptation state (frozen/fixed flags and counters) as JSON scalars, and
+    never carry the flow object (dropped on serialize, like the pickle path)."""
+    import json
+
+    from impulse.flow_proposals import NormalizingFlowProposal
+
+    prop = NormalizingFlowProposal(min_samples=50, refit_interval=5)
+    prop._call_count = 321
+    prop._fit_count = 7
+    prop._last_fit_at = 200
+    prop.freeze_adaptation()
+
+    state = prop.get_checkpoint_state()
+    # JSON-scalar-only: no arrays, no flow object.
+    assert json.loads(json.dumps(state)) == state
+    assert "flow" not in state
+
+    fresh = NormalizingFlowProposal(min_samples=50, refit_interval=5)
+    fresh.set_checkpoint_state(state)
+    assert fresh.frozen is True
+    assert fresh.fixed is prop.fixed
+    assert fresh._call_count == 321
+    assert fresh._fit_count == 7
+    assert fresh._last_fit_at == 200
+    assert fresh.flow is None

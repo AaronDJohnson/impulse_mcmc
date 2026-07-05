@@ -250,6 +250,49 @@ class ShortChain:
         self._unsaved = 0
         self._rows_written += nrows
 
+    def get_checkpoint_state(self) -> tuple[dict, dict]:
+        """Serialize the ring buffer and counters to ``(arrays, meta)``.
+
+        The buffer arrays hold the unflushed samples (needed so the next
+        flush and covariance update see identical data on resume); the
+        counters (``iteration``, ``_unsaved``, ``_rows_written``) drive the
+        resume-time truncation and bit-exact continuation.
+        """
+        arrays = {
+            "samples": np.asarray(self.samples),
+            "lnprob": np.asarray(self.lnprob),
+            "lnlike": np.asarray(self.lnlike),
+            "accept": np.asarray(self.accept),
+            "var_temp": np.asarray(self.var_temp),
+        }
+        self._ensure_rows_written()
+        meta = {
+            "iteration": int(self.iteration),
+            "unsaved": int(self._unsaved),
+            "rows_written": int(self._rows_written),
+            "short_iters": int(self.short_iters),
+            "thin": int(self.thin),
+        }
+        return arrays, meta
+
+    def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        """Restore ring buffer and counters from :meth:`get_checkpoint_state`.
+
+        ``short_iters``/``thin`` are restored alongside the buffers so the ring
+        buffer stays self-consistent with the checkpointed data (mirroring the
+        legacy pickle, which restored the whole object).
+        """
+        self.short_iters = int(meta["short_iters"])
+        self.thin = int(meta["thin"])
+        self.iteration = int(meta["iteration"])
+        self._unsaved = int(meta["unsaved"])
+        self._rows_written = int(meta["rows_written"])
+        self.samples = np.array(arrays["samples"], dtype=float)
+        self.lnprob = np.array(arrays["lnprob"], dtype=float)
+        self.lnlike = np.array(arrays["lnlike"], dtype=float)
+        self.accept = np.array(arrays["accept"], dtype=float)
+        self.var_temp = np.array(arrays["var_temp"], dtype=float)
+
     def truncate_files_to_saved(self):
         """
         Truncate the on-disk chain files to the flushed-row count.

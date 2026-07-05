@@ -138,6 +138,46 @@ class MassMatrix:
             return self._inv @ p
         return self._inv_diag * p
 
+    def get_checkpoint_state(self) -> tuple[dict, dict]:
+        """Serialize to ``(arrays, meta)`` for the no-code-execution checkpoint.
+
+        Stores the exact internal factorization (never a recomputed
+        approximation) so a restored matrix reproduces momentum sampling and
+        kinetic-energy evaluation bit-for-bit.  ``arrays`` maps local keys to
+        ``np.ndarray``; ``meta`` holds JSON-serializable scalars.
+        """
+        meta = {"ndim": int(self.ndim), "matrix_type": self.matrix_type.value}
+        arrays: dict = {}
+        if self.matrix_type == MassMatrixType.DENSE:
+            arrays["dense"] = np.asarray(self._dense)
+            arrays["cholesky"] = np.asarray(self._cholesky)
+            arrays["inv"] = np.asarray(self._inv)
+        else:
+            # UNIT and DIAGONAL both store the two diagonal factors.
+            arrays["inv_diag"] = np.asarray(self._inv_diag)
+            arrays["sqrt_diag"] = np.asarray(self._sqrt_diag)
+        return arrays, meta
+
+    @classmethod
+    def from_checkpoint_state(cls, arrays: dict, meta: dict) -> "MassMatrix":
+        """Rebuild a :class:`MassMatrix` from :meth:`get_checkpoint_state` output.
+
+        Bypasses ``__init__`` (which would recompute the factorization and
+        could differ in the last bit) and installs the stored factors
+        directly.
+        """
+        obj = cls.__new__(cls)
+        obj.ndim = int(meta["ndim"])
+        obj.matrix_type = MassMatrixType(meta["matrix_type"])
+        if obj.matrix_type == MassMatrixType.DENSE:
+            obj._dense = np.array(arrays["dense"], dtype=float)
+            obj._cholesky = np.array(arrays["cholesky"], dtype=float)
+            obj._inv = np.array(arrays["inv"], dtype=float)
+        else:
+            obj._inv_diag = np.array(arrays["inv_diag"], dtype=float)
+            obj._sqrt_diag = np.array(arrays["sqrt_diag"], dtype=float)
+        return obj
+
     @classmethod
     def from_covariance(
         cls, cov: ArrayLike, matrix_type: MassMatrixType = MassMatrixType.DIAGONAL

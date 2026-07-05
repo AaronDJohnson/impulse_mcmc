@@ -40,6 +40,7 @@ import pickle
 import numpy as np
 import pytest
 
+from impulse.resume import check_for_checkpoint
 from impulse.rjmcmc import RJMCMCProductSpace
 from impulse.rjpt_sampler import RJPTSampler
 from impulse.samplers import PTSampler
@@ -332,8 +333,10 @@ class TestResumeEquivalence:
         split_dir = str(tmp_path / "split")
         first = make_sampler(split_dir)
         first.sample(x0, num_iterations=N_FIRST)
-        assert os.path.exists(
-            os.path.join(split_dir, "sampler_checkpoint.pkl")
+        # A checkpoint (the no-code-execution .npz/.json pair by default, or a
+        # legacy .pkl) must exist; check_for_checkpoint resolves whichever.
+        assert (
+            check_for_checkpoint(split_dir) is not None
         ), "no checkpoint written during the first run"
 
         resumed = make_sampler(split_dir, resume=True)
@@ -418,12 +421,24 @@ class TestLegacyCheckpointRowTracking:
         )
 
     def test_double_resume_through_pre_row_tracking_checkpoint(self, tmp_path):
+        from impulse.resume import checkpoint_sampler
+
         outdir = str(tmp_path)
         x0 = np.array([0.1, 0.1])
 
-        # Run 1: fresh run to 25 iterations (checkpoints at jj=10, 20; the
-        # final flush leaves 25 rows per file on disk).
-        self._make(outdir).sample(x0, num_iterations=25)
+        # Run 1: fresh run to 25 iterations. This regression is specific to
+        # the LEGACY pickle format — the new .npz/.json format always stores
+        # the row counter, so a resume can never restart it at 0. Write the
+        # run's checkpoint as a legacy pickle (and drop the new-format pair)
+        # so the pre-row-tracking downgrade below is meaningful.
+        first = self._make(outdir)
+        first.sample(x0, num_iterations=25)
+        ckpt = os.path.join(outdir, "sampler_checkpoint.pkl")
+        checkpoint_sampler(first, path=ckpt, format="pickle")
+        for _ext in (".json", ".npz"):
+            _p = os.path.join(outdir, "sampler_checkpoint" + _ext)
+            if os.path.exists(_p):
+                os.remove(_p)
         original = []
         for ii in range(self.NTEMPS):
             with open(os.path.join(outdir, f"chain_{ii}.txt")) as fp:
@@ -433,7 +448,6 @@ class TestLegacyCheckpointRowTracking:
 
         # Simulate a legacy checkpoint written before row tracking existed:
         # strip the attribute from the pickled ShortChain.
-        ckpt = os.path.join(outdir, "sampler_checkpoint.pkl")
         with open(ckpt, "rb") as fp:
             state = pickle.load(fp)
         assert hasattr(state.short_chain, "_rows_written")

@@ -149,6 +149,36 @@ class NormalizingFlowProposal:
         self.flow = flow
         self.fixed = True
 
+    def get_checkpoint_state(self) -> dict:
+        """Serialize mutable adaptation state for the no-code checkpoint.
+
+        Only the run-time counters and the freeze/fixed flags are stored;
+        the flow object itself is dropped (exactly as the pickle path does),
+        so refit-after-resume semantics are unchanged.  Config
+        (``refit_interval``, ``min_samples``, ``prior_bounds``, ...) is
+        supplied by reconstructing the proposal, so it is intentionally not
+        serialized here.
+        """
+        return {
+            "frozen": bool(self.frozen),
+            "fixed": bool(self.fixed),
+            "call_count": int(self._call_count),
+            "last_fit_at": int(self._last_fit_at),
+            "fit_count": int(self._fit_count),
+        }
+
+    def set_checkpoint_state(self, state: dict) -> None:
+        """Restore mutable adaptation state from :meth:`get_checkpoint_state`.
+
+        The flow stays ``None`` (dropped on serialize); the next call refits
+        from the chain buffer, matching the checkpointed pickle behavior.
+        """
+        self.frozen = bool(state["frozen"])
+        self.fixed = bool(state["fixed"])
+        self._call_count = int(state["call_count"])
+        self._last_fit_at = int(state["last_fit_at"])
+        self._fit_count = int(state["fit_count"])
+
     def __getstate__(self):
         # Drop the bound coppuccino functions and the JAX-backed flow.
         # The flow contains function references (e.g. softplus) that can't

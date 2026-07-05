@@ -381,7 +381,14 @@ class TestRJPTSamplerMHPT:
         np.testing.assert_allclose(sampler.state.lnprobs, expected, atol=1e-12)
 
     def test_checkpoint_resume(self, temp_dir):
-        """Round-trip pickle checkpoint."""
+        """Round-trip a LEGACY pickle checkpoint via load_rjpt_checkpoint.
+
+        The default format is now the no-code-execution .npz/.json pair;
+        ``load_rjpt_checkpoint`` is the legacy pickle loader, so this test
+        writes a pickle explicitly to exercise it.
+        """
+        from impulse.resume import checkpoint_sampler
+
         sampler = RJPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
@@ -393,11 +400,17 @@ class TestRJPTSamplerMHPT:
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=200)
 
-        # Checkpoint should exist
+        # Write a legacy pickle checkpoint explicitly.
         ckpt_path = os.path.join(temp_dir, "sampler_checkpoint.pkl")
+        checkpoint_sampler(
+            sampler,
+            path=ckpt_path,
+            format="pickle",
+            omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
+        )
         assert os.path.exists(ckpt_path)
 
-        # Load checkpoint
+        # Load checkpoint (emits the legacy-pickle security warning)
         loaded = load_rjpt_checkpoint(
             ckpt_path,
             lnlike=sampler.lnlike,
@@ -724,15 +737,27 @@ class TestNUTSAdapterComponent:
         )
 
     def test_checkpoint_pickles_adapter_not_raw_attributes(self, temp_dir):
-        """New checkpoints serialize the adapter object; none of the 2.0-era
-        raw attribute names appear in the pickled instance dict (the compat
-        views are class-level properties, never pickled)."""
+        """A LEGACY pickle checkpoint serializes the adapter object; none of
+        the 2.0-era raw attribute names appear in the pickled instance dict
+        (the compat views are class-level properties, never pickled).
+
+        The default format is now the safe .npz/.json pair; this test writes
+        a pickle explicitly to check the still-supported pickle path.
+        """
         from impulse.nuts.adapter import PerModelNUTSAdapter
+        from impulse.resume import checkpoint_sampler
 
         sampler = self._make(temp_dir, save_freq=10)
         sampler.sample(np.array([0.1, 0.1]), num_iterations=25)
 
-        with open(os.path.join(temp_dir, "sampler_checkpoint.pkl"), "rb") as fp:
+        pkl = os.path.join(temp_dir, "sampler_checkpoint.pkl")
+        checkpoint_sampler(
+            sampler,
+            path=pkl,
+            format="pickle",
+            omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
+        )
+        with open(pkl, "rb") as fp:
             loaded = pickle.load(fp)
         d = loaded.__dict__
         assert isinstance(d.get("_nuts_adapter"), PerModelNUTSAdapter)
