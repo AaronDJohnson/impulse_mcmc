@@ -1,5 +1,5 @@
 """
-End-to-end integration tests for the RJMCMC pipeline.
+End-to-end integration tests for the product-space model-selection pipeline.
 
 Uses a simple toy problem where the correct model posterior is
 analytically tractable (or at least strongly peaked) to verify
@@ -13,7 +13,7 @@ import tempfile
 import numpy as np
 import pytest
 
-from impulse.rjmcmc import BirthDeathProductSpace
+from impulse.birth_death import BirthDeathProductSpace
 from impulse.samplers import PTSampler
 
 # -----------------------------------------------------------------------
@@ -64,7 +64,7 @@ def _loglike(params):
 
 
 @pytest.fixture
-def rjmcmc_space():
+def product_space():
     return BirthDeathProductSpace(
         loglikelihood=_loglike,
         logprior=_logprior,
@@ -82,9 +82,9 @@ def outdir():
 
 
 class TestFromRJMCMC:
-    def test_construction(self, rjmcmc_space, outdir):
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+    def test_construction(self, product_space, outdir):
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=outdir,
@@ -112,7 +112,7 @@ class TestFromRJMCMC:
     def test_single_model_space_constructs(self, outdir):
         """Regression: a single-model space must construct successfully.
 
-        BirthDeathProposal rejects max_sources < 2, so from_rjmcmc must
+        BirthDeathProposal rejects max_sources < 2, so from_product_space must
         skip the trans-dimensional jumps (birth-death, nmodel, source
         swap — all meaningless with one model) instead of building them
         and raising.  Only the standard continuous jumps are registered.
@@ -124,17 +124,17 @@ class TestFromRJMCMC:
             num_params=NUM_PARAMS,
             source_prior_draw=_source_draw,
         )
-        sampler = PTSampler.from_rjmcmc(space, ntemps=3, seed=42, outdir=outdir)
+        sampler = PTSampler.from_product_space(space, ntemps=3, seed=42, outdir=outdir)
         assert sampler.ndim == NUM_PARAMS + 1
         names = sorted(p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert names == ["am", "de", "scam"]
 
-    def test_zero_birth_death_weight_skips_kernel(self, rjmcmc_space, outdir):
+    def test_zero_birth_death_weight_skips_kernel(self, product_space, outdir):
         """birth_weight + death_weight == 0: the birth-death kernel is
         never selected, so it must not be constructed or registered (the
         other RJ jumps stay)."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             birth_weight=0,
             death_weight=0,
             ntemps=3,
@@ -146,25 +146,25 @@ class TestFromRJMCMC:
         assert "nmodel_jump" in names
         assert "source_swap_proposal" in names
 
-    def test_initial_position(self, rjmcmc_space):
+    def test_initial_position(self, product_space):
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         assert x0.shape == (NDIM,)
         assert int(np.rint(x0[-1])) == 0
         # should be within prior
         assert np.isfinite(_logprior(x0[:NUM_PARAMS]))
 
-    def test_short_run(self, rjmcmc_space, outdir):
+    def test_short_run(self, product_space, outdir):
         """Smoke test: sampler runs without error for a few iterations."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=outdir,
             save_freq=500,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=500)
         chain = sampler.load_chain()
         assert chain["samples"].shape == (3, 500, NDIM)
@@ -305,11 +305,11 @@ class TestModelRecovery:
     """Run long enough to check that the preferred model is correct."""
 
     @pytest.mark.slow
-    def test_prefers_one_source(self, rjmcmc_space, outdir):
+    def test_prefers_one_source(self, product_space, outdir):
         """Model recovery on the sinusoid problem with the default mixture.
 
         Fix history (three formerly xfailing defects, all now covered by
-        dedicated regressions in tests/test_rjmcmc_detailed_balance.py):
+        dedicated regressions in tests/test_birth_death_detailed_balance.py):
 
         1. Constant-weight birth/death selection violated detailed balance;
            birth and death are now ONE kernel with schedule-driven internal
@@ -333,27 +333,27 @@ class TestModelRecovery:
            per-model buffer (> 50,000 samples in the current model), which
            a 20k-iteration run split across 3 models cannot reach, so
            ``JumpProposals`` silently substituted ``gaussian``.
-           ``from_rjmcmc`` now registers the min-fill-gated ``EarlyDE``
+           ``from_product_space`` now registers the min-fill-gated ``EarlyDE``
            (active after 100 within-model samples, drawing from the tail
            of the partially filled buffer), which restores the ridge move;
            it accepts at ~40% here and this test passes at seeds 42, 7,
            43, 101, and 202 (P(1 source) = 0.54-0.63 vs the prior-MC gold
            standard ~[0.64, 0.29, 0.07]).
         """
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=5,
             seed=42,
             outdir=outdir,
             save_freq=5000,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=20_000)
 
         chain = sampler.load_chain()
         cold = chain["samples"][0]
-        probs = rjmcmc_space.model_posterior_probs(cold, burn=5000)
+        probs = product_space.model_posterior_probs(cold, burn=5000)
 
         # 1 source should be strongly preferred
         assert (
@@ -363,12 +363,12 @@ class TestModelRecovery:
 
 
 class TestSampleCovExpansion:
-    """Verify that from_rjmcmc expands per-source sample_cov to full product space."""
+    """Verify that from_product_space expands per-source sample_cov to full product space."""
 
-    def test_per_source_cov_expanded(self, rjmcmc_space, outdir):
+    def test_per_source_cov_expanded(self, product_space, outdir):
         per_source_cov = np.array([[4.0, 0.5], [0.5, 1.0]])
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -383,10 +383,10 @@ class TestSampleCovExpansion:
         # Model index slot should be 1
         assert cs.sample_cov[-1, -1] == 1.0
 
-    def test_full_cov_passed_through(self, rjmcmc_space, outdir):
+    def test_full_cov_passed_through(self, product_space, outdir):
         full_cov = np.eye(NDIM) * 2.0
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -395,10 +395,10 @@ class TestSampleCovExpansion:
         cs = sampler.multi_chain_stats.chain_stats[0]
         np.testing.assert_array_equal(cs.sample_cov, full_cov)
 
-    def test_per_source_mean_expanded(self, rjmcmc_space, outdir):
+    def test_per_source_mean_expanded(self, product_space, outdir):
         per_source_mean = np.array([2.5, 1.5])
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -411,11 +411,11 @@ class TestSampleCovExpansion:
             np.testing.assert_array_equal(cs.sample_mean[sl], per_source_mean)
         assert cs.sample_mean[-1] == 0.0
 
-    def test_short_run_with_per_source_cov(self, rjmcmc_space, outdir):
+    def test_short_run_with_per_source_cov(self, product_space, outdir):
         """Smoke test: sampler runs with per-source covariance."""
         per_source_cov = np.diag([1.0, 0.5])
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -423,7 +423,7 @@ class TestSampleCovExpansion:
             save_freq=200,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=200)
         chain = sampler.load_chain()
         assert chain["samples"].shape == (2, 200, NDIM)
@@ -432,16 +432,16 @@ class TestSampleCovExpansion:
 class TestPriorEnforcement:
     """Verify that ALL source parameters (active + inactive) stay within prior."""
 
-    def test_all_params_in_bounds(self, rjmcmc_space, outdir):
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+    def test_all_params_in_bounds(self, product_space, outdir):
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=outdir,
             save_freq=1000,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=2000)
 
         chain = sampler.load_chain()
@@ -456,10 +456,10 @@ class TestPriorEnforcement:
 class TestPerModelStats:
     """Verify per-model adaptive proposal statistics."""
 
-    def test_per_model_state_initialized(self, rjmcmc_space, outdir):
+    def test_per_model_state_initialized(self, product_space, outdir):
         """Per-model state has correct groups for each model."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -475,10 +475,10 @@ class TestPerModelStats:
         # nmodel=2 -> 3 active source groups
         assert len(cs._per_model[2].groups) == 3
 
-    def test_update_sample_swaps_groups(self, rjmcmc_space, outdir):
+    def test_update_sample_swaps_groups(self, product_space, outdir):
         """update_sample swaps in model-specific groups."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -498,10 +498,10 @@ class TestPerModelStats:
         cs.update_sample(pos)
         assert len(cs.groups) == 3
 
-    def test_update_sample_swaps_buffer(self, rjmcmc_space, outdir):
+    def test_update_sample_swaps_buffer(self, product_space, outdir):
         """update_sample swaps in model-specific buffer and sample_total."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -521,10 +521,10 @@ class TestPerModelStats:
         cs.update_sample(pos)
         assert cs.sample_total == 20
 
-    def test_recursive_update_routes_samples(self, rjmcmc_space, outdir):
+    def test_recursive_update_routes_samples(self, product_space, outdir):
         """recursive_update partitions samples by nmodel."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -544,10 +544,10 @@ class TestPerModelStats:
         assert cs._per_model[1].sample_total == 20
         assert cs._per_model[2].sample_total == 0
 
-    def test_proposal_L_diverges(self, rjmcmc_space, outdir):
+    def test_proposal_L_diverges(self, product_space, outdir):
         """proposal_L diverges between models after model-specific samples."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
@@ -582,32 +582,32 @@ class TestPerModelStats:
             L0_after, L1_after
         ), "proposal_L should diverge after model-specific updates"
 
-    def test_short_run_with_per_model(self, rjmcmc_space, outdir):
+    def test_short_run_with_per_model(self, product_space, outdir):
         """Smoke test: RJMCMC sampling runs correctly with per-model stats."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=outdir,
             save_freq=500,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=500)
         chain = sampler.load_chain()
         assert chain["samples"].shape == (3, 500, NDIM)
 
-    def test_pickle_roundtrip(self, rjmcmc_space, outdir):
+    def test_pickle_roundtrip(self, product_space, outdir):
         """Pickle round-trip preserves per-model state."""
-        sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = PTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=outdir,
             save_freq=200,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=200)
 
         cs_before = sampler.multi_chain_stats.chain_stats[0]

@@ -4,15 +4,15 @@
 of AM/SCAM/DE (and user-registered) proposals per temperature chain,
 neighbour swaps with automatic temperature-ladder adaptation, periodic
 chain saving, and bit-exact pickle-based checkpoint/resume. The
-:meth:`PTSampler.from_rjmcmc` constructor pre-wires a sampler for
-reversible-jump model selection (combined birth/death kernel, model-index
-jump, source swap, min-fill-gated DE). Module-level helpers — :func:`setup_seeds`,
+:meth:`PTSampler.from_product_space` constructor pre-wires a sampler for
+product-space (birth-death) model selection (combined birth/death kernel,
+model-index jump, source swap, min-fill-gated DE). Module-level helpers — :func:`setup_seeds`,
 :func:`setup_chain_stats`, :func:`setup_standard_jumps`, and
 :func:`setup_initial_position` — build the per-chain RNGs, statistics,
 proposal mixtures, and initial positions, and are shared with
-:class:`impulse.rjpt_sampler.RJPTSampler`.
+:class:`impulse.hybrid_sampler.HybridPTSampler`.
 
-The engine shared with :class:`~impulse.rjpt_sampler.RJPTSampler` lives in
+The engine shared with :class:`~impulse.hybrid_sampler.HybridPTSampler` lives in
 the internal :mod:`impulse._pt_base` module; the setup helpers are defined
 there and re-exported here to keep their historical public import paths.
 """
@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 from impulse._pt_base import (  # noqa: F401  (setup_* re-exported public API)
     _UNSET,
-    _expand_rjmcmc_cov_mean,
+    _expand_product_space_cov_mean,
     _PTSamplerBase,
-    _register_rjmcmc_jumps,
+    _register_model_selection_jumps,
     setup_chain_stats,
     setup_initial_position,
     setup_seeds,
@@ -202,9 +202,9 @@ class PTSampler(_PTSamplerBase):
         return load_checkpoint(path, lnlike=self.lnlike, lnprior=self.lnprior)
 
     @classmethod
-    def from_rjmcmc(
+    def from_product_space(
         cls,
-        rjmcmc_space,
+        product_space,
         birth_weight: float = 15,
         death_weight: float = 15,
         nmodel_weight: float = 10,
@@ -216,12 +216,12 @@ class PTSampler(_PTSamplerBase):
         **kwargs,
     ):
         """
-        Construct a PTSampler pre-configured for RJMCMC model selection.
+        Construct a PTSampler pre-configured for product-space model selection.
 
         Parameters
         ----------
-        rjmcmc_space : BirthDeathProductSpace
-            Configured RJMCMC product space object.
+        product_space : BirthDeathProductSpace
+            Configured birth-death product space object.
         birth_weight : float
             Contribution to the combined birth-death kernel's selection
             weight.  Birth and death are registered as ONE kernel whose
@@ -259,7 +259,7 @@ class PTSampler(_PTSamplerBase):
 
         Notes
         -----
-        For a single-model space (``rjmcmc_space.num_models == 1``) the
+        For a single-model space (``product_space.num_models == 1``) the
         birth-death kernel, the model-index jump, and the source-swap
         proposal are all skipped — none is meaningful with one model, and
         the birth-death kernel itself rejects ``max_sources < 2`` — so
@@ -280,20 +280,20 @@ class PTSampler(_PTSamplerBase):
 
         Examples
         --------
-        >>> from impulse.rjmcmc import BirthDeathProductSpace
+        >>> from impulse.birth_death import BirthDeathProductSpace
         >>> space = BirthDeathProductSpace(loglike, logprior, 3, 3, draw_fn)
-        >>> sampler = PTSampler.from_rjmcmc(space, ntemps=15, seed=42)
+        >>> sampler = PTSampler.from_product_space(space, ntemps=15, seed=42)
         >>> x0 = space.draw_initial_position(np.random.default_rng(42))
         >>> sampler.sample(x0, num_iterations=50000)
         """
         # Expand per-source sample_cov / sample_mean to full product space
-        sample_cov, sample_mean = _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs)
+        sample_cov, sample_mean = _expand_product_space_cov_mean(product_space, kwargs)
 
         sampler = cls(
-            ndim=rjmcmc_space.ndim,
-            lnlike=rjmcmc_space.get_loglikelihood,
-            lnprior=rjmcmc_space.get_logprior,
-            groups=rjmcmc_space.get_default_groups(),
+            ndim=product_space.ndim,
+            lnlike=product_space.get_loglikelihood,
+            lnprior=product_space.get_logprior,
+            groups=product_space.get_default_groups(),
             sample_cov=sample_cov,
             sample_mean=sample_mean,
             am_weight=am_weight,
@@ -302,15 +302,25 @@ class PTSampler(_PTSamplerBase):
             de_min_fill=de_min_fill,
             **kwargs,
         )
-        _register_rjmcmc_jumps(
+        _register_model_selection_jumps(
             sampler,
-            rjmcmc_space,
+            product_space,
             birth_weight=birth_weight,
             death_weight=death_weight,
             nmodel_weight=nmodel_weight,
             swap_weight=swap_weight,
         )
         return sampler
+
+    @classmethod
+    def from_rjmcmc(cls, *args, **kwargs):
+        """Deprecated alias for :meth:`from_product_space`.
+
+        The name ``from_rjmcmc`` is a misnomer — this builds a product-space
+        (birth-death) sampler, not a dimension-changing reversible-jump one.
+        Kept for backward compatibility; prefer ``from_product_space``.
+        """
+        return cls.from_product_space(*args, **kwargs)
 
     def add_custom_jump(self, proposal, weight):
         """

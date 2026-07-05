@@ -89,7 +89,7 @@ nbsphinx_prolog = """
 _NOTEBOOKS = {
     # filename -> title to inject when the notebook lacks a leading "# ..."
     "sinusoidal_model.ipynb": "Sinusoid fitting with parallel tempering",
-    "rjmcmc_sinusoids.ipynb": "RJMCMC model selection: counting sinusoids",
+    "rjmcmc_sinusoids.ipynb": "Product-space model selection: counting sinusoids",
     "high_dimensional_test.ipynb": None,  # already starts with a title cell
 }
 
@@ -152,10 +152,10 @@ def _escape_pipes(app, what, name, obj, options, lines):
 def _join_wrapped_param_names(app, what, name, obj, options, lines):
     """Merge numpydoc parameter-name lines that wrap across multiple lines.
 
-    ``RJPTSampler``'s docstring lists ~26 parameter names in one entry,
+    ``HybridPTSampler``'s docstring lists ~26 parameter names in one entry,
     wrapped over four lines; napoleon needs them on a single line.
     """
-    if name != "impulse.RJPTSampler":
+    if name != "impulse.HybridPTSampler":
         return
     i = 0
     while i < len(lines):

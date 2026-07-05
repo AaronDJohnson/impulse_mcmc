@@ -1,7 +1,7 @@
 # Checkpointing and resuming
 
 Long runs should never be lost to a wall-clock limit or a crash. `PTSampler`
-and `RJPTSampler` checkpoint alongside their chain files and resume from the
+and `HybridPTSampler` checkpoint alongside their chain files and resume from the
 checkpoint **bit-exactly**.
 
 The default checkpoint format is a **no-code-execution** pair of files —
@@ -55,11 +55,11 @@ The semantics to remember:
 ## The resume contract: reconstruct, then restore
 
 The checkpoint does **not** contain your likelihood, prior, or any proposal
-code — callables cannot be stored in a data file, and the RJMCMC space and
+code — callables cannot be stored in a data file, and the product space and
 custom proposals are code. Resume therefore works in two steps:
 
 1. **Reconstruct** the sampler exactly as the original run did — the same
-   constructor arguments, the same `from_rjmcmc` call, and the same
+   constructor arguments, the same `from_product_space` call, and the same
    `add_custom_jump` registrations, in the same order.
 2. **Restore** the saved state into that reconstructed sampler (`resume=True`
    does this for you).
@@ -71,13 +71,13 @@ clear error naming the first mismatch (e.g. a missing custom jump or a changed
 weight), rather than silently restoring into the wrong sampler:
 
 ```python
-from impulse.rjmcmc import BirthDeathProductSpace
+from impulse.birth_death import BirthDeathProductSpace
 
 def make_rj_sampler():
     space = BirthDeathProductSpace(loglike, logprior, num_sources=3,
                                num_params=2, source_prior_draw=draw)
     # Same weights and the same custom jumps as the original run:
-    return RJPTSampler.from_rjmcmc(space, ntemps=8, seed=1,
+    return HybridPTSampler.from_product_space(space, ntemps=8, seed=1,
                                    outdir="./chains_rj", resume=True)
 
 make_rj_sampler().sample(x0, num_iterations=50_000)   # first run
@@ -153,7 +153,7 @@ on resuming a long run across an upgrade.
 Older checkpoints are a single `sampler_checkpoint.pkl` — a Python pickle of
 the whole sampler. **Unpickling can execute arbitrary code.** `resume=True`
 falls back to a `.pkl` only when no new-format checkpoint is present, and
-`load_checkpoint` / `load_rjpt_checkpoint` / `load_nuts_checkpoint` emit a loud
+`load_checkpoint` / `load_hybrid_checkpoint` / `load_nuts_checkpoint` emit a loud
 security/deprecation warning when they read one:
 
 - Only resume from pickle checkpoints you (or a pipeline you trust) wrote.
@@ -168,9 +168,9 @@ release. See the project's
 [security policy](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/SECURITY.md)
 for the full trust boundary.
 
-### Legacy reversible-jump checkpoints (pre-2.0 detailed-balance fix)
+### Legacy birth-death checkpoints (pre-2.0 detailed-balance fix)
 
-Reversible-jump *pickle* checkpoints written before the 2.0 detailed-balance
+Birth-death *pickle* checkpoints written before the 2.0 detailed-balance
 fix registered birth and death as two separate constant-weight jumps — wiring
 that biases the model posterior toward fewer sources. On resume from such a
 pickle, impulse-mcmc detects this and either **migrates** it automatically to
@@ -198,7 +198,7 @@ if path is not None and path.endswith(".json"):
 `restore_state_checkpoint` verifies the reconstructed sampler against the
 metadata (raising `impulse.resume.CheckpointMismatchError` on a mismatch) and
 restores state into it. The legacy pickle loaders
-(`load_checkpoint` / `load_rjpt_checkpoint` / `load_nuts_checkpoint`) return
+(`load_checkpoint` / `load_hybrid_checkpoint` / `load_nuts_checkpoint`) return
 the restored sampler object directly and rebind the stripped callables, but
 they unpickle — only use them on checkpoints you trust.
 ```

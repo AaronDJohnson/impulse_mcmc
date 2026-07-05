@@ -1,5 +1,5 @@
 """
-Detailed-balance regression tests for the RJMCMC birth/death proposals.
+Detailed-balance regression tests for the product-space birth/death proposals.
 
 These tests pin down the model-index posterior produced by the birth/death
 moves against an *analytically known* target, so that a future change to the
@@ -19,7 +19,7 @@ including the uniform case ``c == 0`` -> ``P(k) = 1 / num_sources``.
 
 Move selection goes through the PRODUCTION mechanism: a ``JumpProposals``
 mixture with *constant* selection weights containing the combined
-``BirthDeathProposal`` kernel (exactly how ``PTSampler.from_rjmcmc`` registers
+``BirthDeathProposal`` kernel (exactly how ``PTSampler.from_product_space`` registers
 it).  This is essential coverage: the sub-proposals' ``qxy`` terms contain the
 ``prob_schedule`` selection ratio, which is only the correct Hastings factor
 when birth vs death really is selected with the schedule probabilities.
@@ -58,7 +58,7 @@ sensitive K=4 config (``test_full_mixture_k4_kill_choice_bias``, marked
 slow).
 
 Finally, ``test_full_mixture_with_early_de`` runs the mixture with the
-min-fill-gated DE move (``EarlyDE``) that ``PTSampler.from_rjmcmc`` now
+min-fill-gated DE move (``EarlyDE``) that ``PTSampler.from_product_space`` now
 registers by default, guarding the newest member of the production mixture
 (see that test's docstring for why it cannot bias the model-index marginal).
 """
@@ -69,19 +69,19 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from impulse.chain_stats import ChainStats
-from impulse.proposals import (
-    JumpProposals,
-    make_early_de,
-    make_source_swap_proposal,
-)
-from impulse.rjmcmc import BirthDeathProductSpace
-from impulse.rjmcmc_proposals import (
+from impulse.birth_death import BirthDeathProductSpace
+from impulse.birth_death_proposals import (
     BirthProposal,
     DeathProposal,
     NmodelJump,
     default_birth_death_probs,
     make_birth_death_proposal,
+)
+from impulse.chain_stats import ChainStats
+from impulse.proposals import (
+    JumpProposals,
+    make_early_de,
+    make_source_swap_proposal,
 )
 from impulse.sampler_state import PTState
 
@@ -371,7 +371,7 @@ def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT, e
     and ``source_swap`` moves plus an exact within-model Gibbs move.
 
     With ``early_de=True`` the production min-fill-gated DE move
-    (``EarlyDE``, registered by default by ``PTSampler.from_rjmcmc``) is
+    (``EarlyDE``, registered by default by ``PTSampler.from_product_space``) is
     added to the mixture at constant weight, its buffer fed each iteration
     from the chain's own history (as ``recursive_update`` does in
     production), and — matching production wiring — its parameter group
@@ -415,7 +415,7 @@ def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT, e
         groups=[np.arange(num_sources)] if early_de else None,
     )
     jumps = JumpProposals(cs)
-    # constant selection weights, as registered by PTSampler.from_rjmcmc
+    # constant selection weights, as registered by PTSampler.from_product_space
     jumps.add_jump(kernel, 40)
     jumps.add_jump(NmodelJump(num_sources), 20)
     jumps.add_jump(make_source_swap_proposal(1), 20)
@@ -475,7 +475,7 @@ def test_full_mixture_parameter_dependent_likelihood(draw_mode):
 
 def test_full_mixture_with_early_de():
     """The default RJ mixture including the min-fill-gated DE (``EarlyDE``,
-    registered by ``PTSampler.from_rjmcmc``) must preserve the analytic
+    registered by ``PTSampler.from_product_space``) must preserve the analytic
     model posterior.
 
     Why EarlyDE cannot bias the model-index marginal (the argument that

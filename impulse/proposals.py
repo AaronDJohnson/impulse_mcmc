@@ -17,7 +17,7 @@ provides the adaptive kernels :func:`am`, :func:`scam`, and the
 min-fill-gated :func:`de` (:class:`DEProposal` registers it with a
 non-default ``min_fill``; :class:`EarlyDE` / :func:`make_early_de` are
 backward-compatibility aliases), the :func:`gaussian` random walk, the
-RJMCMC label-switching :class:`SourceSwapProposal`, and the per-chain
+product-space label-switching :class:`SourceSwapProposal`, and the per-chain
 :class:`JumpProposals` / per-ladder :class:`ProposalBundle` containers
 that select among registered proposals by weight.
 """
@@ -433,7 +433,7 @@ def de(chain_stats: ChainStats, min_fill: int = DE_MIN_FILL) -> tuple[np.ndarray
     its buffer from the tail, so the head of a partially filled buffer
     is zero padding).
 
-    The min-fill gate matters most for RJMCMC: per-model buffers split
+    The min-fill gate matters most for product-space model selection: per-model buffers split
     the run's samples across all model indices, so at realistic run
     lengths no model's buffer ever fills completely, yet the mixture
     still needs this history-based, ridge-following move after only
@@ -443,7 +443,7 @@ def de(chain_stats: ChainStats, min_fill: int = DE_MIN_FILL) -> tuple[np.ndarray
     ----------
     chain_stats : ChainStats
         Statistics object containing the sample-history buffer and random
-        generator.  When per-model statistics are active (RJMCMC),
+        generator.  When per-model statistics are active (product-space model selection),
         ``update_sample`` has already swapped in the CURRENT model's
         buffer and sample count, so the gate applies per model.
     min_fill : int, default DE_MIN_FILL (100)
@@ -739,7 +739,7 @@ def make_source_swap_proposal(
     num_params: int = 3, layout: Optional[ParameterLayout] = None
 ) -> SourceSwapProposal:
     """
-    Create a reversible-jump proposal for swapping parameters between sources.
+    Create a source-swap proposal for swapping parameters between sources.
 
     Parameters
     ----------

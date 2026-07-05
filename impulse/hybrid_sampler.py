@@ -1,4 +1,4 @@
-"""RJPTSampler — Parallel Tempering with optional NUTS and RJMCMC.
+"""HybridPTSampler — Parallel Tempering with optional NUTS and birth-death moves.
 
 A peer of PTSampler that interleaves MH, NUTS, and PT steps. Both samplers
 share the internal parallel-tempering engine in :mod:`impulse._pt_base`
@@ -17,15 +17,15 @@ logger = logging.getLogger(__name__)
 
 from impulse._pt_base import (
     _UNSET,
-    _expand_rjmcmc_cov_mean,
+    _expand_product_space_cov_mean,
     _PTSamplerBase,
-    _register_rjmcmc_jumps,
+    _register_model_selection_jumps,
 )
 from impulse.nuts.adapter import PerModelNUTSAdapter
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.proposals import DE_MIN_FILL
-from impulse.resume import CheckpointMismatchError, checkpoint_sampler, load_rjpt_checkpoint
+from impulse.resume import CheckpointMismatchError, checkpoint_sampler, load_hybrid_checkpoint
 from impulse.sampler_state import SamplerState, tempered_lnprobs
 from impulse.utils import prepare_files
 from impulse.wrapping import PeriodicSpec
@@ -35,30 +35,30 @@ def _adapter_view(field: str) -> property:
     """Compat property exposing a ``PerModelNUTSAdapter`` field under its 2.0 name.
 
     impulse 2.0 kept the per-model NUTS adaptation caches as raw private
-    attributes on the RJPTSampler instance; tests and diagnostics poke
+    attributes on the HybridPTSampler instance; tests and diagnostics poke
     them.  These class-level properties keep that surface readable AND
     writable while the state lives on the adapter — and, being class-level,
     they never enter ``__dict__``, so new checkpoints pickle only
     ``_nuts_adapter``.  Every access routes through
-    :meth:`RJPTSampler._ensure_nuts_adapter`, which transparently migrates
+    :meth:`HybridPTSampler._ensure_nuts_adapter`, which transparently migrates
     2.0-era raw attributes restored by unpickling into an adapter.
     """
 
-    def fget(self: "RJPTSampler"):
+    def fget(self: "HybridPTSampler"):
         return getattr(self._ensure_nuts_adapter(), field)
 
-    def fset(self: "RJPTSampler", value) -> None:
+    def fset(self: "HybridPTSampler", value) -> None:
         setattr(self._ensure_nuts_adapter(), field, value)
 
     return property(fget, fset)
 
 
-class RJPTSampler(_PTSamplerBase):
-    """Parallel Tempering sampler with optional NUTS and RJMCMC.
+class HybridPTSampler(_PTSamplerBase):
+    """Parallel Tempering sampler with optional NUTS and birth-death moves.
 
-    Interleaves Metropolis-Hastings proposals (including RJ birth/death),
-    NUTS transitions on active continuous parameters, and parallel
-    tempering swaps.
+    Interleaves Metropolis-Hastings proposals (including product-space
+    birth/death model moves), NUTS transitions on active continuous
+    parameters, and parallel tempering swaps.
 
     Parameters
     ----------
@@ -240,7 +240,7 @@ class RJPTSampler(_PTSamplerBase):
             step_size_max=step_size_max,
         )
 
-        # RJ-specific (set by from_rjmcmc)
+        # product-space model selection (set by from_product_space)
         self._rjmcmc_space = None
 
         # NUTS diagnostics buffer (populated during sampling)
@@ -254,10 +254,10 @@ class RJPTSampler(_PTSamplerBase):
         """Return the NUTS adapter, migrating 2.0-era raw attributes if present.
 
         impulse 2.0 pickled the per-model NUTS adaptation caches as raw
-        dict/set attributes directly on the RJPTSampler instance.
+        dict/set attributes directly on the HybridPTSampler instance.
         Unpickling such a checkpoint (both the ``resume=True``
         ``__dict__.update`` path in ``sample()`` and the public
-        ``load_rjpt_checkpoint(...)`` path) leaves those raw entries in
+        ``load_hybrid_checkpoint(...)`` path) leaves those raw entries in
         ``self.__dict__``, where the class-level compat properties shadow
         them; they are consumed here to rebuild the adapter with identical
         state.  Like the legacy birth/death migration this runs on resume,
@@ -315,8 +315,8 @@ class RJPTSampler(_PTSamplerBase):
     # ------------------------------------------------------------------
 
     def _load_checkpoint(self, path: str):
-        """Load an RJPT checkpoint, rebinding the unpicklable callables."""
-        return load_rjpt_checkpoint(
+        """Load a hybrid-sampler checkpoint, rebinding the unpicklable callables."""
+        return load_hybrid_checkpoint(
             path,
             lnlike=self.lnlike,
             lnprior=self.lnprior,
@@ -334,10 +334,10 @@ class RJPTSampler(_PTSamplerBase):
         )
 
     def _capture_subclass_state(self, arrays: dict, meta: dict) -> None:
-        """Add RJPT-specific state (NUTS adapter, diagnostics row count).
+        """Add hybrid-sampler-specific state (NUTS adapter, diagnostics row count).
 
-        The RJMCMC space and gradient callables are NOT captured — resume
-        reconstructs them via ``from_rjmcmc`` / the constructor.
+        The product space and gradient callables are NOT captured — resume
+        reconstructs them via ``from_product_space`` / the constructor.
         """
         adapter = self._ensure_nuts_adapter()
         ad_arrays, ad_meta = adapter.get_checkpoint_state()
@@ -349,7 +349,7 @@ class RJPTSampler(_PTSamplerBase):
             meta["nuts_diag_rows_written"] = int(self._nuts_diag_rows_written)
 
     def _restore_subclass_state(self, arrays: dict, meta: dict) -> None:
-        """Restore RJPT-specific state into the freshly constructed adapter."""
+        """Restore hybrid-sampler-specific state into the freshly constructed adapter."""
         # NUTS on/off is derived from lnlike_grad, not a registered proposal,
         # so the proposal-name guard cannot catch its absence. Verify it
         # here: a checkpoint written with NUTS but reconstructed without
@@ -432,13 +432,13 @@ class RJPTSampler(_PTSamplerBase):
             self._flush_nuts_diagnostics()
 
     # ------------------------------------------------------------------
-    # from_rjmcmc classmethod
+    # from_product_space classmethod
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_rjmcmc(
+    def from_product_space(
         cls,
-        rjmcmc_space,
+        product_space,
         lnlike_grad: Optional[Callable] = None,
         birth_weight: float = 15,
         death_weight: float = 15,
@@ -449,17 +449,17 @@ class RJPTSampler(_PTSamplerBase):
         de_weight: float = 15,
         de_min_fill: int = 100,
         **kwargs,
-    ) -> "RJPTSampler":
-        """Construct an RJPTSampler pre-configured for RJMCMC model selection.
+    ) -> "HybridPTSampler":
+        """Construct a HybridPTSampler pre-configured for product-space model selection.
 
         Parameters
         ----------
-        rjmcmc_space : BirthDeathProductSpace
-            Configured RJMCMC product space.
+        product_space : BirthDeathProductSpace
+            Configured birth-death product space.
         lnlike_grad : callable, optional
             Gradient function for NUTS on active continuous params.
         birth_weight, death_weight, nmodel_weight, swap_weight : float
-            Relative weights for RJ proposals.  Birth and death are
+            Relative weights for the model-move proposals.  Birth and death are
             registered as ONE combined kernel selected with weight
             ``birth_weight + death_weight``; the birth/death split is
             governed by the space's ``prob_schedule`` (registering them as
@@ -474,7 +474,7 @@ class RJPTSampler(_PTSamplerBase):
 
         Notes
         -----
-        For a single-model space (``rjmcmc_space.num_models == 1``) the
+        For a single-model space (``product_space.num_models == 1``) the
         birth-death kernel, the model-index jump, and the source-swap
         proposal are all skipped — none is meaningful with one model, and
         the birth-death kernel itself rejects ``max_sources < 2`` — so
@@ -485,17 +485,17 @@ class RJPTSampler(_PTSamplerBase):
         The ``de`` move is min-fill-gated: it activates as soon as the
         current model's buffer holds ``de_min_fill`` samples, returning
         the current position unchanged below the threshold; see
-        ``PTSampler.from_rjmcmc`` for the full rationale.
+        ``PTSampler.from_product_space`` for the full rationale.
         """
         # Expand per-source sample_cov / sample_mean to full product space
-        sample_cov, sample_mean = _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs)
+        sample_cov, sample_mean = _expand_product_space_cov_mean(product_space, kwargs)
 
         sampler = cls(
-            ndim=rjmcmc_space.ndim,
-            lnlike=rjmcmc_space.get_loglikelihood,
-            lnprior=rjmcmc_space.get_logprior,
+            ndim=product_space.ndim,
+            lnlike=product_space.get_loglikelihood,
+            lnprior=product_space.get_logprior,
             lnlike_grad=lnlike_grad,
-            groups=rjmcmc_space.get_default_groups(),
+            groups=product_space.get_default_groups(),
             sample_cov=sample_cov,
             sample_mean=sample_mean,
             am_weight=am_weight,
@@ -504,16 +504,26 @@ class RJPTSampler(_PTSamplerBase):
             de_min_fill=de_min_fill,
             **kwargs,
         )
-        sampler._rjmcmc_space = rjmcmc_space
-        _register_rjmcmc_jumps(
+        sampler._rjmcmc_space = product_space
+        _register_model_selection_jumps(
             sampler,
-            rjmcmc_space,
+            product_space,
             birth_weight=birth_weight,
             death_weight=death_weight,
             nmodel_weight=nmodel_weight,
             swap_weight=swap_weight,
         )
         return sampler
+
+    @classmethod
+    def from_rjmcmc(cls, *args, **kwargs) -> "HybridPTSampler":
+        """Deprecated alias for :meth:`from_product_space`.
+
+        The name ``from_rjmcmc`` is a misnomer — this builds a product-space
+        (birth-death) sampler, not a dimension-changing reversible-jump one.
+        Kept for backward compatibility; prefer ``from_product_space``.
+        """
+        return cls.from_product_space(*args, **kwargs)
 
     # ------------------------------------------------------------------
     # add_custom_jump
@@ -589,8 +599,8 @@ class RJPTSampler(_PTSamplerBase):
     def _get_active_indices(self, params):
         """Return indices of active continuous parameters.
 
-        For RJ models, active params = first ``(nmodel+1)*num_params``.
-        For fixed-dim models, active = all params.
+        For product-space models, active params = first
+        ``(nmodel+1)*num_params``.  For fixed-dim models, active = all params.
         """
         if self._rjmcmc_space is not None:
             layout = self._rjmcmc_space.layout
@@ -1013,3 +1023,7 @@ class RJPTSampler(_PTSamplerBase):
         diag["proposal_acceptance"] = self.proposal_acceptance_rates()
 
         return diag
+
+
+# Deprecated alias (pre-rename name; kept so existing code keeps importing).
+RJPTSampler = HybridPTSampler

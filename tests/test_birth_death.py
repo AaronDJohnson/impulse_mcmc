@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from impulse.rjmcmc import BirthDeathProductSpace
+from impulse.birth_death import BirthDeathProductSpace
 
 NUM_PARAMS = 3
 MAX_SOURCES = 3

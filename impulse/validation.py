@@ -432,7 +432,7 @@ def run_sbc_model_selection(
     seed: Optional[int] = None,
 ) -> dict:
     """
-    Run SBC for model-selection (RJMCMC) samplers.
+    Run SBC for model-selection (product-space) samplers.
 
     Parameters
     ----------

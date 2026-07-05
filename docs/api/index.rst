@@ -9,7 +9,7 @@ as in ``impulse.__init__``.
 .. autosummary::
 
    PTSampler
-   RJPTSampler
+   HybridPTSampler
    NUTSSampler
    BirthDeathProductSpace
    NestedProductSpace
@@ -21,7 +21,7 @@ as in ``impulse.__init__``.
    checkpoint_sampler
    load_checkpoint
    load_nuts_checkpoint
-   load_rjpt_checkpoint
+   load_hybrid_checkpoint
    check_for_checkpoint
    compose_logp_and_grad
    make_logp_and_grad_numerical

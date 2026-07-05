@@ -1,7 +1,7 @@
 """Internal shared parallel-tempering engine (private module).
 
 :class:`_PTSamplerBase` owns everything :class:`impulse.PTSampler` and
-:class:`impulse.RJPTSampler` have in common: constructor wiring (function
+:class:`impulse.HybridPTSampler` have in common: constructor wiring (function
 wrappers, per-chain RNGs, PT state/ladder, chain statistics, proposal
 bundle, ``num_adapt`` sentinel handling), the ``sample()`` loop skeleton
 (checkpoint resume incl. legacy birth/death migration and ``num_adapt``
@@ -14,7 +14,7 @@ pre-loop preparation, the adaptation-freeze transition, the post-MH step,
 and the save-time flush).
 
 Everything here is internal API: the public classes remain
-``impulse.PTSampler`` and ``impulse.RJPTSampler`` at their historical
+``impulse.PTSampler`` and ``impulse.HybridPTSampler`` at their historical
 module locations, and the module-level setup helpers keep their public
 import paths via re-export from :mod:`impulse.samplers`.
 
@@ -34,12 +34,12 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+from impulse.birth_death_proposals import migrate_legacy_birth_death
 from impulse.chain_stats import ChainStats, MultiChainStats
 from impulse.file_io import ShortChain
 from impulse.input_function_wrapper import _function_wrapper
 from impulse.proposals import DE_MIN_FILL, DEProposal, JumpProposals, ProposalBundle, am, de, scam
 from impulse.resume import check_for_checkpoint, checkpoint_sampler, restore_state_checkpoint
-from impulse.rjmcmc_proposals import migrate_legacy_birth_death
 from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
 from impulse.sampler_step import pt_step, vectorized_mh_step
 from impulse.wrapping import PeriodicSpec, WrapSpec
@@ -295,10 +295,10 @@ def setup_initial_position(initial_position: np.ndarray, ntemps: int) -> np.ndar
     return positions
 
 
-def _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs: dict) -> tuple:
+def _expand_product_space_cov_mean(product_space, kwargs: dict) -> tuple:
     """Expand per-source ``sample_cov`` / ``sample_mean`` to the product space.
 
-    Shared by ``PTSampler.from_rjmcmc`` and ``RJPTSampler.from_rjmcmc``:
+    Shared by ``PTSampler.from_product_space`` and ``HybridPTSampler.from_product_space``:
     pops ``sample_cov`` / ``sample_mean`` out of ``kwargs`` (so they are not
     forwarded twice) and, when they are shaped for a SINGLE source block,
     tiles them block-diagonally / block-wise across all model slots of the
@@ -307,8 +307,8 @@ def _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs: dict) -> tuple:
 
     Parameters
     ----------
-    rjmcmc_space : BirthDeathProductSpace
-        Configured RJMCMC product space.
+    product_space : BirthDeathProductSpace
+        Configured birth-death product space.
     kwargs : dict
         Keyword arguments destined for the sampler constructor; mutated in
         place (``sample_cov`` / ``sample_mean`` are removed).
@@ -318,7 +318,7 @@ def _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs: dict) -> tuple:
     tuple
         ``(sample_cov, sample_mean)`` expanded (or passed through / None).
     """
-    layout = rjmcmc_space.layout
+    layout = product_space.layout
     sample_cov = kwargs.pop("sample_cov", None)
     if sample_cov is not None:
         sample_cov = np.asarray(sample_cov)
@@ -340,18 +340,18 @@ def _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs: dict) -> tuple:
     return sample_cov, sample_mean
 
 
-def _register_rjmcmc_jumps(
+def _register_model_selection_jumps(
     sampler,
-    rjmcmc_space,
+    product_space,
     *,
     birth_weight: float,
     death_weight: float,
     nmodel_weight: float,
     swap_weight: float,
 ) -> None:
-    """Register the RJ jump set on a freshly constructed sampler.
+    """Register the model-move jump set on a freshly constructed sampler.
 
-    Shared tail of both ``from_rjmcmc`` classmethods: registers the ONE
+    Shared tail of both ``from_product_space`` classmethods: registers the ONE
     combined birth-death kernel (separate constant-weight birth/death jumps
     violate detailed balance), the model-index jump, and the source-swap
     proposal for multi-model spaces, and enables per-model chain
@@ -365,7 +365,7 @@ def _register_rjmcmc_jumps(
     # source slot to swap with (BirthDeathProposal itself rejects
     # max_sources < 2), so only the standard continuous jumps are
     # registered.
-    if rjmcmc_space.num_models > 1:
+    if product_space.num_models > 1:
         if birth_weight != death_weight:
             warnings.warn(
                 "birth_weight != death_weight has no effect on the birth/death "
@@ -376,22 +376,22 @@ def _register_rjmcmc_jumps(
             )
         # Birth and death must be one kernel with schedule-driven selection;
         # separate constant-weight jumps violate detailed balance (see
-        # impulse.rjmcmc_proposals.BirthDeathProposal).
+        # impulse.birth_death_proposals.BirthDeathProposal).
         if birth_weight + death_weight > 0:
             sampler.add_custom_jump(
-                rjmcmc_space.get_birth_death_proposal(), birth_weight + death_weight
+                product_space.get_birth_death_proposal(), birth_weight + death_weight
             )
-        sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
-        sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
+        sampler.add_custom_jump(product_space.get_nmodel_jump(), nmodel_weight)
+        sampler.add_custom_jump(product_space.get_source_swap_proposal(), swap_weight)
     sampler.multi_chain_stats.enable_per_model(
-        rjmcmc_space.num_models,
-        rjmcmc_space.num_params,
-        layout=rjmcmc_space.layout,
+        product_space.num_models,
+        product_space.num_params,
+        layout=product_space.layout,
     )
 
 
 class _PTSamplerBase:
-    """Shared engine behind :class:`impulse.PTSampler` and :class:`impulse.RJPTSampler`.
+    """Shared engine behind :class:`impulse.PTSampler` and :class:`impulse.HybridPTSampler`.
 
     Internal — instantiate one of the public subclasses instead. Subclass
     hook points (all with PTSampler-appropriate defaults):
@@ -413,7 +413,7 @@ class _PTSamplerBase:
     """
 
     # Subclasses override so log records keep their historical logger
-    # names ("impulse.samplers" / "impulse.rjpt_sampler"); class attribute,
+    # names ("impulse.samplers" / "impulse.hybrid_sampler"); class attribute,
     # so it is never pickled into checkpoints.
     _logger = logger
 
@@ -521,7 +521,7 @@ class _PTSamplerBase:
         """True while adaptation may still run at this global iteration.
 
         The ``getattr`` guards the public ``load_checkpoint(...)`` /
-        ``load_rjpt_checkpoint(...)`` -> ``.sample()`` paths: checkpoints
+        ``load_hybrid_checkpoint(...)`` -> ``.sample()`` paths: checkpoints
         written before ``num_adapt`` existed produce samplers without the
         attribute (unpickling bypasses ``__init__``), and missing means
         adapt forever — the historical behavior.
@@ -553,7 +553,7 @@ class _PTSamplerBase:
                     freeze()
 
     def _migrate_or_warn_legacy_birth_death(self) -> None:
-        """Migrate resumed pre-fix RJ birth/death wiring, or warn loudly.
+        """Migrate resumed pre-fix birth/death wiring, or warn loudly.
 
         Checkpoints written before the detailed-balance fix register
         ``birth_proposal`` and ``death_proposal`` as SEPARATE
@@ -570,7 +570,7 @@ class _PTSamplerBase:
         registration violates detailed balance; use the combined kernel).
 
         When a true legacy pair is found, a best-effort migration
-        (:func:`impulse.rjmcmc_proposals.migrate_legacy_birth_death`)
+        (:func:`impulse.birth_death_proposals.migrate_legacy_birth_death`)
         reconstructs the combined ``birth_death`` kernel from the
         unpickled legacy birth proposal and replaces the pair in every
         chain with their summed selection weight, then warns that
@@ -594,7 +594,7 @@ class _PTSamplerBase:
                 "violates detailed balance and biases the model posterior "
                 "toward fewer sources: register the ONE combined "
                 "birth-death kernel (make_birth_death_proposal or "
-                "from_rjmcmc) instead.",
+                "from_product_space) instead.",
                 UserWarning,
             )
             return
@@ -651,7 +651,7 @@ class _PTSamplerBase:
         """Write the end-of-iteration checkpoint (new no-code format by default).
 
         Delegates to :func:`impulse.resume.checkpoint_sampler`, which writes
-        the array + JSON checkpoint for PT/RJPT samplers and falls back to
+        the array + JSON checkpoint for PT/hybrid samplers and falls back to
         pickle only for a legacy ``.pkl`` target path.
         """
         checkpoint_sampler(self, path=self.checkpoint_path)
@@ -666,7 +666,7 @@ class _PTSamplerBase:
         ``arrays`` maps flat string keys to ``np.ndarray`` (the npz payload);
         ``meta`` is JSON-serializable and carries scalars, RNG bit-generator
         states, the ordered proposal names/weights per chain, and every
-        component's non-array state.  Callables and the RJMCMC space are NOT
+        component's non-array state.  Callables and the product space are NOT
         captured — the resume contract reconstructs them.
         """
         from impulse import __version__
@@ -744,7 +744,7 @@ class _PTSamplerBase:
                 )
         meta["stateful_proposals"] = stateful
 
-        # Subclass extras (e.g. RJPT NUTS adapter)
+        # Subclass extras (e.g. hybrid-sampler NUTS adapter)
         self._capture_subclass_state(arrays, meta)
         return arrays, meta
 
@@ -754,7 +754,7 @@ class _PTSamplerBase:
         Mutates the freshly reconstructed sampler's wired objects (RNGs,
         chain stats, proposal counters, ring buffer, PT ladder, ...) rather
         than replacing them, so the user's callables, proposal objects, and
-        RJMCMC space are preserved.  Assumes :func:`_verify_checkpoint_metadata`
+        product space are preserved.  Assumes :func:`_verify_checkpoint_metadata`
         has already confirmed the reconstruction matches.
         """
         # RNG streams (restore in place so aliases — chain_stats.rng,
@@ -927,7 +927,7 @@ class _PTSamplerBase:
                 # New no-code-execution format: verify the reconstructed
                 # sampler matches the checkpoint, then restore STATE into it
                 # in place (the reconstruct-then-restore contract). The
-                # sampler's callables, proposal objects, and RJMCMC space are
+                # sampler's callables, proposal objects, and product space are
                 # kept; only mutable state is overwritten.
                 meta = restore_state_checkpoint(self, self.checkpoint_path)
                 checkpoint_num_adapt = meta.get("num_adapt", None)

@@ -6,7 +6,7 @@ not statistical:
 1. **Seed determinism** — two fresh runs with the same seed and configuration
    produce identical chain files (samples, lnlike, lnprob for every
    temperature), for both :class:`~impulse.samplers.PTSampler` and
-   :class:`~impulse.rjpt_sampler.RJPTSampler` (including trans-dimensional
+   :class:`~impulse.hybrid_sampler.HybridPTSampler` (including trans-dimensional
    birth/death activity).
 
 2. **Resume equivalence** — an uninterrupted run of ``N + M`` iterations and a
@@ -40,9 +40,9 @@ import pickle
 import numpy as np
 import pytest
 
+from impulse.birth_death import BirthDeathProductSpace
+from impulse.hybrid_sampler import HybridPTSampler
 from impulse.resume import check_for_checkpoint
-from impulse.rjmcmc import BirthDeathProductSpace
-from impulse.rjpt_sampler import RJPTSampler
 from impulse.samplers import PTSampler
 
 SEED = 1234
@@ -188,7 +188,7 @@ def _pt_resume_sampler(outdir, resume=False):
 
 
 def _rjpt_nuts_sampler(outdir, resume=False):
-    return RJPTSampler(
+    return HybridPTSampler(
         ndim=2,
         lnlike=_gauss_lnlike,
         lnprior=_flat_lnprior,
@@ -208,7 +208,7 @@ def _rjpt_nuts_sampler(outdir, resume=False):
 
 
 def _rjpt_rj_sampler(outdir, resume=False, save_freq=200, cov_update=100):
-    return RJPTSampler.from_rjmcmc(
+    return HybridPTSampler.from_product_space(
         _make_rj_space(),
         ntemps=3,
         seed=SEED,
@@ -261,7 +261,7 @@ class TestSeedDeterminism:
         )
 
     def test_rjpt_rj_seed_determinism(self, tmp_path):
-        """RJPTSampler on a small RJ problem: 600 iterations with the
+        """HybridPTSampler on a small RJ problem: 600 iterations with the
         combined birth/death kernel, model-index jumps, and source swaps
         registered.  Requires genuine trans-dimensional activity (accepted
         birth/death moves, more than one model index visited on the cold
@@ -366,7 +366,7 @@ class TestResumeEquivalence:
         self._run_pair(tmp_path, _pt_resume_sampler, np.array([0.5, -0.3]))
 
     def test_rjpt_nuts_resume_equivalence(self, tmp_path):
-        """RJPTSampler with NUTS enabled: dual-averaging step-size state,
+        """HybridPTSampler with NUTS enabled: dual-averaging step-size state,
         mass-matrix adaptation buffers/counters, and the per-chain NUTS RNG
         streams must all be restored so the resumed trajectory is
         bit-identical (mass_matrix_adapt_interval=60 forces mass-matrix
@@ -374,7 +374,7 @@ class TestResumeEquivalence:
         self._run_pair(tmp_path, _rjpt_nuts_sampler, np.array([0.5, -0.3]))
 
     def test_rjpt_rj_resume_equivalence(self, tmp_path):
-        """RJPTSampler on the RJ problem (MH-only): birth/death kernel state
+        """HybridPTSampler on the RJ problem (MH-only): birth/death kernel state
         and per-model adaptive statistics must survive the checkpoint;
         trans-dimensional moves must be active across the boundary."""
 

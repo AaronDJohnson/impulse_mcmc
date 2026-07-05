@@ -129,9 +129,9 @@ across checkpoint/resume.
 
 ## Trans-dimensional proposals
 
-Custom moves that change the model index of a reversible-jump run must
+Custom moves that change the model index of a product-space model-selection run must
 supply exact Hastings terms, including the probability of *selecting* the
 forward and reverse moves. This is why birth and death ship as one
 combined kernel ({meth}`~impulse.BirthDeathProductSpace.get_birth_death_proposal`)
-rather than two registrable pieces — read {doc}`rjmcmc` before writing
+rather than two registrable pieces — read {doc}`model-selection` before writing
 your own.

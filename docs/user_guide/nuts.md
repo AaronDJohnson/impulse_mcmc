@@ -4,8 +4,8 @@ Two entry points use gradients:
 
 - {class}`~impulse.NUTSSampler` — a standalone No-U-Turn Sampler with
   Stan-style warmup, for fixed-dimension problems.
-- {class}`~impulse.RJPTSampler` — parallel tempering that *interleaves*
-  NUTS transitions with the Metropolis-Hastings and reversible-jump moves,
+- {class}`~impulse.HybridPTSampler` — parallel tempering that *interleaves*
+  NUTS transitions with the Metropolis-Hastings and birth/death model moves,
   when you pass `lnlike_grad`.
 
 ## Standalone: NUTSSampler
@@ -109,9 +109,9 @@ covariance as `M` directly). Code that passed a Fisher matrix to
 `from_covariance` must switch to `from_precision`.
 ```
 
-## Hybrid: RJPTSampler with `lnlike_grad`
+## Hybrid: HybridPTSampler with `lnlike_grad`
 
-{class}`~impulse.RJPTSampler` is a peer of `PTSampler` that adds a NUTS
+{class}`~impulse.HybridPTSampler` is a peer of `PTSampler` that adds a NUTS
 transition after each MH step when `lnlike_grad` is provided. The gradient
 callable has a different signature from the standalone sampler's — it
 receives the **active continuous parameters** (no model index) and returns
@@ -121,12 +121,12 @@ both the value and the gradient:
 lnlike_grad(active_params) -> (loglike_value, gradient_array)
 ```
 
-A fixed-dimension example (no reversible jump — `RJPTSampler` works fine
+A fixed-dimension example (no model moves — `HybridPTSampler` works fine
 as a plain PT+NUTS sampler):
 
 ```python
 import numpy as np
-from impulse import RJPTSampler
+from impulse import HybridPTSampler
 
 def lnlike(x):
     return -0.5 * np.sum(x**2)
@@ -139,7 +139,7 @@ def lnprior(x):
 def lnlike_grad(x):
     return -0.5 * np.sum(x**2), -x    # (value, gradient)
 
-sampler = RJPTSampler(
+sampler = HybridPTSampler(
     ndim=2,
     lnlike=lnlike,
     lnprior=lnprior,
@@ -160,12 +160,12 @@ Notes:
   likelihood plus prior, with the prior handled through its value (flat
   priors contribute zero gradient inside the support).
 - Step sizes are adapted **per (chain, active dimension)** and mass
-  matrices **per active dimension** — in reversible-jump runs each model
+  matrices **per active dimension** — in product-space runs each model
   dimensionality gets its own adapted step size and mass matrix.
-- Combine with a product space via `RJPTSampler.from_rjmcmc(space,
+- Combine with a product space via `HybridPTSampler.from_product_space(space,
   lnlike_grad=...)`; the gradient then receives the
   `(nmodel + 1) * num_params` active source parameters, matching the
-  space's `loglikelihood` contract (see {doc}`rjmcmc`).
+  space's `loglikelihood` contract (see {doc}`model-selection`).
 
 ## Injecting a Fisher-based mass matrix
 
@@ -180,7 +180,7 @@ n_active = 2   # number of active continuous parameters this matrix is for
 fisher = np.array([[4.0, 0.0],
                    [0.0, 1.0]])
 
-sampler = RJPTSampler(ndim=2, lnlike=lnlike, lnprior=lnprior,
+sampler = HybridPTSampler(ndim=2, lnlike=lnlike, lnprior=lnprior,
                       lnlike_grad=lnlike_grad, ntemps=4, seed=42,
                       outdir="./chains_rjpt_fisher")
 sampler.set_mass_matrix(n_active, MassMatrix.from_precision(fisher, MassMatrixType.DENSE))

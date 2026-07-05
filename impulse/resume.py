@@ -3,7 +3,7 @@
 Two on-disk formats exist:
 
 **New (default) — no code execution on load.** :class:`impulse.PTSampler`
-and :class:`impulse.RJPTSampler` checkpoint to ``sampler_checkpoint.npz``
+and :class:`impulse.HybridPTSampler` checkpoint to ``sampler_checkpoint.npz``
 (array state, via :func:`numpy.savez_compressed`) plus
 ``sampler_checkpoint.json`` (a schema-versioned metadata sidecar: RNG
 bit-generator states, the ordered proposal names/weights, and every
@@ -11,22 +11,22 @@ component's scalar state). Loading uses ``numpy.load(..., allow_pickle=
 False)`` and ``json.load``, so a tampered checkpoint can NOT execute code —
 loading one is as safe as reading a data file. The resume contract is
 *reconstruct then restore*: rebuild the sampler exactly as the original run
-did (same constructor / ``from_rjmcmc`` / ``add_custom_jump`` calls), then
+did (same constructor / ``from_product_space`` / ``add_custom_jump`` calls), then
 ``resume=True`` (or :func:`restore_state_checkpoint`) verifies the
 reconstruction matches the checkpoint metadata and restores STATE into it.
-Callables and the RJMCMC space are never serialized — the reconstruction
+Callables and the product space are never serialized — the reconstruction
 supplies them.
 
 **Legacy — pickle.** Older checkpoints are ``sampler_checkpoint.pkl``: a
 Python pickle of the whole sampler. **Unpickling can execute arbitrary
-code**, so :func:`load_checkpoint`, :func:`load_rjpt_checkpoint`, and
+code**, so :func:`load_checkpoint`, :func:`load_hybrid_checkpoint`, and
 :func:`load_nuts_checkpoint` emit a loud security/deprecation warning; only
 resume from pickle checkpoints you trust (see SECURITY.md). This path is
 retained unchanged for backward compatibility and is deprecated for removal
 in a future 2.x release. :class:`~impulse.nuts.sampler.NUTSSampler` still
 checkpoints via pickle (its checkpointing is separate from the PT engine).
 
-:func:`checkpoint_sampler` writes the new format for PT/RJPT samplers and
+:func:`checkpoint_sampler` writes the new format for PT/hybrid samplers and
 pickle only for a legacy ``.pkl`` target; :func:`check_for_checkpoint`
 locates a checkpoint in an output directory, preferring the new format and
 treating a lone ``.npz`` (json sidecar absent — a torn write) as no
@@ -102,7 +102,7 @@ def save_state_checkpoint(sampler: Any, path: Optional[str] = None) -> str:
 
     Parameters
     ----------
-    sampler : PTSampler or RJPTSampler
+    sampler : PTSampler or HybridPTSampler
         Must implement ``_capture_checkpoint_state`` (the PT engine does).
     path : str, optional
         Target path or base; defaults to ``<sampler.outdir>/sampler_checkpoint``.
@@ -213,6 +213,25 @@ def _check_schema(meta: dict) -> None:
         )
 
 
+# Groups of sampler-class names that are the same class under different
+# (current / deprecated) names, so a checkpoint written under one resumes
+# into the other. ``HybridPTSampler`` was called ``RJPTSampler`` before the
+# birth-death/product-space rename.
+_SAMPLER_CLASS_ALIASES = (frozenset({"HybridPTSampler", "RJPTSampler"}),)
+
+
+def _sampler_class_matches(ck_name: Any, cls_name: str) -> bool:
+    """Return True if a checkpoint's sampler-class name matches the class name.
+
+    An exact match, or a match through a known deprecated-alias group (e.g. a
+    checkpoint written by the pre-rename ``RJPTSampler`` resuming into
+    ``HybridPTSampler``).
+    """
+    if ck_name == cls_name:
+        return True
+    return any(ck_name in group and cls_name in group for group in _SAMPLER_CLASS_ALIASES)
+
+
 def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
     """Verify the reconstructed sampler matches the checkpoint; raise on mismatch.
 
@@ -223,7 +242,7 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
     original run did.
     """
     cls_name = type(sampler).__name__
-    if meta.get("sampler_class") != cls_name:
+    if not _sampler_class_matches(meta.get("sampler_class"), cls_name):
         raise CheckpointMismatchError(
             f"checkpoint was written by {meta.get('sampler_class')!r} but is "
             f"being resumed into a {cls_name!r}; reconstruct the same sampler class."
@@ -280,7 +299,7 @@ def restore_state_checkpoint(sampler: Any, path: str) -> dict:
 
     Parameters
     ----------
-    sampler : PTSampler or RJPTSampler
+    sampler : PTSampler or HybridPTSampler
         Freshly reconstructed sampler to restore into.
     path : str
         Path to the ``.json`` sidecar (or base/``.npz``).
@@ -312,7 +331,7 @@ def checkpoint_sampler(
     Create an atomic checkpoint of sampler state for resuming interrupted runs.
 
     By default this writes the no-code-execution format (``.npz`` + ``.json``)
-    for PT/RJPT samplers. It falls back to a legacy pickle when the target
+    for PT/hybrid samplers. It falls back to a legacy pickle when the target
     ``path`` ends in ``.pkl`` (e.g. :class:`~impulse.nuts.sampler.NUTSSampler`,
     whose checkpointing is separate) or when the sampler does not implement the
     new-format capture hook.
@@ -329,7 +348,7 @@ def checkpoint_sampler(
         on the legacy pickle path (the new format never serializes callables).
     format : {'npz', 'pickle'}, optional
         Force a format. ``None`` (default) auto-selects: new format for
-        PT/RJPT samplers, pickle for a ``.pkl`` target.
+        PT/hybrid samplers, pickle for a ``.pkl`` target.
 
     Returns
     -------
@@ -460,7 +479,7 @@ def load_nuts_checkpoint(path: str, logp_and_grad: Callable):
     return sampler
 
 
-def load_rjpt_checkpoint(
+def load_hybrid_checkpoint(
     path: str,
     lnlike: Callable,
     lnprior: Callable,
@@ -468,7 +487,7 @@ def load_rjpt_checkpoint(
     raw_lnprior: Optional[Callable] = None,
     lnlike_grad: Optional[Callable] = None,
 ):
-    """Load an RJPTSampler from a LEGACY pickle checkpoint and restore callables.
+    """Load a HybridPTSampler from a LEGACY pickle checkpoint and restore callables.
 
     .. warning::
         Unpickling can execute arbitrary code; only load checkpoints you trust
@@ -488,7 +507,7 @@ def load_rjpt_checkpoint(
 
     Returns
     -------
-    RJPTSampler
+    HybridPTSampler
         Restored sampler ready to continue sampling.
     """
     warnings.warn(_PICKLE_SECURITY_WARNING, UserWarning, stacklevel=2)
@@ -503,6 +522,10 @@ def load_rjpt_checkpoint(
     if lnlike_grad is not None:
         sampler.lnlike_grad = lnlike_grad
     return sampler
+
+
+# Deprecated alias (pre-rename name; kept so existing code keeps importing).
+load_rjpt_checkpoint = load_hybrid_checkpoint
 
 
 # ---------------------------------------------------------------------------

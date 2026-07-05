@@ -4,8 +4,8 @@ Provides FFT-based autocorrelation-length estimates via initial-positive-
 sequence and initial-monotone-sequence estimators
 (:func:`autocorr_length_ips_ims`), per-parameter effective sample sizes
 (:func:`effective_sample_size`), and the Gelman-Rubin split-R-hat statistic
-(:func:`grubin`). For reversible-jump runs, :func:`model_visitation_stats`
-summarizes an RJMCMC chain's model-index column (posterior model
+(:func:`grubin`). For product-space model-selection runs,
+:func:`model_visitation_stats` summarizes a chain's model-index column (posterior model
 probabilities, visit counts, transition matrix, dwell times) and
 :func:`bayes_factor_from_chain` estimates Bayes factors from posterior model
 frequencies.
@@ -358,13 +358,13 @@ def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
 
 
 # ---------------------------------------------------------------------------
-# RJMCMC diagnostics
+# Model-selection diagnostics
 # ---------------------------------------------------------------------------
 
 
 def model_visitation_stats(chain: np.ndarray, num_models: int, burn: int = 0):
     """
-    Compute model visitation statistics from an RJMCMC chain.
+    Compute model visitation statistics from a product-space model-selection chain.
 
     Parameters
     ----------

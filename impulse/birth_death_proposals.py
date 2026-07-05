@@ -1,5 +1,5 @@
 """
-RJMCMC birth/death proposals in the product space.
+Birth/death model-move proposals in the product space.
 
 All proposals are picklable callable classes so that sampler checkpointing
 works correctly.
@@ -67,7 +67,7 @@ class BirthProposal:
         ``log_proposal_density`` is not given.  If ``None`` the prior is
         assumed flat over the (in-bounds) source parameters; supply it for
         any non-flat prior.
-        :class:`~impulse.rjmcmc.BirthDeathProductSpace` wires this automatically.
+        :class:`~impulse.birth_death.BirthDeathProductSpace` wires this automatically.
     prob_schedule : callable, optional
         ``prob_schedule(nmodel, max_sources) -> (p_birth, p_death)``.
 
@@ -145,7 +145,7 @@ class BirthProposal:
         # Move-selection ratio.  The previous ``-log(nmodel + 2)`` source-count
         # term is unmatched by the *uniform* model-index prior and biased the
         # posterior toward fewer sources; see
-        # ``tests/test_rjmcmc_detailed_balance.py``.
+        # ``tests/test_birth_death_detailed_balance.py``.
         qxy = np.log(p_death_k1) - np.log(p_birth_k)
 
         # Slot re-fill ratio: the forward move draws ``new_params`` with the
@@ -232,12 +232,12 @@ class DeathProposal:
     exchangeable likelihoods (marginal maxerr ~3e-3 at ``max_sources = 4``),
     while the kill-last kernel with the identical ``qxy`` is exactly
     invariant (residual at machine precision).  See
-    ``tests/test_rjmcmc_detailed_balance.py``.
+    ``tests/test_birth_death_detailed_balance.py``.
 
     Because kill-last only ever removes the LAST active slot per move,
     trans-dimensional mixing across slots relies on the label-permuting and
     within-model moves in the mixture: ``SourceSwapProposal`` (registered
-    by default in ``from_rjmcmc``) exchanges slot contents so any active
+    by default in ``from_product_space``) exchanges slot contents so any active
     source can reach the last slot, and the within-model moves relocate the
     continuous parameters.  Keep the swap move registered whenever
     birth/death is in use.

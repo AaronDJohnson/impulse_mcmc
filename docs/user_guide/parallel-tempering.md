@@ -102,7 +102,7 @@ activates once the history buffer holds `min_fill` samples (default 100;
 configurable via the sampler's `de_min_fill` argument), and before that the
 proposal returns the current position unchanged. `EarlyDE` /
 `make_early_de` are backward-compatibility aliases for the same
-implementation (see {doc}`rjmcmc`).
+implementation (see {doc}`model-selection`).
 
 Weights are relative, not percentages:
 

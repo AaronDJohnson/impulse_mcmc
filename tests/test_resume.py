@@ -451,10 +451,10 @@ class TestResumeNumAdaptOverride:
 
     @staticmethod
     def _run_rjpt(outdir, num_adapt=_OMIT, resume=False, num_iterations=25):
-        from impulse.rjpt_sampler import RJPTSampler
+        from impulse.hybrid_sampler import HybridPTSampler
 
         kwargs = {} if num_adapt is _OMIT else {"num_adapt": num_adapt}
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_gauss_lnlike,
             lnprior=_flat_lnprior,
@@ -511,14 +511,14 @@ class TestResumeNumAdaptOverride:
         self._run_rjpt(temp_dir, num_adapt=None)
         assert check_for_checkpoint(temp_dir) is not None
 
-        with caplog.at_level(logging.WARNING, logger="impulse.rjpt_sampler"):
+        with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
             resumed = self._run_rjpt(temp_dir, num_adapt=77, resume=True, num_iterations=30)
         assert resumed.num_adapt == 77
         assert any("overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records)
 
     def test_rjpt_default_resume_keeps_checkpointed_freeze(self, temp_dir, caplog):
         self._run_rjpt(temp_dir, num_adapt=15)
-        with caplog.at_level(logging.WARNING, logger="impulse.rjpt_sampler"):
+        with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
             resumed = self._run_rjpt(temp_dir, resume=True, num_iterations=30)
         assert resumed.num_adapt == 15
         assert not any(
@@ -527,7 +527,7 @@ class TestResumeNumAdaptOverride:
 
     def test_rjpt_explicit_none_unfreezes_with_warning(self, temp_dir, caplog):
         self._run_rjpt(temp_dir, num_adapt=15)
-        with caplog.at_level(logging.WARNING, logger="impulse.rjpt_sampler"):
+        with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
             resumed = self._run_rjpt(temp_dir, num_adapt=None, resume=True, num_iterations=30)
         assert resumed.num_adapt is None
         assert any("overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records)
@@ -559,10 +559,10 @@ class TestResumeNumAdaptOverride:
         assert sampler.num_adapt == 15
 
     def test_rjpt_pre_num_adapt_sampler_resumes_without_attribute_error(self, temp_dir):
-        from impulse.rjpt_sampler import RJPTSampler
+        from impulse.hybrid_sampler import HybridPTSampler
 
         self._run_rjpt(temp_dir, num_adapt=15)
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_gauss_lnlike,
             lnprior=_flat_lnprior,
@@ -605,9 +605,9 @@ class TestResumeLegacyBirthDeathWarning:
 
     @staticmethod
     def _make_rjpt(outdir, resume=False):
-        from impulse.rjpt_sampler import RJPTSampler
+        from impulse.hybrid_sampler import HybridPTSampler
 
-        return RJPTSampler(
+        return HybridPTSampler(
             ndim=2,
             lnlike=_gauss_lnlike,
             lnprior=_flat_lnprior,
@@ -715,9 +715,9 @@ class TestResumeLegacyBirthDeathMigration:
 
     @staticmethod
     def _make_rjpt(outdir, resume=False):
-        from impulse.rjpt_sampler import RJPTSampler
+        from impulse.hybrid_sampler import HybridPTSampler
 
-        return RJPTSampler(
+        return HybridPTSampler(
             ndim=2,
             lnlike=_gauss_lnlike,
             lnprior=_tight_nmodel_lnprior,
@@ -730,7 +730,7 @@ class TestResumeLegacyBirthDeathMigration:
 
     def _legacy_pair(self):
         """Build a HEAD-layout birth/death pair from the current classes."""
-        from impulse.rjmcmc_proposals import BirthProposal, DeathProposal
+        from impulse.birth_death_proposals import BirthProposal, DeathProposal
 
         draw = _UnitIntervalDraw()
         birth = BirthProposal(
@@ -764,7 +764,7 @@ class TestResumeLegacyBirthDeathMigration:
         silently assuming a flat one gives wrong acceptance ratios for
         non-flat priors.
         """
-        from impulse.rjmcmc_proposals import BirthProposal, DeathProposal
+        from impulse.birth_death_proposals import BirthProposal, DeathProposal
 
         draw = _UnitIntervalDraw()
         birth = BirthProposal(
@@ -792,7 +792,7 @@ class TestResumeLegacyBirthDeathMigration:
         ``draw_from_prior`` (it re-fills the vacated slot), which is what
         distinguishes it from a pre-fix legacy checkpoint.
         """
-        from impulse.rjmcmc_proposals import (
+        from impulse.birth_death_proposals import (
             make_birth_proposal,
             make_death_proposal,
         )
@@ -827,7 +827,7 @@ class TestResumeLegacyBirthDeathMigration:
         return pre_weights
 
     def _assert_migrated(self, resumed, pre_weights):
-        from impulse.rjmcmc_proposals import BirthDeathProposal
+        from impulse.birth_death_proposals import BirthDeathProposal
 
         combined = None
         for jp, old_weights in zip(resumed.proposal_bundle.jump_proposals, pre_weights):
@@ -1011,7 +1011,7 @@ class TestResumeLegacyBirthDeathMigration:
     def test_pt_post_fix_checkpoint_round_trip_untouched(self, temp_dir):
         """A checkpoint already carrying the combined kernel must resume
         with no migration and no legacy warning."""
-        from impulse.rjmcmc_proposals import make_birth_death_proposal
+        from impulse.birth_death_proposals import make_birth_death_proposal
 
         clean = self._make_pt(temp_dir)
         kernel = make_birth_death_proposal(
@@ -1039,7 +1039,7 @@ class TestResumeLegacyBirthDeathMigration:
             assert jp.proposal_weights[names.index("birth_death")] == (pytest.approx(12.0))
 
     def test_rjpt_post_fix_checkpoint_round_trip_untouched(self, temp_dir):
-        from impulse.rjmcmc_proposals import make_birth_death_proposal
+        from impulse.birth_death_proposals import make_birth_death_proposal
 
         clean = self._make_rjpt(temp_dir)
         kernel = make_birth_death_proposal(
@@ -1068,7 +1068,7 @@ class TestResumeLegacyBirthDeathMigration:
 
 class TestResumeLegacyNUTSAdapterMigration:
     """impulse 2.0 checkpoints pickled the per-model NUTS adaptation caches
-    as raw dict/set attributes directly on the RJPTSampler instance; the
+    as raw dict/set attributes directly on the HybridPTSampler instance; the
     current sampler keeps them inside a ``PerModelNUTSAdapter`` component.
     Resuming a 2.0-shaped checkpoint must rebuild the adapter from the raw
     attributes SILENTLY (internal representation change, identical
@@ -1090,9 +1090,9 @@ class TestResumeLegacyNUTSAdapterMigration:
 
     @staticmethod
     def _make_nuts_rjpt(outdir, resume=False):
-        from impulse.rjpt_sampler import RJPTSampler
+        from impulse.hybrid_sampler import HybridPTSampler
 
-        return RJPTSampler(
+        return HybridPTSampler(
             ndim=2,
             lnlike=_gauss_lnlike,
             lnprior=_flat_lnprior,

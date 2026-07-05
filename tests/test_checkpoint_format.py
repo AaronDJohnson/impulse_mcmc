@@ -22,6 +22,8 @@ import pickle
 import numpy as np
 import pytest
 
+from impulse.birth_death import BirthDeathProductSpace
+from impulse.hybrid_sampler import HybridPTSampler
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.resume import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -33,8 +35,6 @@ from impulse.resume import (
     restore_state_checkpoint,
     save_state_checkpoint,
 )
-from impulse.rjmcmc import BirthDeathProductSpace
-from impulse.rjpt_sampler import RJPTSampler
 from impulse.samplers import PTSampler
 
 SEED = 4321
@@ -148,7 +148,7 @@ def _pt(outdir, resume=False, **kw):
 
 
 def _rjpt_nuts(outdir, resume=False):
-    return RJPTSampler.from_rjmcmc(
+    return HybridPTSampler.from_product_space(
         _make_rj_space(),
         lnlike_grad=_rj_lnlike_grad,
         ntemps=3,
@@ -436,7 +436,7 @@ class TestMetadataMismatch:
     def test_wrong_class_raises(self, tmp_path):
         original = _pt(str(tmp_path))
         original.sample(np.array([0.3, -0.2]), num_iterations=40)
-        wrong = RJPTSampler(
+        wrong = HybridPTSampler(
             ndim=2,
             lnlike=_gauss_lnlike,
             lnprior=_flat_lnprior,
@@ -477,6 +477,26 @@ class TestMetadataMismatch:
         meta = restore_state_checkpoint(good, str(tmp_path / "sampler_checkpoint.json"))
         assert good.short_chain.iteration == original.short_chain.iteration
         assert meta["ndim"] == 2
+
+    def test_deprecated_sampler_class_name_resumes(self, tmp_path):
+        # A checkpoint written before the RJPTSampler -> HybridPTSampler rename
+        # stores sampler_class="RJPTSampler". It must still resume into a
+        # HybridPTSampler through the deprecated-alias-aware class check.
+        original = _rjpt_nuts(str(tmp_path))
+        original.sample(_rj_x0(), num_iterations=60)
+        save_state_checkpoint(original)
+        json_path = tmp_path / "sampler_checkpoint.json"
+        with open(json_path) as fp:
+            meta = json.load(fp)
+        assert meta["sampler_class"] == "HybridPTSampler"
+        meta["sampler_class"] = "RJPTSampler"  # simulate a pre-rename checkpoint
+        with open(json_path, "w") as fp:
+            json.dump(meta, fp)
+        restored = _rjpt_nuts(str(tmp_path))
+        # No CheckpointMismatchError despite the deprecated class name.
+        out = restore_state_checkpoint(restored, str(json_path))
+        assert out["sampler_class"] == "RJPTSampler"
+        assert restored.short_chain.iteration == original.short_chain.iteration
 
 
 # ---------------------------------------------------------------------------

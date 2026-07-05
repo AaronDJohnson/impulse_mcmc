@@ -1,7 +1,9 @@
-# Reversible-jump MCMC
+# Product-space model selection
 
-impulse-mcmc does trans-dimensional inference through a **product-space
-embedding**: instead of literally growing and shrinking the parameter
+impulse-mcmc does model-selection inference through a **product-space
+embedding** (composite model space), *not* dimension-changing reversible
+jump in the Green (1995) sense: instead of literally growing and shrinking
+the parameter
 vector, the sampler works in a fixed-size space holding *all* possible
 source slots plus a model index, and the index decides how many slots are
 active.
@@ -90,14 +92,14 @@ The contract, precisely:
   `source_proposal_logpdf` too if `source_prior_draw` samples something
   other than the prior.
 
-## Building the sampler: `from_rjmcmc`
+## Building the sampler: `from_product_space`
 
 Don't wire proposals by hand — use
-{meth}`PTSampler.from_rjmcmc <impulse.PTSampler.from_rjmcmc>` (or
-`RJPTSampler.from_rjmcmc` to add NUTS, see {doc}`nuts`):
+{meth}`PTSampler.from_product_space <impulse.PTSampler.from_product_space>` (or
+`HybridPTSampler.from_product_space` to add NUTS, see {doc}`nuts`):
 
 ```python
-sampler = PTSampler.from_rjmcmc(
+sampler = PTSampler.from_product_space(
     space,
     ntemps=8,
     seed=42,
@@ -108,7 +110,7 @@ x0 = space.draw_initial_position(np.random.default_rng(42), nmodel=0)
 sampler.sample(x0, num_iterations=20_000)
 ```
 
-`from_rjmcmc` registers, on top of the standard continuous moves (AM,
+`from_product_space` registers, on top of the standard continuous moves (AM,
 SCAM):
 
 - **One combined `birth_death` kernel** (weight
@@ -125,7 +127,7 @@ SCAM):
   `add_custom_jump`). Constant-weight selection makes the forward/reverse
   selection probabilities state-independent, violates detailed balance,
   and demonstrably biases the model posterior toward fewer sources.
-  Use the combined kernel — `from_rjmcmc` does this for you.
+  Use the combined kernel — `from_product_space` does this for you.
   ```
 
 - **`nmodel_jump`** (weight `nmodel_weight`): a uniform draw of the model
@@ -136,7 +138,7 @@ SCAM):
   move. With per-model statistics the run's history is split across model
   indices, so a full-buffer gate would never open at realistic run
   lengths; `de` instead activates once the current model's buffer holds
-  `de_min_fill` samples (default 100, a `from_rjmcmc` argument). This is
+  `de_min_fill` samples (default 100, a `from_product_space` argument). This is
   the move that diffuses along within-model degeneracy ridges; without it
   model posteriors can be metastably wrong. Runs from earlier 2.0-dev
   builds reported this move under the acceptance key `early_de`.
@@ -195,7 +197,7 @@ different seeds and longer runs.
 
 - `space.model_posterior_probs(cold, burn=burn)` is a convenience wrapper
   for just the visit frequencies.
-- For a single-model space (`num_sources == 1`), `from_rjmcmc` registers
+- For a single-model space (`num_sources == 1`), `from_product_space` registers
   only the continuous moves — there is no trans-dimensional move to make.
 - Resuming a checkpoint written before the 2.0 detailed-balance fix
   migrates the legacy separate birth/death wiring to the combined kernel

@@ -4,7 +4,7 @@
 mean/covariance, the per-group SVD used to orient AM/SCAM jumps, and the
 circular sample-history buffer consumed by the differential-evolution moves;
 ``update_sample`` refreshes the view of the current sample before each
-proposal call. For RJMCMC, per-model statistics (:class:`_PerModelState`)
+proposal call. For product-space model selection, per-model statistics (:class:`_PerModelState`)
 can be enabled so that within-model proposals use covariances and buffers
 learned separately for each model index. :class:`MultiChainStats` holds one
 :class:`ChainStats` per temperature and applies batched recursive updates
@@ -24,7 +24,7 @@ from impulse.utils import shift_array
 
 @dataclass
 class _PerModelState:
-    """Per-model statistics for adaptive proposals in RJMCMC.
+    """Per-model statistics for adaptive proposals in product-space model selection.
 
     Holds the groups, covariance, SVD, and DE buffer for a single
     model dimension so that within-model proposals use model-specific
@@ -260,7 +260,7 @@ class ChainStats:
     def enable_per_model(
         self, num_models: int, num_params: int, layout: Optional[ParameterLayout] = None
     ) -> None:
-        """Activate per-model adaptive statistics for RJMCMC.
+        """Activate per-model adaptive statistics for product-space model selection.
 
         Creates independent covariance, SVD, and DE-buffer state for each
         model index so that within-model proposals use model-specific
@@ -269,11 +269,11 @@ class ChainStats:
         Parameters
         ----------
         num_models : int
-            Maximum number of models (e.g. ``rjmcmc_space.num_models``).
+            Maximum number of models (e.g. ``product_space.num_models``).
         num_params : int
             Number of continuous parameters per source.
         layout : ParameterLayout, optional
-            Product-space parameter layout (e.g. ``rjmcmc_space.layout``);
+            Product-space parameter layout (e.g. ``product_space.layout``);
             when given it is the single source of truth and the scalar
             arguments are ignored. Without it, one is built from the
             scalars.

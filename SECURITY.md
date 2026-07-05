@@ -7,7 +7,7 @@ pre-rewrite package and is unsupported.
 
 ## Checkpoints: the default format executes no code on load
 
-`PTSampler` and `RJPTSampler` checkpoint to a **no-code-execution format** by
+`PTSampler` and `HybridPTSampler` checkpoint to a **no-code-execution format** by
 default: `sampler_checkpoint.npz` (array state) plus `sampler_checkpoint.json`
 (metadata). Loading uses `numpy.load(..., allow_pickle=False)` and
 `json.load` (`impulse/resume.py`), so **loading a checkpoint is as safe as

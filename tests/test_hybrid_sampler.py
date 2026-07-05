@@ -1,4 +1,4 @@
-"""Tests for RJPTSampler — hybrid MH + NUTS + PT sampler."""
+"""Tests for HybridPTSampler — hybrid MH + NUTS + PT sampler."""
 
 import os
 import pickle
@@ -8,8 +8,8 @@ import tempfile
 import numpy as np
 import pytest
 
-from impulse.rjmcmc import BirthDeathProductSpace
-from impulse.rjpt_sampler import RJPTSampler, load_rjpt_checkpoint
+from impulse.birth_death import BirthDeathProductSpace
+from impulse.hybrid_sampler import HybridPTSampler, load_hybrid_checkpoint
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -88,7 +88,7 @@ def _rj_loglike(params):
 
 
 @pytest.fixture
-def rjmcmc_space():
+def product_space():
     return BirthDeathProductSpace(
         loglikelihood=_rj_loglike,
         logprior=_rj_logprior,
@@ -99,15 +99,15 @@ def rjmcmc_space():
 
 
 # ---------------------------------------------------------------------------
-# TestRJPTSamplerBasic
+# TestHybridPTSamplerBasic
 # ---------------------------------------------------------------------------
 
 
-class TestRJPTSamplerBasic:
+class TestHybridPTSamplerBasic:
 
     def test_init_mh_only(self, temp_dir):
         """MH+PT, no NUTS/RJ."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -122,7 +122,7 @@ class TestRJPTSamplerBasic:
 
     def test_init_with_nuts(self, temp_dir):
         """lnlike_grad provided enables NUTS."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -135,16 +135,16 @@ class TestRJPTSamplerBasic:
         assert sampler.max_tree_depth == 10
         assert sampler.hot_chain_max_depth == 5
 
-    def test_from_rjmcmc(self, rjmcmc_space, temp_dir):
+    def test_from_product_space(self, product_space, temp_dir):
         """RJ via classmethod."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=temp_dir,
         )
-        assert sampler.ndim == rjmcmc_space.ndim
-        assert sampler._rjmcmc_space is rjmcmc_space
+        assert sampler.ndim == product_space.ndim
+        assert sampler._rjmcmc_space is product_space
         # 3 standard + combined birth-death + nmodel + swap = 6 (the
         # unified min-fill-gated de carries de_weight directly; no
         # early_de registration, no weight-0 stock-de placeholder)
@@ -156,10 +156,10 @@ class TestRJPTSamplerBasic:
         assert "birth_proposal" not in names
         assert "death_proposal" not in names
 
-    def test_from_rjmcmc_single_model_space(self, temp_dir):
+    def test_from_product_space_single_model_space(self, temp_dir):
         """Regression: a single-model space must construct successfully.
 
-        BirthDeathProposal rejects max_sources < 2, so from_rjmcmc must
+        BirthDeathProposal rejects max_sources < 2, so from_product_space must
         skip the trans-dimensional jumps (all meaningless with one model)
         and register only the standard continuous jumps.
         """
@@ -170,7 +170,7 @@ class TestRJPTSamplerBasic:
             num_params=NUM_PARAMS,
             source_prior_draw=_rj_source_draw,
         )
-        sampler = RJPTSampler.from_rjmcmc(
+        sampler = HybridPTSampler.from_product_space(
             space,
             ntemps=3,
             seed=42,
@@ -180,54 +180,54 @@ class TestRJPTSamplerBasic:
         names = sorted(p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert names == ["am", "de", "scam"]
 
-    def test_from_rjmcmc_per_source_cov(self, rjmcmc_space, temp_dir):
+    def test_from_product_space_per_source_cov(self, product_space, temp_dir):
         """Per-source sample_cov is expanded to full product space."""
         per_source_cov = np.array([[4.0, 0.5], [0.5, 1.0]])
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=temp_dir,
             sample_cov=per_source_cov,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
-        assert cs.sample_cov.shape == (rjmcmc_space.ndim, rjmcmc_space.ndim)
+        assert cs.sample_cov.shape == (product_space.ndim, product_space.ndim)
         for i in range(MAX_SOURCES):
             sl = slice(i * NUM_PARAMS, (i + 1) * NUM_PARAMS)
             np.testing.assert_array_equal(cs.sample_cov[sl, sl], per_source_cov)
         assert cs.sample_cov[-1, -1] == 1.0
 
-    def test_from_rjmcmc_per_source_mean(self, rjmcmc_space, temp_dir):
+    def test_from_product_space_per_source_mean(self, product_space, temp_dir):
         """Per-source sample_mean is expanded to full product space."""
         per_source_mean = np.array([2.5, 1.5])
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=temp_dir,
             sample_mean=per_source_mean,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
-        assert cs.sample_mean.shape == (rjmcmc_space.ndim,)
+        assert cs.sample_mean.shape == (product_space.ndim,)
         for i in range(MAX_SOURCES):
             sl = slice(i * NUM_PARAMS, (i + 1) * NUM_PARAMS)
             np.testing.assert_array_equal(cs.sample_mean[sl], per_source_mean)
 
-    def test_from_rjmcmc_with_nuts(self, rjmcmc_space, temp_dir):
+    def test_from_product_space_with_nuts(self, product_space, temp_dir):
         """Both RJ and NUTS."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             lnlike_grad=_simple_lnlike_grad,
             ntemps=3,
             seed=42,
             outdir=temp_dir,
         )
         assert sampler.nuts_enabled is True
-        assert sampler._rjmcmc_space is rjmcmc_space
+        assert sampler._rjmcmc_space is product_space
 
     def test_threads_param(self, temp_dir):
-        """RJPTSampler(threads=2) initializes and forwards to wrappers."""
-        sampler = RJPTSampler(
+        """HybridPTSampler(threads=2) initializes and forwards to wrappers."""
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -241,7 +241,7 @@ class TestRJPTSamplerBasic:
 
     def test_add_custom_jump(self, temp_dir):
         """Proposal added to all chains."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -259,15 +259,15 @@ class TestRJPTSamplerBasic:
 
 
 # ---------------------------------------------------------------------------
-# TestRJPTSamplerMHPT
+# TestHybridPTSamplerMHPT
 # ---------------------------------------------------------------------------
 
 
-class TestRJPTSamplerMHPT:
+class TestHybridPTSamplerMHPT:
 
     def test_sample_gaussian_2d(self, temp_dir):
         """Basic MH+PT sampling on 2D Gaussian."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -283,7 +283,7 @@ class TestRJPTSamplerMHPT:
         """Total calls equals num_iterations * ntemps, all proposals represented."""
         n_iter = 100
         ntemps = 3
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -312,7 +312,7 @@ class TestRJPTSamplerMHPT:
     def test_diagnostics_includes_proposal_acceptance(self, temp_dir):
         """get_diagnostics includes proposal_acceptance with correct structure."""
         ntemps = 3
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -335,7 +335,7 @@ class TestRJPTSamplerMHPT:
         """Correct dict keys and shapes."""
         ntemps = 3
         n_iter = 200
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -359,7 +359,7 @@ class TestRJPTSamplerMHPT:
         """lnprobs stay in sync with the adapted temperature ladder."""
         from impulse.sampler_state import tempered_lnprobs
 
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -381,15 +381,15 @@ class TestRJPTSamplerMHPT:
         np.testing.assert_allclose(sampler.state.lnprobs, expected, atol=1e-12)
 
     def test_checkpoint_resume(self, temp_dir):
-        """Round-trip a LEGACY pickle checkpoint via load_rjpt_checkpoint.
+        """Round-trip a LEGACY pickle checkpoint via load_hybrid_checkpoint.
 
         The default format is now the no-code-execution .npz/.json pair;
-        ``load_rjpt_checkpoint`` is the legacy pickle loader, so this test
+        ``load_hybrid_checkpoint`` is the legacy pickle loader, so this test
         writes a pickle explicitly to exercise it.
         """
         from impulse.resume import checkpoint_sampler
 
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -411,7 +411,7 @@ class TestRJPTSamplerMHPT:
         assert os.path.exists(ckpt_path)
 
         # Load checkpoint (emits the legacy-pickle security warning)
-        loaded = load_rjpt_checkpoint(
+        loaded = load_hybrid_checkpoint(
             ckpt_path,
             lnlike=sampler.lnlike,
             lnprior=sampler.lnprior,
@@ -423,15 +423,15 @@ class TestRJPTSamplerMHPT:
 
 
 # ---------------------------------------------------------------------------
-# TestRJPTSamplerNUTS
+# TestHybridPTSamplerNUTS
 # ---------------------------------------------------------------------------
 
 
-class TestRJPTSamplerNUTS:
+class TestHybridPTSamplerNUTS:
 
     def test_sample_gaussian_with_nuts(self, temp_dir):
         """PT+NUTS on 2D Gaussian, verify mean and variance."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -454,7 +454,7 @@ class TestRJPTSamplerNUTS:
 
     def test_tempered_gradient(self, temp_dir):
         """Gradient scaled by 1/T."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -481,7 +481,7 @@ class TestRJPTSamplerNUTS:
 
     def test_step_size_cached(self, temp_dir):
         """Step size found and reused."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -497,7 +497,7 @@ class TestRJPTSamplerNUTS:
 
     def test_diagnostics(self, temp_dir):
         """tree_depth, divergent, etc. present in diagnostics."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -519,7 +519,7 @@ class TestRJPTSamplerNUTS:
 
     def test_nuts_diagnostics_in_chain(self, temp_dir):
         """NUTS diagnostic columns appear in load_chain output."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -540,30 +540,30 @@ class TestRJPTSamplerNUTS:
 
 
 # ---------------------------------------------------------------------------
-# TestRJPTSamplerRJMCMC
+# TestHybridPTSamplerRJMCMC
 # ---------------------------------------------------------------------------
 
 
-class TestRJPTSamplerRJMCMC:
+class TestHybridPTSamplerRJMCMC:
 
-    def test_rjmcmc_short_run(self, rjmcmc_space, temp_dir):
+    def test_rjmcmc_short_run(self, product_space, temp_dir):
         """Smoke test: RJ sampler runs without error."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=temp_dir,
             save_freq=500,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=500)
 
         chain = sampler.load_chain()
-        assert chain["samples"].shape == (3, 500, rjmcmc_space.ndim)
+        assert chain["samples"].shape == (3, 500, product_space.ndim)
 
     @pytest.mark.slow
-    def test_rjmcmc_model_selection(self, rjmcmc_space, temp_dir):
+    def test_rjmcmc_model_selection(self, product_space, temp_dir):
         """Recover correct model count.
 
         This was xfailed after the birth/death constant-weight-selection fix,
@@ -573,26 +573,26 @@ class TestRJPTSamplerRJMCMC:
         ``nmodel_jump`` re-activated them with ``qxy = 0``, biasing the model
         posterior toward MORE sources.  With the death move now refreshing
         the vacated slot from the prior (see
-        tests/test_rjmcmc_detailed_balance.py), this recovers the preferred
+        tests/test_birth_death_detailed_balance.py), this recovers the preferred
         model reliably (checked with seeds 42, 43, and 7)."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=5,
             seed=42,
             outdir=temp_dir,
             save_freq=5000,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=20_000)
 
         chain = sampler.load_chain()
         cold = chain["samples"][0]
-        probs = rjmcmc_space.model_posterior_probs(cold, burn=5000)
+        probs = product_space.model_posterior_probs(cold, burn=5000)
         assert np.argmax(probs) == 0
         assert probs[0] > 0.5
 
-    def test_rjmcmc_with_nuts_smoke(self, rjmcmc_space, temp_dir):
+    def test_rjmcmc_with_nuts_smoke(self, product_space, temp_dir):
         """RJ+NUTS+PT smoke test."""
 
         def rj_lnlike_grad(active_params):
@@ -618,8 +618,8 @@ class TestRJPTSamplerRJMCMC:
                 )
             return ll, grad
 
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             lnlike_grad=rj_lnlike_grad,
             ntemps=3,
             seed=42,
@@ -629,17 +629,17 @@ class TestRJPTSamplerRJMCMC:
             hot_chain_max_depth=2,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=200)
 
         chain = sampler.load_chain()
         assert chain["samples"].shape[0] == 3
         assert "tree_depth" in chain
 
-    def test_lazy_step_size_on_birth(self, rjmcmc_space, temp_dir):
+    def test_lazy_step_size_on_birth(self, product_space, temp_dir):
         """New nmodel after birth triggers step size search."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             lnlike_grad=_simple_lnlike_grad,
             ntemps=2,
             seed=42,
@@ -648,7 +648,7 @@ class TestRJPTSamplerRJMCMC:
             max_tree_depth=3,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=300)
         # After sampling, some step sizes should be cached
         assert len(sampler._step_sizes) > 0
@@ -660,12 +660,12 @@ class TestRJPTSamplerRJMCMC:
 
 
 class TestPerModelStats:
-    """Per-model adaptive statistics for RJPTSampler."""
+    """Per-model adaptive statistics for HybridPTSampler."""
 
-    def test_per_model_enabled_from_rjmcmc(self, rjmcmc_space, temp_dir):
-        """from_rjmcmc enables per-model stats on all chains."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+    def test_per_model_enabled_from_product_space(self, product_space, temp_dir):
+        """from_product_space enables per-model stats on all chains."""
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=temp_dir,
@@ -676,32 +676,32 @@ class TestPerModelStats:
             assert len(cs._per_model[0].groups) == 1
             assert len(cs._per_model[2].groups) == 3
 
-    def test_rjmcmc_smoke_with_per_model(self, rjmcmc_space, temp_dir):
-        """Smoke test: RJPTSampler runs with per-model stats."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+    def test_rjmcmc_smoke_with_per_model(self, product_space, temp_dir):
+        """Smoke test: HybridPTSampler runs with per-model stats."""
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=3,
             seed=42,
             outdir=temp_dir,
             save_freq=500,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=500)
         chain = sampler.load_chain()
-        assert chain["samples"].shape == (3, 500, rjmcmc_space.ndim)
+        assert chain["samples"].shape == (3, 500, product_space.ndim)
 
-    def test_pickle_roundtrip_rjpt(self, rjmcmc_space, temp_dir):
+    def test_pickle_roundtrip_rjpt(self, product_space, temp_dir):
         """Pickle round-trip preserves per-model state."""
-        sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space,
+        sampler = HybridPTSampler.from_product_space(
+            product_space,
             ntemps=2,
             seed=42,
             outdir=temp_dir,
             save_freq=200,
         )
         rng = np.random.default_rng(42)
-        x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
+        x0 = product_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=200)
 
         cs_before = sampler.multi_chain_stats.chain_stats[0]
@@ -725,7 +725,7 @@ class TestNUTSAdapterComponent:
     attribute names remain readable/writable views of it."""
 
     def _make(self, temp_dir, **kwargs):
-        return RJPTSampler(
+        return HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -816,10 +816,10 @@ class TestNUTSAdapterComponent:
 
 
 class TestRJPTNumAdapt:
-    """Adaptation-freeze semantics of RJPTSampler(num_adapt=...)."""
+    """Adaptation-freeze semantics of HybridPTSampler(num_adapt=...)."""
 
     def _make(self, temp_dir, num_adapt):
-        return RJPTSampler(
+        return HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -861,7 +861,7 @@ class TestRJPTNumAdapt:
 
     def test_num_adapt_default_none(self, temp_dir):
         """Default num_adapt=None adapts forever (historical behavior)."""
-        sampler = RJPTSampler(
+        sampler = HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -963,7 +963,7 @@ class TestStepSizeFreezeFinalization:
     """
 
     def _make(self, temp_dir, **kwargs):
-        return RJPTSampler(
+        return HybridPTSampler(
             ndim=2,
             lnlike=_simple_lnlike,
             lnprior=_simple_lnprior,
@@ -1090,3 +1090,40 @@ class TestStepSizeFreezeFinalization:
             if da.count > 0
         }
         assert any(not np.isclose(primals[key], sampler._step_sizes[key]) for key in primals)
+
+
+# ---------------------------------------------------------------------------
+# TestDeprecatedAliases — pre-rename names remain importable and functional
+# ---------------------------------------------------------------------------
+
+
+class TestDeprecatedAliases:
+    def test_object_aliases_resolve(self):
+        import impulse
+        from impulse.hybrid_sampler import RJPTSampler
+        from impulse.resume import load_rjpt_checkpoint
+
+        assert RJPTSampler is HybridPTSampler
+        assert impulse.RJPTSampler is impulse.HybridPTSampler
+        assert load_rjpt_checkpoint is load_hybrid_checkpoint
+        assert impulse.load_rjpt_checkpoint is impulse.load_hybrid_checkpoint
+        assert impulse.RJMCMCProductSpace is impulse.BirthDeathProductSpace
+
+    def test_from_rjmcmc_delegates_to_from_product_space(self, product_space, temp_dir):
+        from impulse import PTSampler
+
+        new = HybridPTSampler.from_product_space(
+            product_space, ntemps=3, seed=42, outdir=os.path.join(temp_dir, "new")
+        )
+        deprecated = HybridPTSampler.from_rjmcmc(
+            product_space, ntemps=3, seed=42, outdir=os.path.join(temp_dir, "dep")
+        )
+        assert isinstance(deprecated, HybridPTSampler)
+        new_names = [p.__name__ for p in new.proposal_bundle.jump_proposals[0].proposal_list]
+        dep_names = [p.__name__ for p in deprecated.proposal_bundle.jump_proposals[0].proposal_list]
+        assert dep_names == new_names
+        # PTSampler.from_rjmcmc delegates too.
+        pt = PTSampler.from_rjmcmc(
+            product_space, ntemps=3, seed=42, outdir=os.path.join(temp_dir, "pt")
+        )
+        assert isinstance(pt, PTSampler)

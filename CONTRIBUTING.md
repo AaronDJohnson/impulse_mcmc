@@ -1,7 +1,7 @@
 # Contributing to impulse-mcmc
 
 Thanks for contributing! This is a research code for parallel-tempering MCMC,
-NUTS, and reversible-jump model selection — correctness of the sampler kernels
+NUTS, and product-space (birth-death) model selection — correctness of the sampler kernels
 is the top priority, and the sections below explain how we defend it.
 
 ## Development setup
@@ -54,7 +54,7 @@ separately if you don't already have it).
 Sampler bugs often don't crash — they silently bias posteriors. Two rules:
 
 1. **Detailed-balance regression tests must pass.** The tests in
-   `tests/test_rjmcmc_detailed_balance.py` — including the deterministic
+   `tests/test_birth_death_detailed_balance.py` — including the deterministic
    exact-enumeration test (`test_exact_enumeration_stationarity`), which
    enumerates the real kernels with zero Monte Carlo noise — are the guard
    against transdimensional bias. Never weaken their tolerances to make a

@@ -19,9 +19,9 @@ high_dimensional_test
 These additional notebooks are stored without outputs; run them locally:
 
 - [`rjpt_sinusoids.ipynb`](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/rjpt_sinusoids.ipynb)
-  — reversible jump with `RJPTSampler`.
+  — product-space model selection with `HybridPTSampler`.
 - [`rjmcmc_nuts_sinusoids.ipynb`](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/rjmcmc_nuts_sinusoids.ipynb)
-  — hybrid RJMCMC + NUTS + parallel tempering.
+  — hybrid model selection + NUTS + parallel tempering.
 - [`product_space_sinusoids.ipynb`](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/product_space_sinusoids.ipynb)
   — the lower-level product-space embedding.
 - [`sbc_gaussian.ipynb`](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/sbc_gaussian.ipynb)

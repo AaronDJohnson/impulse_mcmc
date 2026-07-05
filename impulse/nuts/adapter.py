@@ -1,7 +1,7 @@
-"""Per-model NUTS adaptation state for the RJPT sampler (internal module).
+"""Per-model NUTS adaptation state for the hybrid sampler (internal module).
 
 :class:`PerModelNUTSAdapter` owns the per-model NUTS adaptation caches and
-logic that :class:`impulse.RJPTSampler` historically kept as raw instance
+logic that :class:`impulse.HybridPTSampler` historically kept as raw instance
 attributes: per-``(chain, dimension)`` step sizes and dual averagers,
 per-dimension mass matrices, cold-chain sample buffers, injected
 (Fisher) mass-matrix bookkeeping, the periodic mass-matrix re-estimation
@@ -9,10 +9,10 @@ with trial-step validation, and the freeze-time step-size finalization.
 "Per model" means keyed by the number of ACTIVE continuous parameters
 (``n_active``), which in RJ runs varies with the model index.
 
-The adapter is a plain picklable component: ``RJPTSampler`` constructs one
+The adapter is a plain picklable component: ``HybridPTSampler`` constructs one
 in ``__init__`` and pickles it inside checkpoints.  Checkpoints written by
 impulse 2.0 carry the raw attributes on the sampler instance instead;
-``RJPTSampler`` rebuilds the adapter from them on resume via
+``HybridPTSampler`` rebuilds the adapter from them on resume via
 :meth:`PerModelNUTSAdapter.from_legacy_state`.
 
 Everything here is internal API — nothing is exported publicly, and the
@@ -48,11 +48,11 @@ class PerModelNUTSAdapter:
     Notes
     -----
     All state is picklable (floats, ``MassMatrix``, ``DualAveraging``,
-    lists of arrays).  The 2.0-era raw attribute names on ``RJPTSampler``
+    lists of arrays).  The 2.0-era raw attribute names on ``HybridPTSampler``
     map onto the adapter fields as follows:
 
     ======================================  ===========================
-    2.0 RJPTSampler instance attribute      adapter field
+    2.0 HybridPTSampler instance attribute      adapter field
     ======================================  ===========================
     ``_step_sizes``                         ``step_sizes``
     ``_mass_matrices``                      ``mass_matrices``
@@ -113,7 +113,7 @@ class PerModelNUTSAdapter:
     def from_legacy_state(
         cls, state: dict, defaults: Optional["PerModelNUTSAdapter"] = None
     ) -> "PerModelNUTSAdapter":
-        """Build an adapter from 2.0-era raw RJPTSampler attributes, consuming them.
+        """Build an adapter from 2.0-era raw HybridPTSampler attributes, consuming them.
 
         impulse 2.0 pickled the adaptation caches as raw attributes
         directly on the sampler instance.  This constructor adopts those

@@ -4,8 +4,7 @@ import warnings
 import numpy as np
 import pytest
 
-from impulse.chain_stats import ChainStats
-from impulse.rjmcmc_proposals import (
+from impulse.birth_death_proposals import (
     BirthDeathProposal,
     default_birth_death_probs,
     make_birth_death_proposal,
@@ -13,6 +12,7 @@ from impulse.rjmcmc_proposals import (
     make_death_proposal,
     make_nmodel_jump,
 )
+from impulse.chain_stats import ChainStats
 from impulse.sampler_state import PTState
 
 NUM_PARAMS = 3

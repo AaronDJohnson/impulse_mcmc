@@ -129,8 +129,8 @@ out-of-prior rows can genuinely be skipped.
 
 - {doc}`parallel-tempering` — the temperature ladder, adaptive proposals,
   and when to freeze adaptation.
-- {doc}`rjmcmc` — trans-dimensional sampling and model selection.
+- {doc}`model-selection` — trans-dimensional sampling and model selection.
 - {doc}`nuts` — gradient-based sampling with `NUTSSampler` and
-  `RJPTSampler`.
+  `HybridPTSampler`.
 - {doc}`checkpointing` — resuming long runs bit-exactly.
 - {doc}`custom-proposals` — registering your own proposal distributions.

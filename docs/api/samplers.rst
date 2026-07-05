@@ -6,7 +6,7 @@ Samplers
 .. autosummary::
 
    PTSampler
-   RJPTSampler
+   HybridPTSampler
    NUTSSampler
 
 PTSampler
@@ -15,10 +15,10 @@ PTSampler
 .. autoclass:: PTSampler
    :members:
 
-RJPTSampler
------------
+HybridPTSampler
+---------------
 
-.. autoclass:: RJPTSampler
+.. autoclass:: HybridPTSampler
    :members:
 
 NUTSSampler
