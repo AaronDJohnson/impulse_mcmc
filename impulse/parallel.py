@@ -7,12 +7,13 @@ Particularly beneficial for fast likelihood functions where IPC dominates
 computation time.
 """
 
-import os
-import numpy as np
-from multiprocessing import shared_memory, Pool, cpu_count
-from typing import Callable, Optional, Union
-import warnings
 import atexit
+import os
+import warnings
+from multiprocessing import Pool, cpu_count, shared_memory
+from typing import Callable, Optional, Union
+
+import numpy as np
 
 
 class ParallelLikelihood:
@@ -69,11 +70,13 @@ class ParallelLikelihood:
     - Memory usage scales with max_batch_size, not total sample count
     """
 
-    def __init__(self,
-                 likelihood_fn: Callable,
-                 n_workers: Optional[int] = None,
-                 batch_size: int = 1000,
-                 max_batch_size: Optional[int] = None):
+    def __init__(
+        self,
+        likelihood_fn: Callable,
+        n_workers: Optional[int] = None,
+        batch_size: int = 1000,
+        max_batch_size: Optional[int] = None,
+    ):
 
         self.likelihood_fn = likelihood_fn
         self.n_workers = n_workers or cpu_count()
@@ -107,9 +110,7 @@ class ParallelLikelihood:
 
             # Create NumPy array view (zero-copy)
             self._param_array = np.ndarray(
-                (self.max_batch_size, param_dim),
-                dtype=np.float64,
-                buffer=self._param_shm.buf
+                (self.max_batch_size, param_dim), dtype=np.float64, buffer=self._param_shm.buf
             )
 
         except Exception as e:
@@ -130,13 +131,11 @@ class ParallelLikelihood:
                 self._param_shm.name,
                 self.max_batch_size,
                 self._param_dim,
-                self.likelihood_fn
+                self.likelihood_fn,
             )
 
             self._pool = Pool(
-                processes=self.n_workers,
-                initializer=_worker_init,
-                initargs=init_args
+                processes=self.n_workers, initializer=_worker_init, initargs=init_args
             )
         except Exception as e:
             warnings.warn(f"Failed to create worker pool: {e}. Using direct evaluation.")
@@ -207,7 +206,7 @@ class ParallelLikelihood:
 
                 # Collect results
                 for (work_start, work_end), worker_results in zip(work_items, chunk_results):
-                    results[start_idx + work_start:start_idx + work_end] = worker_results
+                    results[start_idx + work_start : start_idx + work_end] = worker_results
 
             except Exception as e:
                 # Fallback to direct evaluation
@@ -248,8 +247,10 @@ class ParallelLikelihood:
         self.cleanup()
 
     def __repr__(self):
-        return (f"<ParallelLikelihood n_workers={self.n_workers} "
-                f"batch_size={self.batch_size} max_batch_size={self.max_batch_size}>")
+        return (
+            f"<ParallelLikelihood n_workers={self.n_workers} "
+            f"batch_size={self.batch_size} max_batch_size={self.max_batch_size}>"
+        )
 
 
 # Global worker state
@@ -257,10 +258,7 @@ _worker_param_array = None
 _worker_likelihood_fn = None
 
 
-def _worker_init(param_shm_name: str,
-                max_batch_size: int,
-                param_dim: int,
-                likelihood_fn: Callable):
+def _worker_init(param_shm_name: str, max_batch_size: int, param_dim: int, likelihood_fn: Callable):
     """Initialize worker process with shared memory access."""
     global _worker_param_array, _worker_likelihood_fn
 
@@ -270,9 +268,7 @@ def _worker_init(param_shm_name: str,
 
         # Create array view
         _worker_param_array = np.ndarray(
-            (max_batch_size, param_dim),
-            dtype=np.float64,
-            buffer=param_shm.buf
+            (max_batch_size, param_dim), dtype=np.float64, buffer=param_shm.buf
         )
 
         _worker_likelihood_fn = likelihood_fn

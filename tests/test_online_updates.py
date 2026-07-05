@@ -1,6 +1,7 @@
-import pytest
 import numpy as np
-from impulse.online_updates import update_mean, update_covariance, svd_groups
+import pytest
+
+from impulse.online_updates import svd_groups, update_covariance, update_mean
 
 
 class TestUpdateMean:
@@ -11,10 +12,10 @@ class TestUpdateMean:
         old_length = 100
         old_avg = np.array([1.0, 2.0])
         new_arr = np.array([[1.5, 2.5], [0.5, 1.5]])
-        
+
         result = update_mean(old_length, old_avg, new_arr)
-        
-        # Expected: (100*[1,2] + sum(new_samples)) / 102 
+
+        # Expected: (100*[1,2] + sum(new_samples)) / 102
         # Sum of new samples = [1.5+0.5, 2.5+1.5] = [2.0, 4.0]
         # Total = [100+2, 200+4] / 102 = [102, 204] / 102 = [1.0, 2.0]
         expected = np.array([1.0, 2.0])
@@ -25,7 +26,7 @@ class TestUpdateMean:
         old_length = 10
         old_avg = np.array([0.0, 0.0])
         new_arr = np.array([[1.0, 2.0]])
-        
+
         result = update_mean(old_length, old_avg, new_arr)
         expected = np.array([1.0, 2.0]) / 11.0
         np.testing.assert_array_almost_equal(result, expected)
@@ -35,7 +36,7 @@ class TestUpdateMean:
         old_length = 0
         old_avg = np.array([0.0, 0.0])
         new_arr = np.array([[1.0, 2.0], [3.0, 4.0]])
-        
+
         result = update_mean(old_length, old_avg, new_arr)
         expected = np.array([2.0, 3.0])  # Mean of new samples
         np.testing.assert_array_almost_equal(result, expected)
@@ -45,10 +46,10 @@ class TestUpdateMean:
         old_length = 5
         old_avg = np.array([1.0])
         new_arr = np.array([[2.0], [3.0]])
-        
+
         result = update_mean(old_length, old_avg, new_arr)
         # (5*1 + 2 + 3) / 7 = 10/7
-        expected = np.array([10.0/7.0])
+        expected = np.array([10.0 / 7.0])
         np.testing.assert_array_almost_equal(result, expected)
 
     def test_update_mean_large_numbers(self):
@@ -56,7 +57,7 @@ class TestUpdateMean:
         old_length = 1000
         old_avg = np.array([100.0, 200.0])
         new_arr = np.array([[101.0, 201.0]])
-        
+
         result = update_mean(old_length, old_avg, new_arr)
         # Should be very close to original mean
         expected = (1000 * np.array([100.0, 200.0]) + np.array([101.0, 201.0])) / 1001
@@ -72,13 +73,13 @@ class TestUpdateCovariance:
         old_cov = np.eye(2)
         old_avg = np.array([0.0, 0.0])
         new_arr = np.array([[1.0, 0.0], [0.0, 1.0]])
-        
+
         new_avg, new_cov = update_covariance(old_length, old_cov, old_avg, new_arr)
-        
+
         # Check that dimensions are preserved
         assert new_cov.shape == (2, 2)
         assert new_avg.shape == (2,)
-        
+
         # Should be positive definite
         eigenvals = np.linalg.eigvals(new_cov)
         assert np.all(eigenvals >= 0)
@@ -91,9 +92,9 @@ class TestUpdateCovariance:
         # Add samples from same distribution
         np.random.seed(42)
         new_arr = np.random.randn(10, 3)
-        
+
         new_avg, new_cov = update_covariance(old_length, old_cov, old_avg, new_arr)
-        
+
         assert new_cov.shape == (3, 3)
         assert new_avg.shape == (3,)
         # Covariance should still be reasonable
@@ -105,9 +106,9 @@ class TestUpdateCovariance:
         old_cov = np.array([[1.0, 0.0], [0.0, 1.0]])
         old_avg = np.array([0.0, 0.0])
         new_arr = np.array([[1.0, 1.0]])
-        
+
         new_avg, new_cov = update_covariance(old_length, old_cov, old_avg, new_arr)
-        
+
         assert new_cov.shape == (2, 2)
         assert new_avg.shape == (2,)
 
@@ -117,9 +118,9 @@ class TestUpdateCovariance:
         old_cov = np.zeros((2, 2))
         old_avg = np.array([0.0, 0.0])
         new_arr = np.array([[1.0, 2.0], [3.0, 4.0]])
-        
+
         new_avg, new_cov = update_covariance(old_length, old_cov, old_avg, new_arr)
-        
+
         # Should compute fresh statistics
         expected_avg = np.mean(new_arr, axis=0)
         np.testing.assert_array_almost_equal(new_avg, expected_avg)
@@ -130,9 +131,9 @@ class TestUpdateCovariance:
         old_cov = np.array([[2.0, 0.5], [0.5, 1.5]])
         old_avg = np.array([1.0, -1.0])
         new_arr = np.array([[0.5, -0.5], [1.5, -1.5]])
-        
+
         new_avg, new_cov = update_covariance(old_length, old_cov, old_avg, new_arr)
-        
+
         np.testing.assert_array_almost_equal(new_cov, new_cov.T)
 
 
@@ -182,9 +183,7 @@ class TestSvdGroups:
             # For identity submatrices, eigenvalues should be 1
             np.testing.assert_array_almost_equal(updated_S[i], np.ones(2))
             # L should equal U for identity covariance (sqrt(1)=1)
-            np.testing.assert_array_almost_equal(
-                np.abs(updated_L[i]), np.abs(updated_U[i])
-            )
+            np.testing.assert_array_almost_equal(np.abs(updated_L[i]), np.abs(updated_U[i]))
 
     def test_svd_groups_single_parameter_groups(self):
         """Test eigh with single-parameter groups"""
@@ -210,7 +209,7 @@ class TestSvdGroups:
         np.testing.assert_array_almost_equal(updated_S[1], [2.0])
 
         # L[:, j] should equal U[:, j] * sqrt(S[j])
-        np.testing.assert_array_almost_equal(updated_L[0], [[2.0]])   # sqrt(4)
+        np.testing.assert_array_almost_equal(updated_L[0], [[2.0]])  # sqrt(4)
         np.testing.assert_array_almost_equal(updated_L[1], [[np.sqrt(2.0)]])
 
     def test_svd_groups_overlapping_indices(self):

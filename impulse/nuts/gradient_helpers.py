@@ -45,15 +45,16 @@ def make_logp_and_grad_numerical(logp_fn, epsilon=1e-6):
     callable
         Function (x) -> (logp, grad).
     """
+
     def logp_and_grad(x):
         val = logp_fn(x)
         grad = numerical_gradient(logp_fn, x, epsilon)
         return val, grad
+
     return logp_and_grad
 
 
-def compose_logp_and_grad(lnlike, lnprior, lnlike_grad=None, lnprior_grad=None,
-                          epsilon=1e-6):
+def compose_logp_and_grad(lnlike, lnprior, lnlike_grad=None, lnprior_grad=None, epsilon=1e-6):
     """Combine separate likelihood/prior into single logp_and_grad callable.
 
     Falls back to numerical differentiation for any missing gradient function.
@@ -76,6 +77,7 @@ def compose_logp_and_grad(lnlike, lnprior, lnlike_grad=None, lnprior_grad=None,
     callable
         Function (x) -> (logp, grad) where logp = lnlike(x) + lnprior(x).
     """
+
     def logp_and_grad(x):
         ll = lnlike(x)
         lp = lnprior(x)

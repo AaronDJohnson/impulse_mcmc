@@ -1,17 +1,20 @@
 from typing import Callable, Optional
+
 import numpy as np
-from impulse.sampler_state import SamplerState, PTState, tempered_lnprobs
+
 from impulse.proposals import ProposalBundle
+from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
 from impulse.wrapping import WrapSpec
 
 
-def vectorized_mh_step(state: SamplerState,
-                       prop_fn: ProposalBundle,
-                       lnlike_fn: Callable,
-                       lnprior_fn: Callable,
-                       rng: np.random.Generator,
-                       wrap: Optional[WrapSpec] = None,
-                       ) -> SamplerState:
+def vectorized_mh_step(
+    state: SamplerState,
+    prop_fn: ProposalBundle,
+    lnlike_fn: Callable,
+    lnprior_fn: Callable,
+    rng: np.random.Generator,
+    wrap: Optional[WrapSpec] = None,
+) -> SamplerState:
     """
     Execute one Metropolis-Hastings step for all temperature chains simultaneously.
 
@@ -39,7 +42,7 @@ def vectorized_mh_step(state: SamplerState,
     Examples
     --------
     >>> # Typically called within the main sampling loop
-    >>> new_state = vectorized_mh_step(current_state, proposals, 
+    >>> new_state = vectorized_mh_step(current_state, proposals,
     ...                               likelihood_fn, prior_fn, rng)
     >>> acceptance_rate = new_state.accepted.mean()
 
@@ -66,7 +69,7 @@ def vectorized_mh_step(state: SamplerState,
     # changes, so feed them the full batch and mask the result. Note this
     # computes the likelihood for out-of-prior rows too — we trade that
     # wasted compute against avoiding JIT recompilation.
-    lnlike_jax = getattr(lnlike_fn, 'jax', False)
+    lnlike_jax = getattr(lnlike_fn, "jax", False)
     if lnlike_jax:
         lnlike_stars = np.asarray(lnlike_fn(x_stars))
         lnlike_stars = np.where(finite, lnlike_stars, -np.inf)
@@ -87,15 +90,18 @@ def vectorized_mh_step(state: SamplerState,
     new_lnpriors = np.where(accepts, lnprior_stars, state.lnpriors)
     new_lnprobs = np.where(accepts, lnprob_stars, state.lnprobs)
     new_accepted = accepts.astype(int)
-    return SamplerState(new_positions, new_lnlikes, new_lnpriors, new_lnprobs, new_accepted, state.temps)
+    return SamplerState(
+        new_positions, new_lnlikes, new_lnpriors, new_lnprobs, new_accepted, state.temps
+    )
 
 
-def pt_step(state: SamplerState,
-              ptstate: PTState,
-              lnlike_fn: Callable,
-              lnprior_fn: Callable,
-              rng: np.random.Generator
-              ) -> SamplerState:
+def pt_step(
+    state: SamplerState,
+    ptstate: PTState,
+    lnlike_fn: Callable,
+    lnprior_fn: Callable,
+    rng: np.random.Generator,
+) -> SamplerState:
     """
     Perform parallel tempering swap attempts between adjacent temperature chains.
 
@@ -158,7 +164,10 @@ def pt_step(state: SamplerState,
             log_acc_ratio += log_likes[swap_map[swap_chain]] / ladder[swap_chain + 1]
 
         if np.log(rng.uniform()) <= log_acc_ratio:
-            swap_map[swap_chain], swap_map[swap_chain + 1] = swap_map[swap_chain + 1], swap_map[swap_chain]
+            swap_map[swap_chain], swap_map[swap_chain + 1] = (
+                swap_map[swap_chain + 1],
+                swap_map[swap_chain],
+            )
             ptstate.swap_accept[swap_chain] += 1
 
     # increment once per sweep, not per pair
@@ -169,5 +178,9 @@ def pt_step(state: SamplerState,
     new_loglikes = log_likes[swap_map]
     new_logpriors = log_priors[swap_map]
     new_lnprobs = tempered_lnprobs(new_loglikes, new_logpriors, ladder)
-    new_accepted = np.ones(len(ladder), dtype=int)  # all ones for this one (PT swaps are handled separately)
-    return SamplerState(new_positions, new_loglikes, new_logpriors, new_lnprobs, new_accepted, ladder)
+    new_accepted = np.ones(
+        len(ladder), dtype=int
+    )  # all ones for this one (PT swaps are handled separately)
+    return SamplerState(
+        new_positions, new_loglikes, new_logpriors, new_lnprobs, new_accepted, ladder
+    )

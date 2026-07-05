@@ -56,48 +56,52 @@ See the examples/ directory for complete usage examples including:
 
 __version__ = "2.0.0"
 
-# Samplers
-from .samplers import PTSampler
-from .rjpt_sampler import RJPTSampler
-from .nuts import NUTSSampler
-
-# RJMCMC
-from .rjmcmc import RJMCMCProductSpace
-from .product_space import NestedProductSpace
-
 # Diagnostics
 from .diagnostics import (
-    model_visitation_stats,
-    bayes_factor_from_chain,
-    grubin,
-    effective_sample_size,
     autocorr_length_ips_ims,
+    bayes_factor_from_chain,
+    effective_sample_size,
+    grubin,
+    model_visitation_stats,
 )
+
+# NUTS utilities
+from .nuts import (
+    MassMatrix,
+    MassMatrixType,
+    NUTSSampler,
+    compose_logp_and_grad,
+    make_logp_and_grad_numerical,
+)
+from .product_space import NestedProductSpace
 
 # Checkpoint / resume
 from .resume import (
+    check_for_checkpoint,
     checkpoint_sampler,
     load_checkpoint,
     load_nuts_checkpoint,
     load_rjpt_checkpoint,
-    check_for_checkpoint,
 )
 
-# NUTS utilities
-from .nuts import compose_logp_and_grad, make_logp_and_grad_numerical
-from .nuts import MassMatrix, MassMatrixType
+# RJMCMC
+from .rjmcmc import RJMCMCProductSpace
+from .rjpt_sampler import RJPTSampler
+
+# Samplers
+from .samplers import PTSampler
 
 # Validation / SBC
 from .validation import (
-    compute_sbc_rank,
-    compute_sbc_quantile,
     compute_model_pit,
-    ecdf,
-    sbc_ecdf_plot,
+    compute_sbc_quantile,
+    compute_sbc_rank,
     coverage_plot,
+    ecdf,
     rank_histogram,
     run_sbc_continuous,
     run_sbc_model_selection,
+    sbc_ecdf_plot,
 )
 
 __all__ = [

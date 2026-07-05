@@ -6,9 +6,9 @@ works correctly.
 """
 
 import warnings
+from typing import Callable, Optional
 
 import numpy as np
-from typing import Callable, Optional
 
 
 def default_birth_death_probs(nmodel: int, max_sources: int):
@@ -121,9 +121,9 @@ class BirthProposal:
             return q, 0.0
 
         slot = nmodel + 1
-        old_params = q[slot * self.num_params:(slot + 1) * self.num_params].copy()
+        old_params = q[slot * self.num_params : (slot + 1) * self.num_params].copy()
         new_params = self.draw_from_prior(rng)
-        q[slot * self.num_params:(slot + 1) * self.num_params] = new_params
+        q[slot * self.num_params : (slot + 1) * self.num_params] = new_params
         q[-1] = nmodel + 1
 
         p_birth_k, _ = self.prob_schedule(nmodel, self.max_sources)
@@ -404,8 +404,10 @@ class BirthDeathProposal:
         total = None
         for k in range(self.max_sources):
             ref = self.prob_schedule(k, self.max_sources)
-            for name, schedule in (("birth", self.birth.prob_schedule),
-                                   ("death", self.death.prob_schedule)):
+            for name, schedule in (
+                ("birth", self.birth.prob_schedule),
+                ("death", self.death.prob_schedule),
+            ):
                 vals = schedule(k, self.max_sources)
                 if not np.allclose(vals, ref, rtol=1e-9, atol=1e-12):
                     raise ValueError(
@@ -416,8 +418,7 @@ class BirthDeathProposal:
             p_birth, p_death = ref
             if p_birth < 0.0 or p_death < 0.0:
                 raise ValueError(
-                    f"prob_schedule returned a negative probability at "
-                    f"nmodel={k}: {ref}"
+                    f"prob_schedule returned a negative probability at " f"nmodel={k}: {ref}"
                 )
             if total is None:
                 total = p_birth + p_death
@@ -470,6 +471,7 @@ class NmodelJump:
 # consistency with the plan's API)
 # ---------------------------------------------------------------------------
 
+
 def make_birth_proposal(
     num_params: int,
     max_sources: int,
@@ -501,8 +503,12 @@ def make_birth_proposal(
     BirthProposal
     """
     return BirthProposal(
-        num_params, max_sources, draw_from_prior,
-        log_proposal_density, log_prior_density, prob_schedule,
+        num_params,
+        max_sources,
+        draw_from_prior,
+        log_proposal_density,
+        log_prior_density,
+        prob_schedule,
     )
 
 
@@ -540,8 +546,12 @@ def make_death_proposal(
     DeathProposal
     """
     return DeathProposal(
-        num_params, max_sources, draw_from_prior,
-        log_proposal_density, log_prior_density, prob_schedule,
+        num_params,
+        max_sources,
+        draw_from_prior,
+        log_proposal_density,
+        log_prior_density,
+        prob_schedule,
     )
 
 
@@ -581,12 +591,20 @@ def make_birth_death_proposal(
     BirthDeathProposal
     """
     birth = BirthProposal(
-        num_params, max_sources, draw_from_prior,
-        log_proposal_density, log_prior_density, prob_schedule,
+        num_params,
+        max_sources,
+        draw_from_prior,
+        log_proposal_density,
+        log_prior_density,
+        prob_schedule,
     )
     death = DeathProposal(
-        num_params, max_sources, draw_from_prior,
-        log_proposal_density, log_prior_density, prob_schedule,
+        num_params,
+        max_sources,
+        draw_from_prior,
+        log_proposal_density,
+        log_prior_density,
+        prob_schedule,
     )
     return BirthDeathProposal(birth, death)
 
@@ -610,6 +628,7 @@ def make_nmodel_jump(max_sources: int) -> NmodelJump:
 # ---------------------------------------------------------------------------
 # Legacy checkpoint migration
 # ---------------------------------------------------------------------------
+
 
 def _rebuild_combined_from_legacy_birth(legacy_birth) -> BirthDeathProposal:
     """Reconstruct the combined birth-death kernel from a legacy birth proposal.
@@ -727,14 +746,12 @@ def migrate_legacy_birth_death(jump_proposals) -> Optional[BirthDeathProposal]:
             names = [getattr(p, "__name__", "") for p in jp.proposal_list]
             # Require exactly the unambiguous legacy pair in this chain;
             # anything else (missing half, duplicates) is not migratable.
-            if (names.count("birth_proposal") != 1
-                    or names.count("death_proposal") != 1):
+            if names.count("birth_proposal") != 1 or names.count("death_proposal") != 1:
                 return None
             bi = names.index("birth_proposal")
             di = names.index("death_proposal")
             if combined is None:
-                combined = _rebuild_combined_from_legacy_birth(
-                    jp.proposal_list[bi])
+                combined = _rebuild_combined_from_legacy_birth(jp.proposal_list[bi])
             keep, drop = min(bi, di), max(bi, di)
             new_list = list(jp.proposal_list)
             new_weights = [float(w) for w in jp.proposal_weights]
@@ -750,14 +767,12 @@ def migrate_legacy_birth_death(jump_proposals) -> Optional[BirthDeathProposal]:
             else:
                 new_probs = np.ones(len(new_weights)) / len(new_weights)
             new_calls = _merge_counter(
-                getattr(jp, "_proposal_calls", None), len(names), keep,
-                drop, bi, di)
+                getattr(jp, "_proposal_calls", None), len(names), keep, drop, bi, di
+            )
             new_accepts = _merge_counter(
-                getattr(jp, "_proposal_accepts", None), len(names), keep,
-                drop, bi, di)
-            commits.append(
-                (jp, new_list, new_weights, new_probs, new_calls,
-                 new_accepts))
+                getattr(jp, "_proposal_accepts", None), len(names), keep, drop, bi, di
+            )
+            commits.append((jp, new_list, new_weights, new_probs, new_calls, new_accepts))
         if combined is None:
             return None
         # Commit phase: plain attribute assignment only, so nothing below

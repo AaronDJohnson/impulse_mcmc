@@ -1,6 +1,7 @@
 """Mass matrix representations for Hamiltonian Monte Carlo."""
 
 from enum import Enum
+
 import numpy as np
 
 
@@ -42,8 +43,9 @@ class MassMatrix:
         Ignored unless ``matrix_type`` is DENSE.
     """
 
-    def __init__(self, ndim, matrix_type=MassMatrixType.UNIT,
-                 diagonal=None, dense=None, *, inverse=None):
+    def __init__(
+        self, ndim, matrix_type=MassMatrixType.UNIT, diagonal=None, dense=None, *, inverse=None
+    ):
         self.ndim = ndim
         self.matrix_type = matrix_type
 
@@ -68,8 +70,11 @@ class MassMatrix:
             dense = np.array(dense, dtype=float, copy=True)
             self._dense = dense
             self._cholesky = np.linalg.cholesky(dense)
-            self._inv = (np.linalg.inv(dense) if inverse is None
-                         else np.array(inverse, dtype=float, copy=True))
+            self._inv = (
+                np.linalg.inv(dense)
+                if inverse is None
+                else np.array(inverse, dtype=float, copy=True)
+            )
         else:
             raise ValueError(f"Unknown matrix type: {matrix_type}")
 
@@ -106,7 +111,7 @@ class MassMatrix:
         """
         if self.matrix_type == MassMatrixType.DENSE:
             return 0.5 * p @ self._inv @ p
-        return 0.5 * np.sum(self._inv_diag * p ** 2)
+        return 0.5 * np.sum(self._inv_diag * p**2)
 
     def inverse_multiply(self, p):
         """Compute M^{-1} p (velocity).
@@ -215,7 +220,6 @@ class MassMatrix:
             # a symmetrization for numerical hygiene.
             inv_prec = np.linalg.inv(precision)
             inv_prec = 0.5 * (inv_prec + inv_prec.T)
-            return cls(ndim, MassMatrixType.DENSE, dense=precision,
-                       inverse=inv_prec)
+            return cls(ndim, MassMatrixType.DENSE, dense=precision, inverse=inv_prec)
         else:
             raise ValueError(f"Unknown matrix type: {matrix_type}")

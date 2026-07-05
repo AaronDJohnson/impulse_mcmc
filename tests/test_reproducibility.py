@@ -40,10 +40,9 @@ import pickle
 import numpy as np
 import pytest
 
-from impulse.samplers import PTSampler
-from impulse.rjpt_sampler import RJPTSampler
 from impulse.rjmcmc import RJMCMCProductSpace
-
+from impulse.rjpt_sampler import RJPTSampler
+from impulse.samplers import PTSampler
 
 SEED = 1234
 
@@ -87,8 +86,7 @@ N_PTS = 50
 T_GRID = np.linspace(0, 2 * np.pi, N_PTS)
 SIGMA = 1.0
 TRUE_A, TRUE_F = 2.0, 1.0
-DATA = TRUE_A * np.sin(2 * np.pi * TRUE_F * T_GRID) + \
-    SIGMA * _RNG_DATA.standard_normal(N_PTS)
+DATA = TRUE_A * np.sin(2 * np.pi * TRUE_F * T_GRID) + SIGMA * _RNG_DATA.standard_normal(N_PTS)
 
 
 def _rj_source_draw(rng):
@@ -98,7 +96,7 @@ def _rj_source_draw(rng):
 def _rj_logprior(params):
     n = len(params)
     for i in range(n // NUM_PARAMS):
-        p = params[i * NUM_PARAMS:(i + 1) * NUM_PARAMS]
+        p = params[i * NUM_PARAMS : (i + 1) * NUM_PARAMS]
         if np.any(p < LO) or np.any(p > HI):
             return -np.inf
     return 0.0
@@ -129,8 +127,7 @@ def _make_rj_space():
 # ---------------------------------------------------------------------------
 
 
-def _assert_chains_bit_identical(chain_a, chain_b,
-                                 keys=("samples", "lnlike", "lnprob")):
+def _assert_chains_bit_identical(chain_a, chain_b, keys=("samples", "lnlike", "lnprob")):
     """Assert two load_chain() results are bit-identical for every temperature.
 
     On mismatch, report the first differing iteration per temperature so RNG
@@ -138,9 +135,7 @@ def _assert_chains_bit_identical(chain_a, chain_b,
     """
     for key in keys:
         a, b = chain_a[key], chain_b[key]
-        assert a.shape == b.shape, (
-            f"{key}: shape mismatch {a.shape} vs {b.shape}"
-        )
+        assert a.shape == b.shape, f"{key}: shape mismatch {a.shape} vs {b.shape}"
         if np.array_equal(a, b):
             continue
         # Build a precise failure message: first differing row per temp.
@@ -155,16 +150,21 @@ def _assert_chains_bit_identical(chain_a, chain_b,
                     f"temp {temp}: first mismatch at iteration {bad[0]} "
                     f"({bad.size} rows differ)"
                 )
-        raise AssertionError(
-            f"{key} not bit-identical: " + "; ".join(details)
-        )
+        raise AssertionError(f"{key} not bit-identical: " + "; ".join(details))
 
 
 def _pt_sampler(outdir, resume=False):
     return PTSampler(
-        ndim=2, lnlike=_gauss_lnlike, lnprior=_flat_lnprior,
-        ntemps=3, seed=SEED, outdir=outdir, resume=resume,
-        save_freq=200, cov_update=100, buffer_size=200,
+        ndim=2,
+        lnlike=_gauss_lnlike,
+        lnprior=_flat_lnprior,
+        ntemps=3,
+        seed=SEED,
+        outdir=outdir,
+        resume=resume,
+        save_freq=200,
+        cov_update=100,
+        buffer_size=200,
     )
 
 
@@ -173,34 +173,56 @@ def _pt_resume_sampler(outdir, resume=False):
     # refresh cadence must survive the checkpoint even when the checkpoint
     # iteration is not a covariance-update boundary.
     return PTSampler(
-        ndim=2, lnlike=_gauss_lnlike, lnprior=_flat_lnprior,
-        ntemps=3, seed=SEED, outdir=outdir, resume=resume,
-        save_freq=40, cov_update=25, buffer_size=120,
+        ndim=2,
+        lnlike=_gauss_lnlike,
+        lnprior=_flat_lnprior,
+        ntemps=3,
+        seed=SEED,
+        outdir=outdir,
+        resume=resume,
+        save_freq=40,
+        cov_update=25,
+        buffer_size=120,
     )
 
 
 def _rjpt_nuts_sampler(outdir, resume=False):
     return RJPTSampler(
-        ndim=2, lnlike=_gauss_lnlike, lnprior=_flat_lnprior,
+        ndim=2,
+        lnlike=_gauss_lnlike,
+        lnprior=_flat_lnprior,
         lnlike_grad=_gauss_lnlike_grad,
-        ntemps=3, seed=SEED, outdir=outdir, resume=resume,
-        save_freq=40, cov_update=25, buffer_size=120,
-        max_tree_depth=4, hot_chain_max_depth=3,
-        mass_matrix_adapt_interval=60, mass_matrix_min_samples=20,
+        ntemps=3,
+        seed=SEED,
+        outdir=outdir,
+        resume=resume,
+        save_freq=40,
+        cov_update=25,
+        buffer_size=120,
+        max_tree_depth=4,
+        hot_chain_max_depth=3,
+        mass_matrix_adapt_interval=60,
+        mass_matrix_min_samples=20,
     )
 
 
 def _rjpt_rj_sampler(outdir, resume=False, save_freq=200, cov_update=100):
     return RJPTSampler.from_rjmcmc(
         _make_rj_space(),
-        ntemps=3, seed=SEED, outdir=outdir, resume=resume,
-        save_freq=save_freq, cov_update=cov_update, buffer_size=200,
+        ntemps=3,
+        seed=SEED,
+        outdir=outdir,
+        resume=resume,
+        save_freq=save_freq,
+        cov_update=cov_update,
+        buffer_size=200,
     )
 
 
 def _rj_x0():
     return _make_rj_space().draw_initial_position(
-        np.random.default_rng(SEED), nmodel=0,
+        np.random.default_rng(SEED),
+        nmodel=0,
     )
 
 
@@ -232,7 +254,8 @@ class TestSeedDeterminism:
         ), "ladder adaptation never moved the interior temperature"
 
         _assert_chains_bit_identical(
-            chains[0], chains[1],
+            chains[0],
+            chains[1],
             keys=("samples", "lnlike", "lnprob", "accepted", "temperature"),
         )
 
@@ -258,12 +281,11 @@ class TestSeedDeterminism:
             "not being exercised by this configuration/seed"
         )
         nmodel_cold = np.rint(chains[0]["samples"][0, :, -1]).astype(int)
-        assert len(np.unique(nmodel_cold)) > 1, (
-            "cold chain never changed model index"
-        )
+        assert len(np.unique(nmodel_cold)) > 1, "cold chain never changed model index"
 
         _assert_chains_bit_identical(
-            chains[0], chains[1],
+            chains[0],
+            chains[1],
             keys=("samples", "lnlike", "lnprob", "accepted", "temperature"),
         )
 
@@ -329,7 +351,8 @@ class TestResumeEquivalence:
         )
 
         _assert_chains_bit_identical(
-            full_chain, resumed_chain,
+            full_chain,
+            resumed_chain,
             keys=("samples", "lnlike", "lnprob", "accepted", "temperature"),
         )
         return full_chain, resumed_chain
@@ -353,14 +376,11 @@ class TestResumeEquivalence:
         trans-dimensional moves must be active across the boundary."""
 
         def make(outdir, resume=False):
-            return _rjpt_rj_sampler(outdir, resume=resume,
-                                    save_freq=40, cov_update=25)
+            return _rjpt_rj_sampler(outdir, resume=resume, save_freq=40, cov_update=25)
 
         full_chain, _ = self._run_pair(tmp_path, make, _rj_x0())
         nmodel_cold = np.rint(full_chain["samples"][0, :, -1]).astype(int)
-        assert len(np.unique(nmodel_cold)) > 1, (
-            "cold chain never changed model index"
-        )
+        assert len(np.unique(nmodel_cold)) > 1, "cold chain never changed model index"
 
 
 # ---------------------------------------------------------------------------
@@ -387,9 +407,14 @@ class TestLegacyCheckpointRowTracking:
     @staticmethod
     def _make(outdir, resume=False):
         return PTSampler(
-            ndim=2, lnlike=_gauss_lnlike, lnprior=_flat_lnprior,
-            ntemps=TestLegacyCheckpointRowTracking.NTEMPS, seed=1,
-            outdir=outdir, save_freq=10, resume=resume,
+            ndim=2,
+            lnlike=_gauss_lnlike,
+            lnprior=_flat_lnprior,
+            ntemps=TestLegacyCheckpointRowTracking.NTEMPS,
+            seed=1,
+            outdir=outdir,
+            save_freq=10,
+            resume=resume,
         )
 
     def test_double_resume_through_pre_row_tracking_checkpoint(self, tmp_path):

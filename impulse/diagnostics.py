@@ -1,32 +1,34 @@
 import numpy as np
-from numpy.fft import rfft, irfft
+from numpy.fft import irfft, rfft
 from scipy.stats import norm
+
 
 def _next_fast_len(n: int) -> int:
     """
     Compute optimal FFT padding length for efficient autocorrelation computation.
-    
+
     Parameters
     ----------
     n : int
         Input sequence length.
-        
+
     Returns
     -------
     int
         Power-of-two length >= 2*n for efficient FFT computation.
-        
+
     Examples
     --------
     >>> _next_fast_len(1000)
     2048
-    >>> _next_fast_len(2000) 
+    >>> _next_fast_len(2000)
     4096
     """
     m = 1
     while m < 2 * n:
         m <<= 1
     return m
+
 
 def _acf_fft(x: np.ndarray) -> np.ndarray:
     """
@@ -49,6 +51,7 @@ def _acf_fft(x: np.ndarray) -> np.ndarray:
     rho = acov / acov[0]
     return np.real(rho)
 
+
 def _pair_sums_gamma(rho: np.ndarray) -> np.ndarray:
     """
     γ_m = ρ(2m-1) + ρ(2m), m=1,2,...
@@ -63,6 +66,7 @@ def _pair_sums_gamma(rho: np.ndarray) -> np.ndarray:
     pairs = tail[:L].reshape(-1, 2)
     gamma = pairs.sum(axis=1)
     return gamma
+
 
 def _ips_tau_from_gamma(gamma: np.ndarray) -> float:
     """
@@ -82,6 +86,7 @@ def _ips_tau_from_gamma(gamma: np.ndarray) -> float:
     else:
         gamma_use = gamma
     return 1.0 + 2.0 * np.sum(gamma_use)
+
 
 def _pava_monotone_nonincreasing(y: np.ndarray, w: np.ndarray | None = None) -> np.ndarray:
     """
@@ -111,12 +116,12 @@ def _pava_monotone_nonincreasing(y: np.ndarray, w: np.ndarray | None = None) -> 
         wsum.append(ww[i])
         k += 1
         # merge while violating nondecreasing: last avg < prev avg
-        while k >= 2 and avg[k-2] > avg[k-1]:
+        while k >= 2 and avg[k - 2] > avg[k - 1]:
             # pool the last two blocks
-            new_w = wsum[k-2] + wsum[k-1]
-            new_avg = (wsum[k-2] * avg[k-2] + wsum[k-1] * avg[k-1]) / new_w
-            avg[k-2] = new_avg
-            wsum[k-2] = new_w
+            new_w = wsum[k - 2] + wsum[k - 1]
+            new_avg = (wsum[k - 2] * avg[k - 2] + wsum[k - 1] * avg[k - 1]) / new_w
+            avg[k - 2] = new_avg
+            wsum[k - 2] = new_w
             # pop last block
             avg.pop()
             wsum.pop()
@@ -127,11 +132,12 @@ def _pava_monotone_nonincreasing(y: np.ndarray, w: np.ndarray | None = None) -> 
     idx = 0
     for a, w_ in zip(avg, wsum):
         m = int(round(w_)) if np.allclose(w_, round(w_)) else int(w_)
-        out[idx:idx+m] = a
+        out[idx : idx + m] = a
         idx += m
 
     # Flip sign back to nonincreasing sequence
     return -out
+
 
 def _ims_tau_from_gamma(gamma: np.ndarray) -> float:
     """
@@ -151,10 +157,11 @@ def _ims_tau_from_gamma(gamma: np.ndarray) -> float:
     gamma_use = gamma_mon[:Mprime]
     return 1.0 + 2.0 * np.sum(gamma_use)
 
+
 def autocorr_length_ips_ims(chain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute IPS and IMS integrated autocorrelation times for each dimension.
-    
+
     Parameters
     ----------
     chain : array_like, shape (T, D)
@@ -184,10 +191,11 @@ def autocorr_length_ips_ims(chain: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     return tau_ips, tau_ims
 
+
 def effective_sample_size(chain: np.ndarray) -> np.ndarray:
     """
     Compute effective sample size (ESS) for each dimension of the chain.
-    
+
     Parameters
     ----------
     chain : array_like, shape (T, D)
@@ -213,6 +221,7 @@ def effective_sample_size(chain: np.ndarray) -> np.ndarray:
             ess[j] = T / tau
 
     return ess
+
 
 def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
     """
@@ -274,15 +283,15 @@ def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
     def split_rhat(arr):
         # arr expected shape (M, N, D)
         # between-chain means per split-chain
-        theta_bar_m = np.mean(arr, axis=1)              # (M, D)
-        theta_bar    = np.mean(theta_bar_m, axis=0)     # (D,)
+        theta_bar_m = np.mean(arr, axis=1)  # (M, D)
+        theta_bar = np.mean(theta_bar_m, axis=0)  # (D,)
 
         # Between-chain variance B (per parameter)
-        B = (N / (M_s - 1)) * np.sum((theta_bar_m - theta_bar)**2, axis=0)  # (D,)
+        B = (N / (M_s - 1)) * np.sum((theta_bar_m - theta_bar) ** 2, axis=0)  # (D,)
 
         # Within-chain variance W (per parameter)
-        s2_m = np.sum((arr - theta_bar_m[:, None, :])**2, axis=1) / (N - 1)  # (M, D)
-        W = np.mean(s2_m, axis=0)                                            # (D,)
+        s2_m = np.sum((arr - theta_bar_m[:, None, :]) ** 2, axis=1) / (N - 1)  # (M, D)
+        W = np.mean(s2_m, axis=0)  # (D,)
 
         # Marginal posterior variance estimator
         var_hat = ((N - 1) / N) * W + (1 / N) * B
@@ -338,6 +347,7 @@ def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
 # ---------------------------------------------------------------------------
 # RJMCMC diagnostics
 # ---------------------------------------------------------------------------
+
 
 def model_visitation_stats(chain: np.ndarray, num_models: int, burn: int = 0):
     """
@@ -405,9 +415,7 @@ def model_visitation_stats(chain: np.ndarray, num_models: int, burn: int = 0):
     }
 
 
-def bayes_factor_from_chain(
-    chain: np.ndarray, model_i: int, model_j: int, burn: int = 0
-) -> float:
+def bayes_factor_from_chain(chain: np.ndarray, model_i: int, model_j: int, burn: int = 0) -> float:
     """
     Estimate the Bayes factor B_{ij} from posterior model frequencies.
 

@@ -3,13 +3,13 @@
 import numpy as np
 import pytest
 
+from impulse.nuts.core import NUTSState, _build_tree, leapfrog, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
-from impulse.nuts.core import leapfrog, _build_tree, nuts_step, NUTSState
 
 
 def gaussian_logp_and_grad(x):
     """Standard multivariate Gaussian: logp = -0.5 * x^T x."""
-    logp = -0.5 * np.sum(x ** 2)
+    logp = -0.5 * np.sum(x**2)
     grad = -x
     return logp, grad
 
@@ -93,8 +93,7 @@ class TestBuildTree:
         H0 = -logp + mm.kinetic_energy(p)
         rng = np.random.default_rng(42)
 
-        tree = _build_tree(x, p, grad, logp, 0, 0.1, 1, mm,
-                          gaussian_logp_and_grad, H0, 1000.0, rng)
+        tree = _build_tree(x, p, grad, logp, 0, 0.1, 1, mm, gaussian_logp_and_grad, H0, 1000.0, rng)
 
         assert tree["n_leapfrog"] == 1
         assert not tree["divergent"]
@@ -109,8 +108,7 @@ class TestBuildTree:
         H0 = -logp + mm.kinetic_energy(p)
         rng = np.random.default_rng(42)
 
-        tree = _build_tree(x, p, grad, logp, 2, 0.1, 1, mm,
-                          gaussian_logp_and_grad, H0, 1000.0, rng)
+        tree = _build_tree(x, p, grad, logp, 2, 0.1, 1, mm, gaussian_logp_and_grad, H0, 1000.0, rng)
 
         assert tree["n_leapfrog"] == 4
 
@@ -123,8 +121,7 @@ class TestBuildTree:
         H0 = -logp + mm.kinetic_energy(p)
         rng = np.random.default_rng(42)
 
-        tree = _build_tree(x, p, grad, logp, 3, 100.0, 1, mm,
-                          gaussian_logp_and_grad, H0, 10.0, rng)
+        tree = _build_tree(x, p, grad, logp, 3, 100.0, 1, mm, gaussian_logp_and_grad, H0, 10.0, rng)
 
         assert tree["divergent"]
 
@@ -137,8 +134,11 @@ class TestNutsStep:
         logp, grad = gaussian_logp_and_grad(x)
 
         state = NUTSState(
-            position=x, logp=logp, grad=grad,
-            step_size=0.1, mass_matrix=mm,
+            position=x,
+            logp=logp,
+            grad=grad,
+            step_size=0.1,
+            mass_matrix=mm,
         )
         rng = np.random.default_rng(42)
         new_state = nuts_step(state, gaussian_logp_and_grad, rng)
@@ -156,8 +156,11 @@ class TestNutsStep:
         logp, grad = gaussian_logp_and_grad(x)
 
         state = NUTSState(
-            position=x, logp=logp, grad=grad,
-            step_size=0.5, mass_matrix=mm,
+            position=x,
+            logp=logp,
+            grad=grad,
+            step_size=0.5,
+            mass_matrix=mm,
         )
         rng = np.random.default_rng(42)
 
@@ -179,8 +182,11 @@ class TestNutsStep:
         logp, grad = gaussian_logp_and_grad(x)
 
         state = NUTSState(
-            position=x, logp=logp, grad=grad,
-            step_size=0.01, mass_matrix=mm,
+            position=x,
+            logp=logp,
+            grad=grad,
+            step_size=0.01,
+            mass_matrix=mm,
         )
         rng = np.random.default_rng(42)
 
@@ -196,8 +202,11 @@ class TestNutsStep:
         logp, grad = gaussian_logp_and_grad(x)
 
         state = NUTSState(
-            position=x, logp=logp, grad=grad,
-            step_size=0.1, mass_matrix=mm,
+            position=x,
+            logp=logp,
+            grad=grad,
+            step_size=0.1,
+            mass_matrix=mm,
         )
         rng = np.random.default_rng(1)
         new_state = nuts_step(state, gaussian_logp_and_grad, rng, max_tree_depth=0)
@@ -212,8 +221,11 @@ class TestNutsStep:
         logp, grad = gaussian_logp_and_grad(x)
 
         state = NUTSState(
-            position=x, logp=logp, grad=grad,
-            step_size=0.5, mass_matrix=mm,
+            position=x,
+            logp=logp,
+            grad=grad,
+            step_size=0.5,
+            mass_matrix=mm,
         )
         rng = np.random.default_rng(42)
 

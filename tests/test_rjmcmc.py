@@ -1,8 +1,7 @@
-import pytest
 import numpy as np
+import pytest
 
 from impulse.rjmcmc import RJMCMCProductSpace
-
 
 NUM_PARAMS = 3
 MAX_SOURCES = 3
@@ -14,21 +13,23 @@ PHI_MIN, PHI_MAX = 0.0, np.pi
 
 
 def _source_draw(rng):
-    return np.array([
-        rng.uniform(A_MIN, A_MAX),
-        rng.uniform(F_MIN, F_MAX),
-        rng.uniform(PHI_MIN, PHI_MAX),
-    ])
+    return np.array(
+        [
+            rng.uniform(A_MIN, A_MAX),
+            rng.uniform(F_MIN, F_MAX),
+            rng.uniform(PHI_MIN, PHI_MAX),
+        ]
+    )
 
 
 def _loglike(params):
-    return -0.5 * np.sum(params ** 2)
+    return -0.5 * np.sum(params**2)
 
 
 def _logprior(params):
     n = len(params)
     for i in range(n // NUM_PARAMS):
-        a, f, phi = params[i * NUM_PARAMS:(i + 1) * NUM_PARAMS]
+        a, f, phi = params[i * NUM_PARAMS : (i + 1) * NUM_PARAMS]
         if not (A_MIN <= a <= A_MAX and F_MIN <= f <= F_MAX and PHI_MIN <= phi <= PHI_MAX):
             return -np.inf
     return 0.0
@@ -139,7 +140,7 @@ class TestDrawInitialPosition:
         x0 = space.draw_initial_position(rng, nmodel=0)
         # all source params should be from the prior (nonzero with high prob)
         for i in range(MAX_SOURCES):
-            block = x0[i * NUM_PARAMS:(i + 1) * NUM_PARAMS]
+            block = x0[i * NUM_PARAMS : (i + 1) * NUM_PARAMS]
             assert np.all(np.isfinite(block))
 
     def test_within_prior_bounds(self, space):

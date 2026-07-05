@@ -1,13 +1,13 @@
 import os
-import pickle
 import pathlib
+import pickle
 import tempfile
-from typing import Iterable, Optional, Callable, Any
+from typing import Any, Callable, Iterable, Optional
 
 
-def checkpoint_sampler(sampler: Any,
-                        path: Optional[str] = None,
-                        omit: Iterable[str] = ("lnlike", "lnprior")) -> str:
+def checkpoint_sampler(
+    sampler: Any, path: Optional[str] = None, omit: Iterable[str] = ("lnlike", "lnprior")
+) -> str:
     """
     Create atomic checkpoint of sampler state for resuming interrupted runs.
 
@@ -73,9 +73,8 @@ def checkpoint_sampler(sampler: Any,
 
     return path
 
-def load_checkpoint(path: str,
-                    lnlike: Callable,
-                    lnprior: Callable):
+
+def load_checkpoint(path: str, lnlike: Callable, lnprior: Callable):
     """
     Load sampler from checkpoint and restore function objects.
 
@@ -102,7 +101,7 @@ def load_checkpoint(path: str,
     ...     return -0.5 * np.sum(x**2)
     >>> def log_prior(x):
     ...     return 0.0 if np.all(np.abs(x) < 5) else -np.inf
-    >>> 
+    >>>
     >>> sampler = load_checkpoint('checkpoint.pkl', log_likelihood, log_prior)
     >>> # Continue sampling from where we left off
     >>> sampler.sample(sampler.state.positions[0], num_iterations=5000)
@@ -119,6 +118,7 @@ def load_checkpoint(path: str,
     sampler.lnprior = lnprior
 
     return sampler
+
 
 def load_nuts_checkpoint(path: str, logp_and_grad: Callable):
     """Load NUTSSampler from checkpoint and restore gradient function.
@@ -145,12 +145,14 @@ def load_nuts_checkpoint(path: str, logp_and_grad: Callable):
     return sampler
 
 
-def load_rjpt_checkpoint(path: str,
-                         lnlike: Callable,
-                         lnprior: Callable,
-                         raw_lnlike: Optional[Callable] = None,
-                         raw_lnprior: Optional[Callable] = None,
-                         lnlike_grad: Optional[Callable] = None):
+def load_rjpt_checkpoint(
+    path: str,
+    lnlike: Callable,
+    lnprior: Callable,
+    raw_lnlike: Optional[Callable] = None,
+    raw_lnprior: Optional[Callable] = None,
+    lnlike_grad: Optional[Callable] = None,
+):
     """Load RJPTSampler from checkpoint and restore callable attributes.
 
     Parameters

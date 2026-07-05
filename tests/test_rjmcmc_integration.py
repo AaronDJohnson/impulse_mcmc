@@ -6,15 +6,15 @@ analytically tractable (or at least strongly peaked) to verify
 that the sampler selects the right model.
 """
 
-import pytest
-import numpy as np
-import tempfile
-import shutil
 import pickle
+import shutil
+import tempfile
+
+import numpy as np
+import pytest
 
 from impulse.rjmcmc import RJMCMCProductSpace
 from impulse.samplers import PTSampler
-
 
 # -----------------------------------------------------------------------
 # Toy problem: 1-D mean estimation with 1-3 identical components.
@@ -22,7 +22,7 @@ from impulse.samplers import PTSampler
 # prefer nmodel=0.
 # -----------------------------------------------------------------------
 
-NUM_PARAMS = 2   # (amplitude, frequency) per source
+NUM_PARAMS = 2  # (amplitude, frequency) per source
 MAX_SOURCES = 3
 NDIM = MAX_SOURCES * NUM_PARAMS + 1
 
@@ -47,7 +47,7 @@ def _source_draw(rng):
 def _logprior(params):
     n = len(params)
     for i in range(n // NUM_PARAMS):
-        p = params[i * NUM_PARAMS:(i + 1) * NUM_PARAMS]
+        p = params[i * NUM_PARAMS : (i + 1) * NUM_PARAMS]
         if np.any(p < LO) or np.any(p > HI):
             return -np.inf
     return 0.0
@@ -97,17 +97,16 @@ class TestFromRJMCMC:
         # de_weight, with stock de registered at weight 0)
         n_proposals = len(sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert n_proposals == 7
-        names = [p.__name__ for p in
-                 sampler.proposal_bundle.jump_proposals[0].proposal_list]
-        assert 'birth_death' in names
-        assert 'early_de' in names
-        assert 'birth_proposal' not in names
-        assert 'death_proposal' not in names
+        names = [p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list]
+        assert "birth_death" in names
+        assert "early_de" in names
+        assert "birth_proposal" not in names
+        assert "death_proposal" not in names
         # stock de must never be selected: its per-model buffer never
         # fills at realistic run lengths (JumpProposals would silently
         # substitute gaussian for every selection)
         jp = sampler.proposal_bundle.jump_proposals[0]
-        de_idx = names.index('de')
+        de_idx = names.index("de")
         assert jp.proposal_probs[de_idx] == 0.0
 
     def test_single_model_space_constructs(self, outdir):
@@ -127,9 +126,8 @@ class TestFromRJMCMC:
         )
         sampler = PTSampler.from_rjmcmc(space, ntemps=3, seed=42, outdir=outdir)
         assert sampler.ndim == NUM_PARAMS + 1
-        names = sorted(p.__name__ for p in
-                       sampler.proposal_bundle.jump_proposals[0].proposal_list)
-        assert names == ['am', 'de', 'early_de', 'scam']
+        names = sorted(p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list)
+        assert names == ["am", "de", "early_de", "scam"]
 
     def test_zero_birth_death_weight_skips_kernel(self, rjmcmc_space, outdir):
         """birth_weight + death_weight == 0: the birth-death kernel is
@@ -143,11 +141,10 @@ class TestFromRJMCMC:
             seed=42,
             outdir=outdir,
         )
-        names = [p.__name__ for p in
-                 sampler.proposal_bundle.jump_proposals[0].proposal_list]
-        assert 'birth_death' not in names
-        assert 'nmodel_jump' in names
-        assert 'source_swap_proposal' in names
+        names = [p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list]
+        assert "birth_death" not in names
+        assert "nmodel_jump" in names
+        assert "source_swap_proposal" in names
 
     def test_initial_position(self, rjmcmc_space):
         rng = np.random.default_rng(42)
@@ -170,7 +167,7 @@ class TestFromRJMCMC:
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=500)
         chain = sampler.load_chain()
-        assert chain['samples'].shape == (3, 500, NDIM)
+        assert chain["samples"].shape == (3, 500, NDIM)
 
 
 class TestSourcePriorLogpdfResolution:
@@ -178,8 +175,10 @@ class TestSourcePriorLogpdfResolution:
 
     def test_additive_prior_passes_probe(self):
         space = RJMCMCProductSpace(
-            loglikelihood=_loglike, logprior=_logprior,
-            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            loglikelihood=_loglike,
+            logprior=_logprior,
+            num_sources=MAX_SOURCES,
+            num_params=NUM_PARAMS,
             source_prior_draw=_source_draw,
         )
         assert space._resolve_source_prior_logpdf() is _logprior
@@ -188,13 +187,16 @@ class TestSourcePriorLogpdfResolution:
         """A cross-slot coupling makes logprior non-additive: the fallback
         per-source density would be provably wrong, so this must raise
         rather than warn and proceed."""
+
         def coupled_logprior(params):
             p = np.asarray(params, float)
             return -0.5 * float(np.sum(p)) ** 2  # not additive across slots
 
         space = RJMCMCProductSpace(
-            loglikelihood=_loglike, logprior=coupled_logprior,
-            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            loglikelihood=_loglike,
+            logprior=coupled_logprior,
+            num_sources=MAX_SOURCES,
+            num_params=NUM_PARAMS,
             source_prior_draw=_source_draw,
         )
         with pytest.raises(ValueError, match="not additive"):
@@ -203,14 +205,17 @@ class TestSourcePriorLogpdfResolution:
     def test_probe_call_failure_raises_typeerror(self):
         """A logprior that cannot handle a single source's vector gets the
         curated TypeError (including when np.concatenate is what fails)."""
+
         def strict_logprior(params):
             if len(params) != MAX_SOURCES * NUM_PARAMS:
                 raise ValueError("expected the full parameter vector")
             return 0.0
 
         space = RJMCMCProductSpace(
-            loglikelihood=_loglike, logprior=strict_logprior,
-            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            loglikelihood=_loglike,
+            logprior=strict_logprior,
+            num_sources=MAX_SOURCES,
+            num_params=NUM_PARAMS,
             source_prior_draw=_source_draw,
         )
         with pytest.raises(TypeError, match="source_prior_logpdf"):
@@ -226,12 +231,15 @@ class TestSourcePriorLogpdfResolution:
         (prior density used as the draw density) is provably wrong and
         silently redrawing would hide the misconfiguration.
         """
+
         def broad_draw(rng):
             return rng.uniform(LO - 2.0, HI + 2.0)  # mostly out of bounds
 
         space = RJMCMCProductSpace(
-            loglikelihood=_loglike, logprior=_logprior,
-            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            loglikelihood=_loglike,
+            logprior=_logprior,
+            num_sources=MAX_SOURCES,
+            num_params=NUM_PARAMS,
             source_prior_draw=broad_draw,
         )
         with pytest.raises(ValueError, match="outside the prior support"):
@@ -241,6 +249,7 @@ class TestSourcePriorLogpdfResolution:
         """The same broader-than-prior draw is fine when its density is
         declared: source_proposal_logpdf supplies the draw density, so the
         prior-density probe (and its support check) is skipped."""
+
         def broad_draw(rng):
             return rng.uniform(LO - 2.0, HI + 2.0)
 
@@ -248,8 +257,10 @@ class TestSourcePriorLogpdfResolution:
             return float(-np.sum(np.log((HI + 2.0) - (LO - 2.0))))
 
         space = RJMCMCProductSpace(
-            loglikelihood=_loglike, logprior=_logprior,
-            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            loglikelihood=_loglike,
+            logprior=_logprior,
+            num_sources=MAX_SOURCES,
+            num_params=NUM_PARAMS,
             source_prior_draw=broad_draw,
             source_proposal_logpdf=broad_logpdf,
         )
@@ -262,12 +273,15 @@ class TestSourcePriorLogpdfResolution:
     def test_single_model_skips_probe(self):
         """num_sources=1: the full prior IS the per-source prior, so no
         probe draws should be made at all."""
+
         def raising_draw(rng):
             raise AssertionError("probe must not draw for num_sources=1")
 
         space = RJMCMCProductSpace(
-            loglikelihood=_loglike, logprior=_logprior,
-            num_sources=1, num_params=NUM_PARAMS,
+            loglikelihood=_loglike,
+            logprior=_logprior,
+            num_sources=1,
+            num_params=NUM_PARAMS,
             source_prior_draw=raising_draw,
         )
         assert space._resolve_source_prior_logpdf() is _logprior
@@ -277,8 +291,10 @@ class TestSourcePriorLogpdfResolution:
             return 0.0
 
         space = RJMCMCProductSpace(
-            loglikelihood=_loglike, logprior=_logprior,
-            num_sources=MAX_SOURCES, num_params=NUM_PARAMS,
+            loglikelihood=_loglike,
+            logprior=_logprior,
+            num_sources=MAX_SOURCES,
+            num_params=NUM_PARAMS,
             source_prior_draw=_source_draw,
             source_prior_logpdf=per_source,
         )
@@ -336,11 +352,13 @@ class TestModelRecovery:
         sampler.sample(x0, num_iterations=20_000)
 
         chain = sampler.load_chain()
-        cold = chain['samples'][0]
+        cold = chain["samples"][0]
         probs = rjmcmc_space.model_posterior_probs(cold, burn=5000)
 
         # 1 source should be strongly preferred
-        assert np.argmax(probs) == 0, f"Expected nmodel=0, got argmax={np.argmax(probs)}, probs={probs}"
+        assert (
+            np.argmax(probs) == 0
+        ), f"Expected nmodel=0, got argmax={np.argmax(probs)}, probs={probs}"
         assert probs[0] > 0.5, f"P(1 source) = {probs[0]:.3f}, expected > 0.5"
 
 
@@ -350,7 +368,10 @@ class TestSampleCovExpansion:
     def test_per_source_cov_expanded(self, rjmcmc_space, outdir):
         per_source_cov = np.array([[4.0, 0.5], [0.5, 1.0]])
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
             sample_cov=per_source_cov,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
@@ -365,7 +386,10 @@ class TestSampleCovExpansion:
     def test_full_cov_passed_through(self, rjmcmc_space, outdir):
         full_cov = np.eye(NDIM) * 2.0
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
             sample_cov=full_cov,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
@@ -374,7 +398,10 @@ class TestSampleCovExpansion:
     def test_per_source_mean_expanded(self, rjmcmc_space, outdir):
         per_source_mean = np.array([2.5, 1.5])
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
             sample_mean=per_source_mean,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
@@ -388,14 +415,18 @@ class TestSampleCovExpansion:
         """Smoke test: sampler runs with per-source covariance."""
         per_source_cov = np.diag([1.0, 0.5])
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
-            sample_cov=per_source_cov, save_freq=200,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
+            sample_cov=per_source_cov,
+            save_freq=200,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=200)
         chain = sampler.load_chain()
-        assert chain['samples'].shape == (2, 200, NDIM)
+        assert chain["samples"].shape == (2, 200, NDIM)
 
 
 class TestPriorEnforcement:
@@ -414,10 +445,10 @@ class TestPriorEnforcement:
         sampler.sample(x0, num_iterations=2000)
 
         chain = sampler.load_chain()
-        cold = chain['samples'][0]
+        cold = chain["samples"][0]
 
         for i in range(MAX_SOURCES):
-            block = cold[:, i * NUM_PARAMS:(i + 1) * NUM_PARAMS]
+            block = cold[:, i * NUM_PARAMS : (i + 1) * NUM_PARAMS]
             assert np.all(block >= LO - 1e-10), f"Source {i} below lower bound"
             assert np.all(block <= HI + 1e-10), f"Source {i} above upper bound"
 
@@ -428,10 +459,13 @@ class TestPerModelStats:
     def test_per_model_state_initialized(self, rjmcmc_space, outdir):
         """Per-model state has correct groups for each model."""
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
-        assert hasattr(cs, '_per_model')
+        assert hasattr(cs, "_per_model")
         assert len(cs._per_model) == MAX_SOURCES
         # nmodel=0 -> 1 active source group
         assert len(cs._per_model[0].groups) == 1
@@ -444,7 +478,10 @@ class TestPerModelStats:
     def test_update_sample_swaps_groups(self, rjmcmc_space, outdir):
         """update_sample swaps in model-specific groups."""
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
 
@@ -464,7 +501,10 @@ class TestPerModelStats:
     def test_update_sample_swaps_buffer(self, rjmcmc_space, outdir):
         """update_sample swaps in model-specific buffer and sample_total."""
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
 
@@ -484,7 +524,10 @@ class TestPerModelStats:
     def test_recursive_update_routes_samples(self, rjmcmc_space, outdir):
         """recursive_update partitions samples by nmodel."""
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
 
@@ -504,7 +547,10 @@ class TestPerModelStats:
     def test_proposal_L_diverges(self, rjmcmc_space, outdir):
         """proposal_L diverges between models after model-specific samples."""
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
 
@@ -532,24 +578,33 @@ class TestPerModelStats:
         L0_after = cs._per_model[0].proposal_L[0]
         L1_after = cs._per_model[1].proposal_L[0]
         # They should now differ
-        assert not np.allclose(L0_after, L1_after), \
-            "proposal_L should diverge after model-specific updates"
+        assert not np.allclose(
+            L0_after, L1_after
+        ), "proposal_L should diverge after model-specific updates"
 
     def test_short_run_with_per_model(self, rjmcmc_space, outdir):
         """Smoke test: RJMCMC sampling runs correctly with per-model stats."""
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=3, seed=42, outdir=outdir, save_freq=500,
+            rjmcmc_space,
+            ntemps=3,
+            seed=42,
+            outdir=outdir,
+            save_freq=500,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
         sampler.sample(x0, num_iterations=500)
         chain = sampler.load_chain()
-        assert chain['samples'].shape == (3, 500, NDIM)
+        assert chain["samples"].shape == (3, 500, NDIM)
 
     def test_pickle_roundtrip(self, rjmcmc_space, outdir):
         """Pickle round-trip preserves per-model state."""
         sampler = PTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=outdir, save_freq=200,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=outdir,
+            save_freq=200,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
@@ -559,7 +614,7 @@ class TestPerModelStats:
         data = pickle.dumps(cs_before)
         cs_after = pickle.loads(data)
 
-        assert hasattr(cs_after, '_per_model')
+        assert hasattr(cs_after, "_per_model")
         assert len(cs_after._per_model) == MAX_SOURCES
         for k in range(MAX_SOURCES):
             pm_before = cs_before._per_model[k]
@@ -569,5 +624,6 @@ class TestPerModelStats:
             for i in range(len(pm_after.groups)):
                 if pm_after.proposal_L[i] is not None:
                     np.testing.assert_array_equal(
-                        pm_after.proposal_L[i], pm_before.proposal_L[i],
+                        pm_after.proposal_L[i],
+                        pm_before.proposal_L[i],
                     )

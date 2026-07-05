@@ -1,7 +1,9 @@
 import math
-import numpy as np
 from dataclasses import dataclass
 from typing import Callable, List, Tuple
+
+import numpy as np
+
 from impulse.chain_stats import ChainStats
 from impulse.sampler_state import SamplerState
 
@@ -32,7 +34,7 @@ class JumpProposals:
     >>> from impulse.proposals import am, de, scam
     >>> proposals = JumpProposals(chain_stats)
     >>> proposals.add_jump(am, weight=15)     # Adaptive Metropolis
-    >>> proposals.add_jump(de, weight=50)     # Differential Evolution  
+    >>> proposals.add_jump(de, weight=50)     # Differential Evolution
     >>> proposals.add_jump(scam, weight=30)   # Single Component AM
     >>> # Now proposals will be selected with probabilities [15/95, 50/95, 30/95]
 
@@ -42,11 +44,14 @@ class JumpProposals:
     - Differential evolution proposals are disabled until sample buffer is full
     - Each proposal function should return (new_sample, log_proposal_ratio)
     """
-    def __init__(self,
-                 chain_stats: ChainStats,
-                 proposal_list: list|None = None,
-                 proposal_weights: list|None = None,
-                 proposal_probs: np.ndarray|None = None):
+
+    def __init__(
+        self,
+        chain_stats: ChainStats,
+        proposal_list: list | None = None,
+        proposal_weights: list | None = None,
+        proposal_probs: np.ndarray | None = None,
+    ):
         self.chain_stats = chain_stats
         self.proposal_list = proposal_list if proposal_list is not None else []
         self.proposal_weights = proposal_weights if proposal_weights is not None else []
@@ -55,10 +60,7 @@ class JumpProposals:
         self._proposal_calls = np.zeros(0, dtype=np.int64)
         self._proposal_accepts = np.zeros(0, dtype=np.int64)
 
-    def add_jump(self,
-                 jump: Callable,
-                 weight: float
-                 ) -> None:
+    def add_jump(self, jump: Callable, weight: float) -> None:
         """
         Add or update a proposal type with specified weight.
 
@@ -72,7 +74,7 @@ class JumpProposals:
         Examples
         --------
         >>> proposals.add_jump(am, weight=20)      # 20% weight
-        >>> proposals.add_jump(de, weight=60)      # 60% weight  
+        >>> proposals.add_jump(de, weight=60)      # 60% weight
         >>> proposals.add_jump(scam, weight=20)    # 20% weight
         """
         if jump not in self.proposal_list:
@@ -88,16 +90,14 @@ class JumpProposals:
         else:
             self.proposal_probs = np.ones(len(self.proposal_weights)) / len(self.proposal_weights)
 
-    def __call__(self,
-                 state: SamplerState
-                 ) -> Tuple[np.ndarray, float]:
+    def __call__(self, state: SamplerState) -> Tuple[np.ndarray, float]:
         old_sample = state.positions[self.chain_stats.chain_index]
         self.chain_stats.update_sample(old_sample)
         rng = self.chain_stats.rng
         idx = rng.choice(len(self.proposal_list), p=self.proposal_probs)
         proposal = self.proposal_list[idx]
         # DE requires a filled sample buffer; fall back to gaussian if unavailable
-        if proposal.__name__ == 'de' and not self.chain_stats.buffer_full:
+        if proposal.__name__ == "de" and not self.chain_stats.buffer_full:
             proposal = gaussian
         self._last_proposal_idx = idx
         self._proposal_calls[idx] += 1
@@ -122,19 +122,20 @@ class JumpProposals:
             calls = int(self._proposal_calls[i])
             accepts = int(self._proposal_accepts[i])
             rate = accepts / calls if calls > 0 else 0.0
-            result[proposal.__name__] = {'calls': calls, 'accepts': accepts, 'rate': rate}
+            result[proposal.__name__] = {"calls": calls, "accepts": accepts, "rate": rate}
         return result
 
     def __setstate__(self, state):
         """Restore from pickle, initializing counters for old checkpoints."""
         self.__dict__.update(state)
         n = len(self.proposal_list)
-        if not hasattr(self, '_last_proposal_idx'):
+        if not hasattr(self, "_last_proposal_idx"):
             self._last_proposal_idx = -1
-        if not hasattr(self, '_proposal_calls'):
+        if not hasattr(self, "_proposal_calls"):
             self._proposal_calls = np.zeros(n, dtype=np.int64)
-        if not hasattr(self, '_proposal_accepts'):
+        if not hasattr(self, "_proposal_accepts"):
             self._proposal_accepts = np.zeros(n, dtype=np.int64)
+
 
 @dataclass
 class ProposalBundle:
@@ -162,7 +163,8 @@ class ProposalBundle:
     - Each chain maintains independent proposal statistics
     - Used by the main sampling loop for vectorized proposal generation
     """
-    jump_proposals: List['JumpProposals']
+
+    jump_proposals: List["JumpProposals"]
 
     def get_new_position(self, state: SamplerState) -> Tuple[np.ndarray, np.ndarray]:
         new_samples = np.zeros_like(state.positions)
@@ -208,15 +210,15 @@ class ProposalBundle:
             per_chain = []
             for cr in chain_reports:
                 if name in cr:
-                    total_calls += cr[name]['calls']
-                    total_accepts += cr[name]['accepts']
+                    total_calls += cr[name]["calls"]
+                    total_accepts += cr[name]["accepts"]
                     per_chain.append(cr[name])
             rate = total_accepts / total_calls if total_calls > 0 else 0.0
             result[name] = {
-                'calls': total_calls,
-                'accepts': total_accepts,
-                'rate': rate,
-                'per_chain': per_chain,
+                "calls": total_calls,
+                "accepts": total_accepts,
+                "rate": rate,
+                "per_chain": per_chain,
             }
         return result
 
@@ -232,14 +234,16 @@ class ProposalBundle:
         out = []
         for jp in self.jump_proposals:
             rates = jp.acceptance_rates()
-            total_calls = int(sum(r['calls'] for r in rates.values()))
-            total_accepts = int(sum(r['accepts'] for r in rates.values()))
-            out.append({
-                'calls': total_calls,
-                'accepts': total_accepts,
-                'rate': (total_accepts / total_calls) if total_calls > 0 else 0.0,
-                'per_proposal': {name: r['rate'] for name, r in rates.items()},
-            })
+            total_calls = int(sum(r["calls"] for r in rates.values()))
+            total_accepts = int(sum(r["accepts"] for r in rates.values()))
+            out.append(
+                {
+                    "calls": total_calls,
+                    "accepts": total_accepts,
+                    "rate": (total_accepts / total_calls) if total_calls > 0 else 0.0,
+                    "per_proposal": {name: r["rate"] for name, r in rates.items()},
+                }
+            )
         return out
 
 
@@ -443,20 +447,23 @@ def de(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
     # mode jump
     if prob > 0.5:
         scale = 1.0
-    
+
     else:
         scale = rng.random() * 2.4 / np.sqrt(2 * ndim)
 
     for ii in range(ndim):
 
         # jump size
-        sigma = (chain_stats._buffer[mm, chain_stats.groups[jumpind][ii]] -
-                 chain_stats._buffer[nn, chain_stats.groups[jumpind][ii]])
+        sigma = (
+            chain_stats._buffer[mm, chain_stats.groups[jumpind][ii]]
+            - chain_stats._buffer[nn, chain_stats.groups[jumpind][ii]]
+        )
 
         # jump
         q[chain_stats.groups[jumpind][ii]] += scale * sigma
 
     return q, qxy
+
 
 class EarlyDE:
     """
@@ -652,6 +659,7 @@ def gaussian(chain_stats: ChainStats) -> tuple[np.ndarray, float]:
 
     return q, qxy
 
+
 class SourceSwapProposal:
     """
     Proposal that swaps parameter blocks between two randomly selected sources.
@@ -687,11 +695,11 @@ class SourceSwapProposal:
             return q, qxy
 
         num_params = self.num_params
-        x = q[num_params * swap_source_1:num_params * (swap_source_1 + 1)].copy()
-        y = q[num_params * swap_source_2:num_params * (swap_source_2 + 1)].copy()
+        x = q[num_params * swap_source_1 : num_params * (swap_source_1 + 1)].copy()
+        y = q[num_params * swap_source_2 : num_params * (swap_source_2 + 1)].copy()
 
-        q[num_params * swap_source_1:num_params * (swap_source_1 + 1)] = y
-        q[num_params * swap_source_2:num_params * (swap_source_2 + 1)] = x
+        q[num_params * swap_source_1 : num_params * (swap_source_1 + 1)] = y
+        q[num_params * swap_source_2 : num_params * (swap_source_2 + 1)] = x
         return q, qxy
 
 

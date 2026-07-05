@@ -62,6 +62,7 @@ min-fill-gated DE move (``EarlyDE``) that ``PTSampler.from_rjmcmc`` now
 registers by default, guarding the newest member of the production mixture
 (see that test's docstring for why it cannot bias the model-index marginal).
 """
+
 import itertools
 from types import SimpleNamespace
 
@@ -105,6 +106,7 @@ class _Noop:
 
 # --- per-source priors (proper & normalized on [0, 1]) ---
 
+
 def _flat_logpdf(p):
     p = np.asarray(p, float)
     return 0.0 if np.all((p >= 0.0) & (p <= 1.0)) else -np.inf
@@ -138,15 +140,15 @@ def _run_birth_death(num_sources, num_params, c, prior, n_iter, seed):
     # overwritten slot's prior contribution (RJMCMCProductSpace wires this too).
     log_prior_density = None if prior == "flat" else src_logpdf
     kernel = make_birth_death_proposal(
-        num_params, num_sources,
+        num_params,
+        num_sources,
         draw_from_prior=lambda r: src_draw(r, num_params),
         log_prior_density=log_prior_density,
     )
 
     ndim = num_sources * num_params + 1
     ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
-    cs = ChainStats(ndim=ndim, pt_state=ptstate, chain_index=0, rng=rng,
-                    buffer_size=50)
+    cs = ChainStats(ndim=ndim, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=50)
     jumps = JumpProposals(cs)
     # constant selection weights, independent of the model index — the
     # production path that the pre-fix separate birth/death jumps got wrong
@@ -159,7 +161,7 @@ def _run_birth_death(num_sources, num_params, c, prior, n_iter, seed):
             return -np.inf
         lp = 0.0
         for i in range(num_sources):  # full prior over all slots
-            lp += src_logpdf(z[i * num_params:(i + 1) * num_params])
+            lp += src_logpdf(z[i * num_params : (i + 1) * num_params])
         return -np.inf if not np.isfinite(lp) else float(c[k]) + lp
 
     z = np.empty(ndim)
@@ -184,15 +186,21 @@ def _run_birth_death(num_sources, num_params, c, prior, n_iter, seed):
     return counts / counts.sum()
 
 
-@pytest.mark.parametrize("prior", [
-    "flat",
-    pytest.param("beta", marks=pytest.mark.slow),
-])
-@pytest.mark.parametrize("num_sources", [
-    3,
-    pytest.param(4, marks=pytest.mark.slow),
-    pytest.param(5, marks=pytest.mark.slow),
-])
+@pytest.mark.parametrize(
+    "prior",
+    [
+        "flat",
+        pytest.param("beta", marks=pytest.mark.slow),
+    ],
+)
+@pytest.mark.parametrize(
+    "num_sources",
+    [
+        3,
+        pytest.param(4, marks=pytest.mark.slow),
+        pytest.param(5, marks=pytest.mark.slow),
+    ],
+)
 def test_uniform_model_posterior(num_sources, prior):
     """Constant likelihood => model-index posterior must be uniform.
 
@@ -201,39 +209,56 @@ def test_uniform_model_posterior(num_sources, prior):
     detect it — both of its states are schedule boundaries).
     """
     probs = _run_birth_death(
-        num_sources, num_params=2, c=[0.0] * num_sources, prior=prior,
-        n_iter=250_000, seed=12345,
+        num_sources,
+        num_params=2,
+        c=[0.0] * num_sources,
+        prior=prior,
+        n_iter=250_000,
+        seed=12345,
     )
     target = np.full(num_sources, 1.0 / num_sources)
-    assert np.max(np.abs(probs - target)) < 0.02, (
-        f"[{prior}] biased model posterior {probs} vs uniform {target}")
+    assert (
+        np.max(np.abs(probs - target)) < 0.02
+    ), f"[{prior}] biased model posterior {probs} vs uniform {target}"
 
 
-@pytest.mark.parametrize("prior", [
-    "flat",
-    pytest.param("beta", marks=pytest.mark.slow),
-])
+@pytest.mark.parametrize(
+    "prior",
+    [
+        "flat",
+        pytest.param("beta", marks=pytest.mark.slow),
+    ],
+)
 @pytest.mark.parametrize("num_sources", [2, 3])
 def test_nonuniform_model_posterior(num_sources, prior):
     """logL = c[k] => posterior must match exp(c) (correct Bayes factors)."""
     c = list(np.arange(num_sources) * 0.7)
     probs = _run_birth_death(
-        num_sources, num_params=2, c=c, prior=prior, n_iter=250_000, seed=2024,
+        num_sources,
+        num_params=2,
+        c=c,
+        prior=prior,
+        n_iter=250_000,
+        seed=2024,
     )
-    target = np.exp(np.asarray(c)); target /= target.sum()
-    assert np.max(np.abs(probs - target)) < 0.02, (
-        f"[{prior}] biased model posterior {probs} vs analytic {target}")
+    target = np.exp(np.asarray(c))
+    target /= target.sum()
+    assert (
+        np.max(np.abs(probs - target)) < 0.02
+    ), f"[{prior}] biased model posterior {probs} vs analytic {target}"
 
 
 def test_birth_death_qxy_has_no_source_count_term():
     """For a flat prior the birth/death log-Hastings factor is the move ratio only."""
     num_params, num_sources = 2, 4
     birth = BirthProposal(
-        num_params, num_sources,
+        num_params,
+        num_sources,
         draw_from_prior=lambda r: r.uniform(0.0, 1.0, size=num_params),
     )
     death = DeathProposal(
-        num_params, num_sources,
+        num_params,
+        num_sources,
         draw_from_prior=lambda r: r.uniform(0.0, 1.0, size=num_params),
     )
     rng = np.random.default_rng(0)
@@ -299,10 +324,10 @@ class _ActiveGibbs:
         rng = chain_stats.rng
         q = chain_stats.current_sample.copy()
         k = int(np.rint(q[-1]))
-        old = q[:k + 1].copy()
+        old = q[: k + 1].copy()
         u = rng.random(k + 1)
-        q[:k + 1] = np.log1p(u * (np.exp(self.a) - 1.0)) / self.a
-        qxy = self.a * (np.sum(old) - np.sum(q[:k + 1]))
+        q[: k + 1] = np.log1p(u * (np.exp(self.a) - 1.0)) / self.a
+        qxy = self.a * (np.sum(old) - np.sum(q[: k + 1]))
         return q, qxy
 
 
@@ -336,8 +361,7 @@ def _exch_analytic(num_sources, a, b):
     return p / p.sum()
 
 
-def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT,
-                      early_de=False):
+def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT, early_de=False):
     """Chain on ``logL = a*sum(t) + b*n`` with the full production mixture.
 
     The trans-dimensional kernel is built through
@@ -381,7 +405,10 @@ def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT,
     ndim = num_sources + 1
     ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
     cs = ChainStats(
-        ndim=ndim, pt_state=ptstate, chain_index=0, rng=rng,
+        ndim=ndim,
+        pt_state=ptstate,
+        chain_index=0,
+        rng=rng,
         buffer_size=200 if early_de else 50,
         # production groups exclude the model index (get_default_groups /
         # per-model groups): EarlyDE must only ever touch continuous slots
@@ -402,7 +429,7 @@ def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT,
             return -np.inf
         if not np.isfinite(_unit_flat_logprior(z[:num_sources])):
             return -np.inf
-        return loglike(z[:k + 1])
+        return loglike(z[: k + 1])
 
     z = np.empty(ndim)
     z[:-1] = rng.random(num_sources)
@@ -435,11 +462,15 @@ def test_full_mixture_parameter_dependent_likelihood(draw_mode):
     across seeds; post-fix both are < 0.005.
     """
     probs = _run_full_mixture(
-        num_sources=3, n_iter=400_000, seed=20260703, draw_mode=draw_mode,
+        num_sources=3,
+        n_iter=400_000,
+        seed=20260703,
+        draw_mode=draw_mode,
     )
     target = _exch_analytic(3, _TILT, -_TILT)
-    assert np.max(np.abs(probs - target)) < 0.02, (
-        f"[{draw_mode}] biased model posterior {probs} vs analytic {target}")
+    assert (
+        np.max(np.abs(probs - target)) < 0.02
+    ), f"[{draw_mode}] biased model posterior {probs} vs analytic {target}"
 
 
 def test_full_mixture_with_early_de():
@@ -467,12 +498,16 @@ def test_full_mixture_with_early_de():
     ``recursive_update`` feeds it in production.
     """
     probs = _run_full_mixture(
-        num_sources=3, n_iter=400_000, seed=20260705, draw_mode="prior",
+        num_sources=3,
+        n_iter=400_000,
+        seed=20260705,
+        draw_mode="prior",
         early_de=True,
     )
     target = _exch_analytic(3, _TILT, -_TILT)
-    assert np.max(np.abs(probs - target)) < 0.02, (
-        f"[early_de] biased model posterior {probs} vs analytic {target}")
+    assert (
+        np.max(np.abs(probs - target)) < 0.02
+    ), f"[early_de] biased model posterior {probs} vs analytic {target}"
 
 
 @pytest.mark.slow
@@ -494,13 +529,17 @@ def test_full_mixture_k4_kill_choice_bias():
     deterministic companion is test_exact_enumeration_stationarity.
     """
     probs = _run_full_mixture(
-        num_sources=4, n_iter=3_000_000, seed=20260704, draw_mode="prior",
-        a=2.0, b=-1.0,
+        num_sources=4,
+        n_iter=3_000_000,
+        seed=20260704,
+        draw_mode="prior",
+        a=2.0,
+        b=-1.0,
     )
     target = _exch_analytic(4, 2.0, -1.0)
     assert np.max(np.abs(probs - target)) < 0.002, (
-        f"biased model posterior {probs} vs analytic {target} "
-        f"(err {probs - target})")
+        f"biased model posterior {probs} vs analytic {target} " f"(err {probs - target})"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -571,15 +610,11 @@ def _exact_transition_matrix(K, grid, loglike_v, w_bd=0.5, w_nm=0.25):
     G = len(grid)
     logp_slot = -np.log(G)
 
-    states = [s + (m,) for s in itertools.product(range(G), repeat=K)
-              for m in range(K)]
+    states = [s + (m,) for s in itertools.product(range(G), repeat=K) for m in range(K)]
     idx = {s: i for i, s in enumerate(states)}
     N = len(states)
 
-    logpis = np.array([
-        K * logp_slot + sum(loglike_v[g] for g in s[:s[-1] + 1])
-        for s in states
-    ])
+    logpis = np.array([K * logp_slot + sum(loglike_v[g] for g in s[: s[-1] + 1]) for s in states])
 
     def state_of(x_arr):
         gs = tuple(int(np.argmin(np.abs(grid - v))) for v in x_arr[:-1])
@@ -623,8 +658,7 @@ def _exact_transition_matrix(K, grid, loglike_v, w_bd=0.5, w_nm=0.25):
                     y, qxy = bd(_Stats(rng, x))
                     used_kill = not rng.ints
                     kill_w = 1.0 / (m + 1) if used_kill else 1.0
-                    add(w_bd * (pd / tot) * kill_w * q_pmf, qxy,
-                        idx[state_of(y)])
+                    add(w_bd * (pd / tot) * kill_w * q_pmf, qxy, idx[state_of(y)])
                 if not used_kill:
                     break  # single-channel (kill-last) death: one branch
 
@@ -636,10 +670,7 @@ def _exact_transition_matrix(K, grid, loglike_v, w_bd=0.5, w_nm=0.25):
         # ---- exact single-slot Gibbs (pi-invariant filler) ----------------
         w_g = 1.0 - w_bd - w_nm
         for slot in range(K):
-            logw = np.array([
-                logp_slot + (loglike_v[g] if slot <= m else 0.0)
-                for g in range(G)
-            ])
+            logw = np.array([logp_slot + (loglike_v[g] if slot <= m else 0.0) for g in range(G)])
             w = np.exp(logw - logw.max())
             w /= w.sum()
             for g in range(G):
@@ -650,10 +681,13 @@ def _exact_transition_matrix(K, grid, loglike_v, w_bd=0.5, w_nm=0.25):
     return states, logpis, P
 
 
-@pytest.mark.parametrize("K,a,b,G", [
-    (3, 3.0, -3.0, 5),
-    (4, 2.0, -1.0, 4),  # the config sensitive to the kill-choice defect
-])
+@pytest.mark.parametrize(
+    "K,a,b,G",
+    [
+        (3, 3.0, -3.0, 5),
+        (4, 2.0, -1.0, 4),  # the config sensitive to the kill-choice defect
+    ],
+)
 def test_exact_enumeration_stationarity(K, a, b, G):
     """The exact target must be EXACTLY invariant under the real kernels.
 
@@ -702,4 +736,5 @@ def test_exact_enumeration_stationarity(K, a, b, G):
     assert resid < 1e-12, (
         f"target not invariant under the kernel: TV(pi P, pi) = {resid:.3e};"
         f" stationary model marginal {stat_marg} vs analytic {target}"
-        f" (err {stat_marg - target})")
+        f" (err {stat_marg - target})"
+    )

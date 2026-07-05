@@ -8,8 +8,8 @@ Provides tools for validating MCMC samplers via SBC:
 - Loop runners for continuous and model-selection SBC
 """
 
-import tempfile
 import shutil
+import tempfile
 
 import numpy as np
 
@@ -45,6 +45,7 @@ def _require_matplotlib():
 # ---------------------------------------------------------------------------
 # Core computation
 # ---------------------------------------------------------------------------
+
 
 def compute_sbc_rank(true_value, posterior_samples):
     """
@@ -145,6 +146,7 @@ def ecdf(x):
 # Plotting
 # ---------------------------------------------------------------------------
 
+
 def sbc_ecdf_plot(quantiles, param_names=None, ax=None, alpha=0.05):
     """
     ECDF of SBC quantile ranks vs the Uniform(0,1) diagonal.
@@ -176,8 +178,14 @@ def sbc_ecdf_plot(quantiles, param_names=None, ax=None, alpha=0.05):
     # DKW confidence band
     epsilon = np.sqrt(np.log(2.0 / alpha) / (2 * n_sim))
     t = np.linspace(0, 1, 200)
-    ax.fill_between(t, np.clip(t - epsilon, 0, 1), np.clip(t + epsilon, 0, 1),
-                     color="gray", alpha=0.2, label=f"{1 - alpha:.0%} DKW band")
+    ax.fill_between(
+        t,
+        np.clip(t - epsilon, 0, 1),
+        np.clip(t + epsilon, 0, 1),
+        color="gray",
+        alpha=0.2,
+        label=f"{1 - alpha:.0%} DKW band",
+    )
     ax.plot([0, 1], [0, 1], "k--", lw=0.8)
 
     for j in range(ndim):
@@ -230,10 +238,7 @@ def coverage_plot(quantiles, nominal_levels=None, ax=None):
     ax.plot([0, 1], [0, 1], "k--", lw=0.8)
 
     for j in range(ndim):
-        actual = np.array([
-            np.mean(np.abs(quantiles[:, j] - 0.5) < p / 2)
-            for p in nominal_levels
-        ])
+        actual = np.array([np.mean(np.abs(quantiles[:, j] - 0.5) < p / 2) for p in nominal_levels])
         ax.plot(nominal_levels, actual, "o-", markersize=4, label=f"param {j}")
 
     # Binomial 95% CI for the diagonal
@@ -284,8 +289,9 @@ def rank_histogram(ranks, n_posterior_samples, param_names=None, axes=None):
 
     for j in range(ndim):
         ax = axes[j]
-        ax.hist(ranks[:, j], bins=n_bins, range=(0, n_posterior_samples),
-                edgecolor="black", alpha=0.7)
+        ax.hist(
+            ranks[:, j], bins=n_bins, range=(0, n_posterior_samples), edgecolor="black", alpha=0.7
+        )
         ax.axhline(expected, color="red", ls="--", lw=1, label="expected")
         name = param_names[j] if param_names is not None else f"param {j}"
         ax.set_title(name)
@@ -299,6 +305,7 @@ def rank_histogram(ranks, n_posterior_samples, param_names=None, axes=None):
 # ---------------------------------------------------------------------------
 # SBC loop runners
 # ---------------------------------------------------------------------------
+
 
 def run_sbc_continuous(
     sampler_factory,
@@ -340,6 +347,7 @@ def run_sbc_continuous(
     """
     try:
         from tqdm import tqdm
+
         iterator = tqdm(range(n_simulations), desc="SBC continuous")
     except ImportError:
         iterator = range(n_simulations)
@@ -436,6 +444,7 @@ def run_sbc_model_selection(
     """
     try:
         from tqdm import tqdm
+
         iterator = tqdm(range(n_simulations), desc="SBC model selection")
     except ImportError:
         iterator = range(n_simulations)
@@ -454,9 +463,7 @@ def run_sbc_model_selection(
         tmpdir = tempfile.mkdtemp()
         try:
             sim_rng = np.random.default_rng(rng.integers(0, 2**32))
-            sampler, space = sampler_factory(
-                true_nmodel, true_params, data, sim_rng, tmpdir
-            )
+            sampler, space = sampler_factory(true_nmodel, true_params, data, sim_rng, tmpdir)
             chain_dict = sampler.load_chain()
 
             samples = chain_dict["samples"]

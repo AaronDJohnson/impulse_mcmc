@@ -3,13 +3,13 @@
 import numpy as np
 import pytest
 
+from impulse.nuts.core import NUTSState
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.nuts.warmup import DualAveraging, WarmupSchedule, find_reasonable_step_size
-from impulse.nuts.core import NUTSState
 
 
 def gaussian_logp_and_grad(x):
-    logp = -0.5 * np.sum(x ** 2)
+    logp = -0.5 * np.sum(x**2)
     grad = -x
     return logp, grad
 
@@ -60,9 +60,13 @@ class TestWarmupSchedule:
 
     def test_mass_matrix_update(self):
         """Mass matrix should be updated at window boundaries."""
-        ws = WarmupSchedule(num_warmup=200, ndim=2,
-                           mass_matrix_type=MassMatrixType.DIAGONAL,
-                           init_buffer=25, term_buffer=25)
+        ws = WarmupSchedule(
+            num_warmup=200,
+            ndim=2,
+            mass_matrix_type=MassMatrixType.DIAGONAL,
+            init_buffer=25,
+            term_buffer=25,
+        )
 
         mm = MassMatrix(2, MassMatrixType.UNIT)
         mass_matrix_updated = False
@@ -70,8 +74,11 @@ class TestWarmupSchedule:
         for i in range(200):
             pos = np.random.randn(2) * np.array([2.0, 0.5])
             state = NUTSState(
-                position=pos, logp=-0.5 * np.sum(pos ** 2),
-                grad=-pos, step_size=0.1, mass_matrix=mm,
+                position=pos,
+                logp=-0.5 * np.sum(pos**2),
+                grad=-pos,
+                step_size=0.1,
+                mass_matrix=mm,
             )
             _, new_mm = ws.update(i, state, 0.7)
             if new_mm is not None:
@@ -82,8 +89,7 @@ class TestWarmupSchedule:
 
     def test_adapted_mass_matrix_is_inverse_covariance(self):
         """Adapted M must be Sigma^{-1}: velocity M^{-1} p scales as target cov."""
-        ws = WarmupSchedule(num_warmup=200, ndim=2,
-                            mass_matrix_type=MassMatrixType.DIAGONAL)
+        ws = WarmupSchedule(num_warmup=200, ndim=2, mass_matrix_type=MassMatrixType.DIAGONAL)
         rng = np.random.default_rng(0)
         stds = np.array([10.0, 1.0])
         samples = [rng.standard_normal(2) * stds for _ in range(500)]
@@ -92,11 +98,10 @@ class TestWarmupSchedule:
         assert mm.matrix_type == MassMatrixType.DIAGONAL
         # M^{-1} diagonal approximates the sample variances
         v = mm.inverse_multiply(np.ones(2))
-        np.testing.assert_allclose(v, stds ** 2, rtol=0.3)
+        np.testing.assert_allclose(v, stds**2, rtol=0.3)
 
     def test_adapted_dense_mass_matrix_is_inverse_covariance(self):
-        ws = WarmupSchedule(num_warmup=200, ndim=2,
-                            mass_matrix_type=MassMatrixType.DENSE)
+        ws = WarmupSchedule(num_warmup=200, ndim=2, mass_matrix_type=MassMatrixType.DENSE)
         rng = np.random.default_rng(0)
         stds = np.array([10.0, 1.0])
         samples = [rng.standard_normal(2) * stds for _ in range(500)]
@@ -104,16 +109,18 @@ class TestWarmupSchedule:
         mm = ws._adapt_mass_matrix(samples)
         assert mm.matrix_type == MassMatrixType.DENSE
         # M = Sigma^{-1}, so M^{-1} diagonal approximates the variances
-        np.testing.assert_allclose(np.diag(np.linalg.inv(mm._dense)),
-                                   stds ** 2, rtol=0.3)
+        np.testing.assert_allclose(np.diag(np.linalg.inv(mm._dense)), stds**2, rtol=0.3)
 
     def test_finalize(self):
         ws = WarmupSchedule(num_warmup=100, ndim=2, initial_step_size=0.5)
         mm = MassMatrix(2, MassMatrixType.UNIT)
         for i in range(100):
             state = NUTSState(
-                position=np.zeros(2), logp=0.0, grad=np.zeros(2),
-                step_size=0.5, mass_matrix=mm,
+                position=np.zeros(2),
+                logp=0.0,
+                grad=np.zeros(2),
+                step_size=0.5,
+                mass_matrix=mm,
             )
             ws.update(i, state, 0.8)
         final = ws.finalize()

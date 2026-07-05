@@ -3,8 +3,9 @@ RJMCMCProductSpace — user-facing class for reversible-jump MCMC
 in the product-space embedding.
 """
 
-import numpy as np
 from typing import Callable, Optional
+
+import numpy as np
 
 from impulse.product_space import NestedProductSpace
 from impulse.proposals import make_source_swap_proposal
@@ -122,7 +123,7 @@ class RJMCMCProductSpace(NestedProductSpace):
         nmodel = int(np.rint(params[-1]))
         if nmodel not in self.nmodels:
             return -np.inf
-        return self.logprior(params[:self.num_models * self.num_params])
+        return self.logprior(params[: self.num_models * self.num_params])
 
     # ------------------------------------------------------------------
     # Proposal factories
@@ -203,9 +204,9 @@ class RJMCMCProductSpace(NestedProductSpace):
                     "if the draw distribution is not the prior)."
                 )
             per_slot_sum = float(sum(per_slot))
-            if not (np.isfinite(total)
-                    and abs(total - per_slot_sum)
-                    <= 1e-6 * max(1.0, abs(total))):
+            if not (
+                np.isfinite(total) and abs(total - per_slot_sum) <= 1e-6 * max(1.0, abs(total))
+            ):
                 raise ValueError(
                     "source_prior_logpdf was not supplied and logprior is "
                     "not additive across per-source slots "
@@ -308,13 +309,10 @@ class RJMCMCProductSpace(NestedProductSpace):
         """
         groups = []
         for i in range(self.num_models):
-            groups.append(list(range(i * self.num_params,
-                                     (i + 1) * self.num_params)))
+            groups.append(list(range(i * self.num_params, (i + 1) * self.num_params)))
         return groups
 
-    def model_posterior_probs(
-        self, chain: np.ndarray, burn: int = 0
-    ) -> np.ndarray:
+    def model_posterior_probs(self, chain: np.ndarray, burn: int = 0) -> np.ndarray:
         """
         Estimate posterior model probabilities from cold-chain samples.
 
@@ -334,9 +332,7 @@ class RJMCMCProductSpace(NestedProductSpace):
         counts = np.bincount(nmodel_samples, minlength=self.num_models)
         return counts / counts.sum()
 
-    def draw_initial_position(
-        self, rng: np.random.Generator, nmodel: int = 0
-    ) -> np.ndarray:
+    def draw_initial_position(self, rng: np.random.Generator, nmodel: int = 0) -> np.ndarray:
         """
         Draw a valid initial position from the prior.
 
@@ -355,8 +351,6 @@ class RJMCMCProductSpace(NestedProductSpace):
         """
         x0 = np.zeros(self.ndim)
         for i in range(self.num_models):
-            x0[i * self.num_params:(i + 1) * self.num_params] = (
-                self.source_prior_draw(rng)
-            )
+            x0[i * self.num_params : (i + 1) * self.num_params] = self.source_prior_draw(rng)
         x0[-1] = nmodel
         return x0

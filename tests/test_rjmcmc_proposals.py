@@ -1,9 +1,10 @@
 import pickle
 import warnings
 
-import pytest
 import numpy as np
+import pytest
 
+from impulse.chain_stats import ChainStats
 from impulse.rjmcmc_proposals import (
     BirthDeathProposal,
     default_birth_death_probs,
@@ -12,9 +13,7 @@ from impulse.rjmcmc_proposals import (
     make_death_proposal,
     make_nmodel_jump,
 )
-from impulse.chain_stats import ChainStats
 from impulse.sampler_state import PTState
-
 
 NUM_PARAMS = 3
 MAX_SOURCES = 3
@@ -56,6 +55,7 @@ def _stats_stub(rng, sample):
 # default_birth_death_probs
 # ---------------------------------------------------------------------------
 
+
 class TestDefaultBirthDeathProbs:
     def test_at_zero(self):
         pb, pd = default_birth_death_probs(0, MAX_SOURCES)
@@ -76,6 +76,7 @@ class TestDefaultBirthDeathProbs:
 # ---------------------------------------------------------------------------
 # Birth proposal
 # ---------------------------------------------------------------------------
+
 
 class TestBirthProposal:
     def test_increments_nmodel(self, chain_stats):
@@ -100,8 +101,8 @@ class TestBirthProposal:
         # slot 0 should be unchanged
         np.testing.assert_array_equal(q[:NUM_PARAMS], old[:NUM_PARAMS])
         # slot 1 should have new params (birth draws a fresh source from the prior)
-        new_slot = q[NUM_PARAMS:2 * NUM_PARAMS]
-        assert not np.array_equal(new_slot, old[NUM_PARAMS:2 * NUM_PARAMS])
+        new_slot = q[NUM_PARAMS : 2 * NUM_PARAMS]
+        assert not np.array_equal(new_slot, old[NUM_PARAMS : 2 * NUM_PARAMS])
 
     def test_preserves_existing_params(self, chain_stats):
         birth = make_birth_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior)
@@ -109,7 +110,7 @@ class TestBirthProposal:
         old = chain_stats.current_sample.copy()
         q, _ = birth(chain_stats)
         # slots 0 and 1 unchanged
-        np.testing.assert_array_equal(q[:2 * NUM_PARAMS], old[:2 * NUM_PARAMS])
+        np.testing.assert_array_equal(q[: 2 * NUM_PARAMS], old[: 2 * NUM_PARAMS])
 
     def test_qxy_finite(self, chain_stats):
         birth = make_birth_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior)
@@ -128,6 +129,7 @@ class TestBirthProposal:
 # ---------------------------------------------------------------------------
 # Death proposal
 # ---------------------------------------------------------------------------
+
 
 class _ConstantDraw:
     """Deterministic draw stub: always returns the same vector."""
@@ -167,7 +169,7 @@ class TestDeathProposal:
         # nmodel=2 means 3 active sources (0,1,2)
         q = np.zeros(NDIM)
         for i in range(3):
-            q[i * NUM_PARAMS:(i + 1) * NUM_PARAMS] = (i + 1) * np.ones(NUM_PARAMS)
+            q[i * NUM_PARAMS : (i + 1) * NUM_PARAMS] = (i + 1) * np.ones(NUM_PARAMS)
         q[-1] = 2
         chain_stats.current_sample = q.copy()
 
@@ -175,11 +177,11 @@ class TestDeathProposal:
         new_nmodel = int(np.rint(q_new[-1]))
         assert new_nmodel == 1
         # surviving active slots 0..1 keep their exact values
-        np.testing.assert_array_equal(q_new[:2 * NUM_PARAMS],
-                                      q[:2 * NUM_PARAMS])
+        np.testing.assert_array_equal(q_new[: 2 * NUM_PARAMS], q[: 2 * NUM_PARAMS])
         # the vacated last slot no longer holds the killed source
-        assert not np.array_equal(q_new[2 * NUM_PARAMS:3 * NUM_PARAMS],
-                                  q[2 * NUM_PARAMS:3 * NUM_PARAMS])
+        assert not np.array_equal(
+            q_new[2 * NUM_PARAMS : 3 * NUM_PARAMS], q[2 * NUM_PARAMS : 3 * NUM_PARAMS]
+        )
 
     def test_qxy_finite(self, chain_stats):
         death = make_death_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior)
@@ -204,18 +206,16 @@ class TestDeathProposal:
         model posterior toward more sources.
         """
         sentinel = np.full(NUM_PARAMS, 4.75)
-        death = make_death_proposal(NUM_PARAMS, MAX_SOURCES,
-                                    _ConstantDraw(sentinel))
+        death = make_death_proposal(NUM_PARAMS, MAX_SOURCES, _ConstantDraw(sentinel))
         for seed in range(20):
             rng = np.random.default_rng(seed)
             q = np.zeros(NDIM)
             for i in range(3):
-                q[i * NUM_PARAMS:(i + 1) * NUM_PARAMS] = i + 1.0
+                q[i * NUM_PARAMS : (i + 1) * NUM_PARAMS] = i + 1.0
             q[-1] = 2  # 3 active sources
             q_new, _ = death(_stats_stub(rng, q))
             # the vacated last slot holds the fresh draw
-            np.testing.assert_array_equal(
-                q_new[2 * NUM_PARAMS:3 * NUM_PARAMS], sentinel)
+            np.testing.assert_array_equal(q_new[2 * NUM_PARAMS : 3 * NUM_PARAMS], sentinel)
             # kill-last: the LAST source (value 3.0) was removed and the
             # first two survive in place
             survivors = {q_new[i * NUM_PARAMS] for i in range(2)}
@@ -223,20 +223,21 @@ class TestDeathProposal:
 
     def test_qxy_prior_refresh_term(self):
         """q = p: death qxy = schedule ratio + log p(killed) - log p(fresh)."""
+
         def log_prior(params):
             return float(np.sum(-0.1 * np.asarray(params)))
 
         fresh = np.full(NUM_PARAMS, 2.0)
-        death = make_death_proposal(NUM_PARAMS, MAX_SOURCES,
-                                    _ConstantDraw(fresh),
-                                    log_prior_density=log_prior)
+        death = make_death_proposal(
+            NUM_PARAMS, MAX_SOURCES, _ConstantDraw(fresh), log_prior_density=log_prior
+        )
         rng = np.random.default_rng(3)
         q = np.zeros(NDIM)
         for i in range(2):
-            q[i * NUM_PARAMS:(i + 1) * NUM_PARAMS] = i + 1.0
+            q[i * NUM_PARAMS : (i + 1) * NUM_PARAMS] = i + 1.0
         q[-1] = 1  # 2 active sources
         # kill-last: the victim is deterministically the last active slot
-        killed = q[1 * NUM_PARAMS:2 * NUM_PARAMS].copy()
+        killed = q[1 * NUM_PARAMS : 2 * NUM_PARAMS].copy()
 
         _, qxy = death(_stats_stub(rng, q))
         # schedule: log p_birth(0) - log p_death(1) = log(1) - log(0.5)
@@ -251,6 +252,7 @@ class TestDeathProposal:
         forward move re-fills the vacated slot with density q, so
         ``qxy = schedule + log q(killed) - log q(fresh)``.
         """
+
         def log_proposal(params):
             return float(np.sum(-0.5 * np.asarray(params) ** 2))
 
@@ -259,17 +261,20 @@ class TestDeathProposal:
             return float(np.sum(-0.01 * np.asarray(params)))
 
         fresh = np.full(NUM_PARAMS, 0.5)
-        death = make_death_proposal(NUM_PARAMS, MAX_SOURCES,
-                                    _ConstantDraw(fresh),
-                                    log_proposal_density=log_proposal,
-                                    log_prior_density=log_prior)
+        death = make_death_proposal(
+            NUM_PARAMS,
+            MAX_SOURCES,
+            _ConstantDraw(fresh),
+            log_proposal_density=log_proposal,
+            log_prior_density=log_prior,
+        )
         rng = np.random.default_rng(11)
         q = np.zeros(NDIM)
         for i in range(2):
-            q[i * NUM_PARAMS:(i + 1) * NUM_PARAMS] = i + 1.0
+            q[i * NUM_PARAMS : (i + 1) * NUM_PARAMS] = i + 1.0
         q[-1] = 1
         # kill-last: the victim is deterministically the last active slot
-        killed = q[1 * NUM_PARAMS:2 * NUM_PARAMS].copy()
+        killed = q[1 * NUM_PARAMS : 2 * NUM_PARAMS].copy()
 
         _, qxy = death(_stats_stub(rng, q))
         expected = -np.log(0.5) + log_proposal(killed) - log_proposal(fresh)
@@ -279,6 +284,7 @@ class TestDeathProposal:
 # ---------------------------------------------------------------------------
 # Birth/Death reversibility
 # ---------------------------------------------------------------------------
+
 
 class TestBirthDeathReversibility:
     def test_qxy_symmetry(self):
@@ -314,8 +320,7 @@ class TestBirthDeathReversibility:
         """
         rng = np.random.default_rng(99)
         ptstate = PTState(ndim=NDIM, ntemps=1, min_temp=1.0, max_temp=1.0)
-        cs = ChainStats(ndim=NDIM, pt_state=ptstate, chain_index=0,
-                        rng=rng, buffer_size=50)
+        cs = ChainStats(ndim=NDIM, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=50)
 
         birth = make_birth_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior)
         death = make_death_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior)
@@ -331,8 +336,7 @@ class TestBirthDeathReversibility:
         cs.current_sample = q_after_birth.copy()
         q_after_death, qxy_death = death(cs)
         assert int(np.rint(q_after_death[-1])) == 0
-        np.testing.assert_allclose(q_after_death[:NUM_PARAMS],
-                                   original[:NUM_PARAMS])
+        np.testing.assert_allclose(q_after_death[:NUM_PARAMS], original[:NUM_PARAMS])
         assert abs(qxy_birth + qxy_death) < 1e-12
 
 
@@ -340,14 +344,17 @@ class TestBirthDeathReversibility:
 # Birth/Death with custom proposal != prior
 # ---------------------------------------------------------------------------
 
+
 class TestBirthDeathCustomProposal:
     def test_correction_term_applied(self, chain_stats):
         """When proposal != prior, qxy should include the correction."""
+
         def draw(rng):
             return rng.normal(2.5, 0.5, size=NUM_PARAMS)
 
         def log_proposal(params):
             from scipy.stats import norm
+
             return np.sum(norm.logpdf(params, 2.5, 0.5))
 
         def log_prior(params):
@@ -356,12 +363,20 @@ class TestBirthDeathCustomProposal:
                 return -np.inf
             return -NUM_PARAMS * np.log(5.0)
 
-        birth = make_birth_proposal(NUM_PARAMS, MAX_SOURCES, draw,
-                                    log_proposal_density=log_proposal,
-                                    log_prior_density=log_prior)
-        death = make_death_proposal(NUM_PARAMS, MAX_SOURCES, draw,
-                                    log_proposal_density=log_proposal,
-                                    log_prior_density=log_prior)
+        birth = make_birth_proposal(
+            NUM_PARAMS,
+            MAX_SOURCES,
+            draw,
+            log_proposal_density=log_proposal,
+            log_prior_density=log_prior,
+        )
+        death = make_death_proposal(
+            NUM_PARAMS,
+            MAX_SOURCES,
+            draw,
+            log_proposal_density=log_proposal,
+            log_prior_density=log_prior,
+        )
 
         chain_stats.current_sample = _make_sample(0, chain_stats.rng)
         _, qxy_birth = birth(chain_stats)
@@ -375,6 +390,7 @@ class TestBirthDeathCustomProposal:
 # ---------------------------------------------------------------------------
 # Combined birth-death kernel
 # ---------------------------------------------------------------------------
+
 
 def _zero_schedule(nmodel, max_sources):
     return 0.0, 0.0
@@ -434,7 +450,9 @@ class TestBirthDeathProposal:
     def test_degenerate_schedule_rejects(self):
         """p_birth = p_death = 0 must reject, never a silently-accepted no-op."""
         kernel = make_birth_death_proposal(
-            NUM_PARAMS, MAX_SOURCES, _draw_from_prior,
+            NUM_PARAMS,
+            MAX_SOURCES,
+            _draw_from_prior,
             prob_schedule=_zero_schedule,
         )
         rng = np.random.default_rng(4)
@@ -464,8 +482,7 @@ class TestBirthDeathProposal:
         equal callables should go through make_birth_death_proposal,
         which wires one shared callable)."""
         birth = make_birth_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior)
-        death = make_death_proposal(NUM_PARAMS, MAX_SOURCES,
-                                    _ConstantDraw(np.zeros(NUM_PARAMS)))
+        death = make_death_proposal(NUM_PARAMS, MAX_SOURCES, _ConstantDraw(np.zeros(NUM_PARAMS)))
         with pytest.warns(UserWarning, match="draw_from_prior"):
             BirthDeathProposal(birth, death)
 
@@ -480,7 +497,9 @@ class TestBirthDeathProposal:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             kernel = make_birth_death_proposal(
-                NUM_PARAMS, MAX_SOURCES, _draw_from_prior,
+                NUM_PARAMS,
+                MAX_SOURCES,
+                _draw_from_prior,
             )
         assert kernel.birth.draw_from_prior is kernel.death.draw_from_prior
 
@@ -494,8 +513,9 @@ class TestBirthDeathProposal:
 
     def test_disagreeing_schedules_raise(self):
         """Selection, birth, and death schedules must agree pointwise."""
-        birth = make_birth_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior,
-                                    prob_schedule=_uniform_schedule)
+        birth = make_birth_proposal(
+            NUM_PARAMS, MAX_SOURCES, _draw_from_prior, prob_schedule=_uniform_schedule
+        )
         death = make_death_proposal(NUM_PARAMS, MAX_SOURCES, _draw_from_prior)
         with pytest.raises(ValueError, match="disagrees"):
             BirthDeathProposal(birth, death)
@@ -506,7 +526,9 @@ class TestBirthDeathProposal:
         while selection normalizes, so a varying sum biases acceptance."""
         with pytest.raises(ValueError, match="constant across model indices"):
             make_birth_death_proposal(
-                NUM_PARAMS, MAX_SOURCES, _draw_from_prior,
+                NUM_PARAMS,
+                MAX_SOURCES,
+                _draw_from_prior,
                 prob_schedule=_nonconstant_sum_schedule,
             )
 
@@ -525,6 +547,7 @@ class TestBirthDeathProposal:
 # ---------------------------------------------------------------------------
 # nmodel jump
 # ---------------------------------------------------------------------------
+
 
 class TestNmodelJump:
     def test_changes_nmodel(self, chain_stats):

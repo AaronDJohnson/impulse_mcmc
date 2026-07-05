@@ -36,8 +36,8 @@ dev = [
   "pytest-cov",
   "pytest-timeout",
   "flake8",
-  "black",
-  "isort",
+  "black>=26",
+  "isort>=7",
 ]
 flow = [
   "coppuccino",
@@ -64,3 +64,10 @@ version = {attr = "impulse.__version__"}
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+line_length = 100

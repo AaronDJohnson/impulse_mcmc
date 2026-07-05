@@ -1,5 +1,6 @@
-import numpy as np
 from dataclasses import dataclass
+
+import numpy as np
 
 
 def tempered_lnprobs(lnlikes: np.ndarray, lnpriors: np.ndarray, temps: np.ndarray) -> np.ndarray:
@@ -27,7 +28,7 @@ def tempered_lnprobs(lnlikes: np.ndarray, lnpriors: np.ndarray, temps: np.ndarra
         log-prior remain ``-inf``; results are bit-identical to
         ``1/temps * lnlikes + lnpriors`` for finite temperatures.
     """
-    with np.errstate(invalid='ignore'):
+    with np.errstate(invalid="ignore"):
         beta = np.where(np.isinf(temps), 0.0, 1.0 / temps)
         # the beta == 0 branch of beta * lnlikes still evaluates eagerly
         # (hence the errstate guard); np.where discards its NaNs
@@ -73,17 +74,18 @@ class SamplerState:
     >>> temps = np.array([1.0, 1.5, 2.0, 3.0, 4.0])
     >>> lnprobs = lnpriors + lnlikes / temps
     >>> accepted = np.ones(5, dtype=int)
-    >>> 
+    >>>
     >>> state = SamplerState(positions, lnlikes, lnpriors, lnprobs, accepted, temps)
     >>> print(f"Number of chains: {state.ntemps}")
     >>> print(f"Parameter dimensions: {state.ndim}")
-    
+
     Notes
     -----
     - All arrays must have consistent leading dimensions (ntemps)
     - Temperatures should be ordered from cold (1.0) to hot (high values)
     - Log-probabilities are tempered by division: β = 1/T
     """
+
     positions: np.ndarray  # shape (ntemps, ndim)
     lnlikes: np.ndarray  # shape (ntemps,)
     lnpriors: np.ndarray  # shape (ntemps,)
@@ -101,8 +103,9 @@ class SamplerState:
         """Dimensionality of parameter space."""
         return int(self.positions.shape[1])
 
+
 @dataclass
-class PTState():
+class PTState:
     """
     State management for parallel tempering temperature ladder and swap statistics.
 
@@ -151,14 +154,15 @@ class PTState():
     - Infinite temperature chains sample from the prior distribution
     - Adaptation helps optimize swap acceptance rates during burn-in
     """
+
     ndim: int
     ntemps: int
     swap_steps: int = 1
     min_temp: float = 1.0
-    max_temp: float|None = None
-    temp_step: float|None = None
+    max_temp: float | None = None
+    temp_step: float | None = None
     nswaps: int = 1  # start at 1 to avoid divide by zero errors
-    ladder: np.ndarray|None = None
+    ladder: np.ndarray | None = None
     inf_temp: bool = False
     # adaptive temperature ladder parameters:
     adapt_t0: float = 100
@@ -239,7 +243,7 @@ class PTState():
             raise ValueError("temp_step is not initialized")
 
         if self.inf_temp:
-            self.ntemps += 1 # add empty top value back to ladder
+            self.ntemps += 1  # add empty top value back to ladder
             ladder = self.min_temp * self.temp_step**temp_idxs  # compute ladder
             ladder = np.concatenate([ladder, [np.inf]])  # add inf value as top of ladder
         else:
@@ -279,9 +283,10 @@ class PTState():
         kappa = decay / self.adapt_nu  # 1 / nu
         # Construct temperature adjustments.
         accept_ratio = self.compute_accept_ratio()
-        dscaled_accept = kappa * (accept_ratio[:-1] - accept_ratio[1:])  # delta acceptance ratios for chains
+        dscaled_accept = kappa * (
+            accept_ratio[:-1] - accept_ratio[1:]
+        )  # delta acceptance ratios for chains
         # Compute new ladder (hottest and coldest chains don't move).
         delta_temps = np.diff(self.ladder[:-1])
         delta_temps *= np.exp(dscaled_accept)
-        self.ladder[1:-1] = (np.cumsum(delta_temps) + self.ladder[0])
-
+        self.ladder[1:-1] = np.cumsum(delta_temps) + self.ladder[0]

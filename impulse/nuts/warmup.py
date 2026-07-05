@@ -5,10 +5,11 @@ a windowed scheme for mass matrix estimation.
 """
 
 from dataclasses import dataclass, field
+
 import numpy as np
 
-from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.nuts.core import leapfrog
+from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 
 
 @dataclass
@@ -28,6 +29,7 @@ class DualAveraging:
     initial_step_size : float
         Starting step size.
     """
+
     target_accept: float = 0.8
     gamma: float = 0.05
     t0: int = 10
@@ -121,9 +123,16 @@ class WarmupSchedule:
         Starting step size.
     """
 
-    def __init__(self, num_warmup, ndim, mass_matrix_type=MassMatrixType.DIAGONAL,
-                 target_accept=0.8, init_buffer=75, term_buffer=50,
-                 initial_step_size=1.0):
+    def __init__(
+        self,
+        num_warmup,
+        ndim,
+        mass_matrix_type=MassMatrixType.DIAGONAL,
+        target_accept=0.8,
+        init_buffer=75,
+        term_buffer=50,
+        initial_step_size=1.0,
+    ):
         self.num_warmup = num_warmup
         self.ndim = ndim
         self.mass_matrix_type = mass_matrix_type
@@ -162,7 +171,9 @@ class WarmupSchedule:
                 end = middle_end
             windows.append((start, end))
             start = end
-            window_size = min(window_size * 2, middle_end - start) if start < middle_end else window_size
+            window_size = (
+                min(window_size * 2, middle_end - start) if start < middle_end else window_size
+            )
         return windows
 
     def _adapt_mass_matrix(self, samples):
@@ -264,8 +275,7 @@ class WarmupSchedule:
         return self.dual_averaging.finalize()
 
 
-def find_reasonable_step_size(position, logp, grad, logp_and_grad,
-                              mass_matrix, rng):
+def find_reasonable_step_size(position, logp, grad, logp_and_grad, mass_matrix, rng):
     """Stan's heuristic to find a reasonable initial step size.
 
     Doubles or halves the step size until the acceptance probability

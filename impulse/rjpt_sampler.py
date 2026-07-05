@@ -7,29 +7,33 @@ Reuses existing building blocks without subclassing PTSampler.
 import logging
 import os
 import warnings
-import numpy as np
 from typing import Callable, Optional
+
+import numpy as np
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-from impulse.proposals import JumpProposals, ProposalBundle, am, scam, de, make_early_de
 from impulse.chain_stats import ChainStats, MultiChainStats
-from impulse.input_function_wrapper import _function_wrapper
-from impulse.sampler_state import SamplerState, PTState, tempered_lnprobs
 from impulse.file_io import ShortChain
-from impulse.sampler_step import vectorized_mh_step, pt_step
-from impulse.wrapping import WrapSpec, PeriodicSpec
-from impulse.resume import checkpoint_sampler, check_for_checkpoint, load_rjpt_checkpoint
-from impulse.rjmcmc_proposals import migrate_legacy_birth_death
-from impulse.samplers import (
-    _UNSET,
-    setup_seeds, setup_chain_stats, setup_standard_jumps, setup_initial_position,
-)
+from impulse.input_function_wrapper import _function_wrapper
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
-from impulse.nuts.warmup import find_reasonable_step_size, DualAveraging
+from impulse.nuts.warmup import DualAveraging, find_reasonable_step_size
+from impulse.proposals import JumpProposals, ProposalBundle, am, de, make_early_de, scam
+from impulse.resume import check_for_checkpoint, checkpoint_sampler, load_rjpt_checkpoint
+from impulse.rjmcmc_proposals import migrate_legacy_birth_death
+from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
+from impulse.sampler_step import pt_step, vectorized_mh_step
+from impulse.samplers import (
+    _UNSET,
+    setup_chain_stats,
+    setup_initial_position,
+    setup_seeds,
+    setup_standard_jumps,
+)
 from impulse.utils import prepare_files
+from impulse.wrapping import PeriodicSpec, WrapSpec
 
 
 class RJPTSampler:
@@ -162,8 +166,12 @@ class RJPTSampler:
         self.ntemps = ntemps
         self.swap_steps = swap_steps
         self.wrap = WrapSpec.from_dict(periodic)
-        self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized, jax=jax, threads=threads)
-        self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized, jax=jax, threads=threads)
+        self.lnlike = _function_wrapper(
+            lnlike, loglargs, loglkwargs, vectorized=vectorized, jax=jax, threads=threads
+        )
+        self.lnprior = _function_wrapper(
+            lnprior, logpargs, logpkwargs, vectorized=vectorized, jax=jax, threads=threads
+        )
 
         # Keep raw references for NUTS gradient building
         self._raw_lnlike = lnlike
@@ -172,16 +180,32 @@ class RJPTSampler:
         self.rngs = setup_seeds(seed, ntemps)
 
         self.ptstate = PTState(
-            self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp,
-            max_temp=max_temp, temp_step=temp_step, ladder=ladder,
-            inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu,
+            self.ndim,
+            ntemps,
+            swap_steps=swap_steps,
+            min_temp=min_temp,
+            max_temp=max_temp,
+            temp_step=temp_step,
+            ladder=ladder,
+            inf_temp=inf_temp,
+            adapt_t0=adapt_t0,
+            adapt_nu=adapt_nu,
         )
         self.multi_chain_stats = setup_chain_stats(
-            ndim, self.ptstate, self.rngs, groups, sample_cov, sample_mean,
-            buffer_size, self.ptstate.ladder,
+            ndim,
+            self.ptstate,
+            self.rngs,
+            groups,
+            sample_cov,
+            sample_mean,
+            buffer_size,
+            self.ptstate.ladder,
         )
         self.proposal_bundle = setup_standard_jumps(
-            self.multi_chain_stats, am_weight, scam_weight, de_weight,
+            self.multi_chain_stats,
+            am_weight,
+            scam_weight,
+            de_weight,
         )
 
         self.cov_update = cov_update
@@ -208,13 +232,13 @@ class RJPTSampler:
             self._mass_matrix_type = mass_matrix_type
 
         # NUTS caches (picklable)
-        self._step_sizes: dict = {}      # (chain_idx, nmodel_or_ndim) -> float
-        self._mass_matrices: dict = {}   # nmodel_or_ndim -> MassMatrix
+        self._step_sizes: dict = {}  # (chain_idx, nmodel_or_ndim) -> float
+        self._mass_matrices: dict = {}  # nmodel_or_ndim -> MassMatrix
 
         # Online NUTS adaptation state (picklable)
-        self._dual_averagers: dict = {}           # (chain_idx, n_active) -> DualAveraging
-        self._nuts_sample_buffers: dict = {}      # n_active -> list[np.ndarray]
-        self._mass_matrix_injected: set = set()   # n_active values with externally set mass matrices
+        self._dual_averagers: dict = {}  # (chain_idx, n_active) -> DualAveraging
+        self._nuts_sample_buffers: dict = {}  # n_active -> list[np.ndarray]
+        self._mass_matrix_injected: set = set()  # n_active values with externally set mass matrices
         self._nuts_steps_since_mm_update: dict = {}  # n_active -> int counter
         self._mass_matrix_adapt_interval = mass_matrix_adapt_interval
         self._mass_matrix_min_samples = mass_matrix_min_samples
@@ -250,7 +274,7 @@ class RJPTSampler:
         bool
             True if adaptation is still allowed at ``iteration``.
         """
-        num_adapt = getattr(self, 'num_adapt', None)
+        num_adapt = getattr(self, "num_adapt", None)
         return num_adapt is None or iteration < num_adapt
 
     def _freeze_adaptive_proposals(self) -> None:
@@ -262,7 +286,7 @@ class RJPTSampler:
         """
         for jp in self.proposal_bundle.jump_proposals:
             for prop in jp.proposal_list:
-                freeze = getattr(prop, 'freeze_adaptation', None)
+                freeze = getattr(prop, "freeze_adaptation", None)
                 if callable(freeze):
                     freeze()
 
@@ -292,21 +316,12 @@ class RJPTSampler:
         checkpoint is left untouched and the historical loud warning is
         emitted instead.
         """
-        props = [
-            prop
-            for jp in self.proposal_bundle.jump_proposals
-            for prop in jp.proposal_list
-        ]
-        names = {getattr(prop, '__name__', '') for prop in props}
-        if 'birth_proposal' not in names and 'death_proposal' not in names:
+        props = [prop for jp in self.proposal_bundle.jump_proposals for prop in jp.proposal_list]
+        names = {getattr(prop, "__name__", "") for prop in props}
+        if "birth_proposal" not in names and "death_proposal" not in names:
             return
-        deaths = [
-            p for p in props
-            if getattr(p, '__name__', '') == 'death_proposal'
-        ]
-        if deaths and all(
-                callable(getattr(p, 'draw_from_prior', None))
-                for p in deaths):
+        deaths = [p for p in props if getattr(p, "__name__", "") == "death_proposal"]
+        if deaths and all(callable(getattr(p, "draw_from_prior", None)) for p in deaths):
             warnings.warn(
                 "Resumed checkpoint registers separate standalone "
                 "'birth_proposal'/'death_proposal' jumps whose attribute "
@@ -321,8 +336,7 @@ class RJPTSampler:
                 UserWarning,
             )
             return
-        migrated = migrate_legacy_birth_death(
-            self.proposal_bundle.jump_proposals)
+        migrated = migrate_legacy_birth_death(self.proposal_bundle.jump_proposals)
         if migrated is not None:
             warnings.warn(
                 "Resumed checkpoint registered separate 'birth_proposal'/"
@@ -363,7 +377,7 @@ class RJPTSampler:
         untouched. Idempotent: finalize() is a pure read of DA state.
         """
         for key, da in self._dual_averagers.items():
-            if getattr(da, 'count', 0) == 0:
+            if getattr(da, "count", 0) == 0:
                 continue  # never updated; nothing smoothed to freeze to
             finalized = da.finalize()
             if not np.isfinite(finalized) or finalized <= 0:
@@ -434,7 +448,7 @@ class RJPTSampler:
         ``PTSampler.from_rjmcmc`` for the full rationale.
         """
         # Expand per-source sample_cov / sample_mean to full product space
-        sample_cov = kwargs.pop('sample_cov', None)
+        sample_cov = kwargs.pop("sample_cov", None)
         if sample_cov is not None:
             sample_cov = np.asarray(sample_cov)
             if sample_cov.shape == (rjmcmc_space.num_params, rjmcmc_space.num_params):
@@ -444,7 +458,7 @@ class RJPTSampler:
                     full_cov[sl, sl] = sample_cov
                 full_cov[-1, -1] = 1.0  # model index
                 sample_cov = full_cov
-        sample_mean = kwargs.pop('sample_mean', None)
+        sample_mean = kwargs.pop("sample_mean", None)
         if sample_mean is not None:
             sample_mean = np.asarray(sample_mean)
             if sample_mean.shape == (rjmcmc_space.num_params,):
@@ -490,14 +504,16 @@ class RJPTSampler:
             # separate constant-weight jumps violate detailed balance (see
             # impulse.rjmcmc_proposals.BirthDeathProposal).
             if birth_weight + death_weight > 0:
-                sampler.add_custom_jump(rjmcmc_space.get_birth_death_proposal(),
-                                        birth_weight + death_weight)
+                sampler.add_custom_jump(
+                    rjmcmc_space.get_birth_death_proposal(), birth_weight + death_weight
+                )
             sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
             sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
         if de_weight > 0:
             sampler.add_custom_jump(make_early_de(de_min_fill), de_weight)
         sampler.multi_chain_stats.enable_per_model(
-            rjmcmc_space.num_models, rjmcmc_space.num_params,
+            rjmcmc_space.num_models,
+            rjmcmc_space.num_params,
         )
         return sampler
 
@@ -640,7 +656,9 @@ class RJPTSampler:
             # Check prior FIRST — cheap and catches out-of-bounds before
             # potentially expensive/unstable gradient computation.
             if self._rjmcmc_space is not None:
-                lp = raw_lnprior(trial[:self._rjmcmc_space.num_models * self._rjmcmc_space.num_params])
+                lp = raw_lnprior(
+                    trial[: self._rjmcmc_space.num_models * self._rjmcmc_space.num_params]
+                )
             else:
                 lp = raw_lnprior(trial)
 
@@ -683,7 +701,12 @@ class RJPTSampler:
                 step_size = 0.1  # fallback
             else:
                 step_size = find_reasonable_step_size(
-                    active_params, logp, grad, logp_and_grad, mass_matrix, rng,
+                    active_params,
+                    logp,
+                    grad,
+                    logp_and_grad,
+                    mass_matrix,
+                    rng,
                 )
             self._step_sizes[cache_key] = step_size
 
@@ -729,7 +752,10 @@ class RJPTSampler:
             rng = self.rngs[k]
 
             step_size = self._get_or_find_step_size(
-                k, active_params, logp_and_grad, rng,
+                k,
+                active_params,
+                logp_and_grad,
+                rng,
             )
 
             if n_active not in self._mass_matrices:
@@ -759,8 +785,16 @@ class RJPTSampler:
             new_positions[k] = new_params
 
             # Recompute untempered lnlike and lnprior
-            new_lnlikes[k] = self._raw_lnlike(nuts_state.position) if self._rjmcmc_space is None else self.lnlike(new_positions[k:k+1])[0]
-            new_lnpriors[k] = self._raw_lnprior(new_params) if self._rjmcmc_space is None else self.lnprior(new_positions[k:k+1])[0]
+            new_lnlikes[k] = (
+                self._raw_lnlike(nuts_state.position)
+                if self._rjmcmc_space is None
+                else self.lnlike(new_positions[k : k + 1])[0]
+            )
+            new_lnpriors[k] = (
+                self._raw_lnprior(new_params)
+                if self._rjmcmc_space is None
+                else self.lnprior(new_positions[k : k + 1])[0]
+            )
 
             # Online step size adaptation via dual averaging.
             # ALL steps (divergent or not) feed DA. Divergent steps push
@@ -801,8 +835,12 @@ class RJPTSampler:
 
         new_lnprobs = tempered_lnprobs(new_lnlikes, new_lnpriors, state.temps)
         new_state = SamplerState(
-            new_positions, new_lnlikes, new_lnpriors, new_lnprobs,
-            state.accepted, state.temps,
+            new_positions,
+            new_lnlikes,
+            new_lnpriors,
+            new_lnprobs,
+            state.accepted,
+            state.temps,
         )
         return new_state, cold_diag
 
@@ -844,7 +882,9 @@ class RJPTSampler:
 
             # Compute candidate mass matrix from samples
             candidate_mm = self._adapt_mass_matrix_from_samples(
-                samples, n_active, self._mass_matrix_type,
+                samples,
+                n_active,
+                self._mass_matrix_type,
             )
 
             # FIX 2: Find step size appropriate for the NEW mass matrix
@@ -864,8 +904,12 @@ class RJPTSampler:
             logp_val, grad_val = logp_and_grad(active_params)
             if np.isfinite(logp_val):
                 candidate_step = find_reasonable_step_size(
-                    active_params, logp_val, grad_val, logp_and_grad,
-                    candidate_mm, rng,
+                    active_params,
+                    logp_val,
+                    grad_val,
+                    logp_and_grad,
+                    candidate_mm,
+                    rng,
                 )
                 candidate_step = np.clip(candidate_step, self._step_size_min, self._step_size_max)
             else:
@@ -883,8 +927,11 @@ class RJPTSampler:
                     n_divergent += 1
                     break
                 trial_state = NUTSState(
-                    position=trial_pos, logp=trial_logp, grad=trial_grad,
-                    step_size=candidate_step, mass_matrix=candidate_mm,
+                    position=trial_pos,
+                    logp=trial_logp,
+                    grad=trial_grad,
+                    step_size=candidate_step,
+                    mass_matrix=candidate_mm,
                 )
                 trial_result = nuts_step(trial_state, logp_and_grad, rng, max_tree_depth=3)
                 if trial_result.divergent:
@@ -960,8 +1007,13 @@ class RJPTSampler:
 
         # Chain storage
         self.short_chain = ShortChain(
-            self.ndim, self.ntemps, self.save_freq,
-            iteration=0, outdir=self.outdir, resume=self.resume, thin=thin,
+            self.ndim,
+            self.ntemps,
+            self.save_freq,
+            iteration=0,
+            outdir=self.outdir,
+            resume=self.resume,
+            thin=thin,
         )
         # iteration of the last covariance refresh; kept on the instance so
         # it is pickled into checkpoints (a resume overwrites this fresh
@@ -976,8 +1028,12 @@ class RJPTSampler:
         lnprior0 = self.lnprior(initial_position)
         lnprob0 = tempered_lnprobs(lnlike0, lnprior0, self.ptstate.ladder)
         initial_state = SamplerState(
-            initial_position, lnlike0, lnprior0, lnprob0,
-            accepted=np.ones(self.ntemps), temps=self.ptstate.ladder,
+            initial_position,
+            lnlike0,
+            lnprior0,
+            lnprob0,
+            accepted=np.ones(self.ntemps),
+            temps=self.ptstate.ladder,
         )
 
         if np.any(~np.isfinite(lnlike0)):
@@ -995,8 +1051,10 @@ class RJPTSampler:
             logger.info("Resuming from checkpoint: %s", self.checkpoint_path)
             loaded = load_rjpt_checkpoint(
                 self.checkpoint_path,
-                lnlike=self.lnlike, lnprior=self.lnprior,
-                raw_lnlike=self._raw_lnlike, raw_lnprior=self._raw_lnprior,
+                lnlike=self.lnlike,
+                lnprior=self.lnprior,
+                raw_lnlike=self._raw_lnlike,
+                raw_lnprior=self._raw_lnprior,
                 lnlike_grad=self.lnlike_grad,
             )
             # num_adapt resume semantics: an EXPLICITLY passed constructor
@@ -1009,8 +1067,8 @@ class RJPTSampler:
             # the load_rjpt_checkpoint(...)->sample() path, where unpickling
             # bypasses __init__ (pre-num_adapt checkpoints lack both
             # attributes).
-            constructor_num_adapt = getattr(self, 'num_adapt', None)
-            num_adapt_explicit = getattr(self, '_num_adapt_explicit', False)
+            constructor_num_adapt = getattr(self, "num_adapt", None)
+            num_adapt_explicit = getattr(self, "_num_adapt_explicit", False)
             constructor_resume = self.resume
             constructor_checkpoint_path = self.checkpoint_path
             self.__dict__.update(loaded.__dict__)
@@ -1020,7 +1078,7 @@ class RJPTSampler:
             # the NUTS diagnostics instead of appending
             self.resume = constructor_resume
             self.checkpoint_path = constructor_checkpoint_path
-            checkpoint_num_adapt = getattr(loaded, 'num_adapt', None)
+            checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
             if num_adapt_explicit:
                 if checkpoint_num_adapt != constructor_num_adapt:
                     logger.warning(
@@ -1032,7 +1090,8 @@ class RJPTSampler:
                         "freeze is irreversible and survives the "
                         "checkpoint, so removing or extending the freeze "
                         "only re-enables the other adaptive components.",
-                        checkpoint_num_adapt, constructor_num_adapt,
+                        checkpoint_num_adapt,
+                        constructor_num_adapt,
                     )
                 self.num_adapt = constructor_num_adapt
             else:
@@ -1046,23 +1105,23 @@ class RJPTSampler:
             self.short_chain.truncate_files_to_saved()
 
         # Backward-compat: old checkpoints may lack new adaptation attributes
-        if not hasattr(self, '_dual_averagers'):
+        if not hasattr(self, "_dual_averagers"):
             self._dual_averagers = {}
-        if not hasattr(self, '_nuts_sample_buffers'):
+        if not hasattr(self, "_nuts_sample_buffers"):
             self._nuts_sample_buffers = {}
-        if not hasattr(self, '_mass_matrix_injected'):
+        if not hasattr(self, "_mass_matrix_injected"):
             self._mass_matrix_injected = set()
-        if not hasattr(self, '_nuts_steps_since_mm_update'):
+        if not hasattr(self, "_nuts_steps_since_mm_update"):
             self._nuts_steps_since_mm_update = {}
-        if not hasattr(self, '_mass_matrix_adapt_interval'):
+        if not hasattr(self, "_mass_matrix_adapt_interval"):
             self._mass_matrix_adapt_interval = 200
-        if not hasattr(self, '_mass_matrix_min_samples'):
+        if not hasattr(self, "_mass_matrix_min_samples"):
             self._mass_matrix_min_samples = 50
-        if not hasattr(self, '_step_size_min'):
+        if not hasattr(self, "_step_size_min"):
             self._step_size_min = 1e-4
-        if not hasattr(self, '_step_size_max'):
+        if not hasattr(self, "_step_size_max"):
             self._step_size_max = 5.0
-        if not hasattr(self, 'num_adapt'):
+        if not hasattr(self, "num_adapt"):
             self.num_adapt = None
 
         # NUTS diagnostics file
@@ -1104,7 +1163,11 @@ class RJPTSampler:
 
             # Step A: MH step (includes RJ proposals if registered)
             self.state = vectorized_mh_step(
-                self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0],
+                self.state,
+                self.proposal_bundle,
+                self.lnlike,
+                self.lnprior,
+                self.rngs[0],
                 wrap=self.wrap,
             )
             self.proposal_bundle.report_accepts(self.state.accepted)
@@ -1129,7 +1192,11 @@ class RJPTSampler:
             # Step D: PT swap
             if jj % self.swap_steps == 0 and self.ntemps > 1:
                 self.state = pt_step(
-                    self.state, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1],
+                    self.state,
+                    self.ptstate,
+                    self.lnlike,
+                    self.lnprior,
+                    self.rngs[-1],
                 )
                 if adapting:
                     self.ptstate.adapt_ladder()
@@ -1137,7 +1204,8 @@ class RJPTSampler:
                     # place, so the tempered lnprobs must be recomputed for the
                     # new temperatures
                     self.state.lnprobs = tempered_lnprobs(
-                        self.state.lnlikes, self.state.lnpriors, self.ptstate.ladder)
+                        self.state.lnlikes, self.state.lnpriors, self.ptstate.ladder
+                    )
 
             # Step E: Covariance update. Past num_adapt neither the
             # covariance/mean/SVD nor the DE buffer update, so the transition
@@ -1160,7 +1228,8 @@ class RJPTSampler:
             # bit-identically
             if jj > 0 and jj % self.save_freq == 0:
                 checkpoint_sampler(
-                    self, path=self.checkpoint_path,
+                    self,
+                    path=self.checkpoint_path,
                     omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
                 )
 
@@ -1187,11 +1256,11 @@ class RJPTSampler:
         counter so the value is correct regardless of whether a flush or a
         truncation runs first after unpickling.
         """
-        if hasattr(self, '_nuts_diag_rows_written'):
+        if hasattr(self, "_nuts_diag_rows_written"):
             return
-        path = getattr(self, '_nuts_diag_path', None)
+        path = getattr(self, "_nuts_diag_path", None)
         if path is not None and os.path.exists(path):
-            with open(path, 'r') as fp:
+            with open(path, "r") as fp:
                 self._nuts_diag_rows_written = sum(1 for _ in fp)
         else:
             self._nuts_diag_rows_written = 0
@@ -1203,12 +1272,19 @@ class RJPTSampler:
         # Seed the row counter from disk BEFORE appending (legacy
         # pre-row-tracking checkpoints lack the attribute).
         self._ensure_nuts_diag_rows_written()
-        rows = np.array([
-            [d["tree_depth"], d["divergent"], d["energy_error"],
-             d["step_size"], d["mean_accept_prob"],
-             d.get("n_active", 0)]
-            for d in self._nuts_diag_data
-        ])
+        rows = np.array(
+            [
+                [
+                    d["tree_depth"],
+                    d["divergent"],
+                    d["energy_error"],
+                    d["step_size"],
+                    d["mean_accept_prob"],
+                    d.get("n_active", 0),
+                ]
+                for d in self._nuts_diag_data
+            ]
+        )
         with open(self._nuts_diag_path, "a") as fp:
             np.savetxt(fp, rows, fmt="%.18e")
         self._nuts_diag_data = []
@@ -1231,10 +1307,10 @@ class RJPTSampler:
             return
         self._ensure_nuts_diag_rows_written()
         rows = self._nuts_diag_rows_written
-        with open(self._nuts_diag_path, 'r') as fp:
+        with open(self._nuts_diag_path, "r") as fp:
             lines = fp.readlines()
         if len(lines) > rows:
-            with open(self._nuts_diag_path, 'w') as fp:
+            with open(self._nuts_diag_path, "w") as fp:
                 fp.writelines(lines[:rows])
 
     # ------------------------------------------------------------------
@@ -1265,10 +1341,9 @@ class RJPTSampler:
         """
         ladder = self.ptstate.ladder
         return {
-            'temperatures': [] if ladder is None else ladder.tolist(),
-            'mh': self.proposal_bundle.chain_acceptance_rates(),
-            'pt_swap': self.ptstate.compute_accept_ratio() if self.ntemps > 1
-                       else np.array([]),
+            "temperatures": [] if ladder is None else ladder.tolist(),
+            "mh": self.proposal_bundle.chain_acceptance_rates(),
+            "pt_swap": self.ptstate.compute_accept_ratio() if self.ntemps > 1 else np.array([]),
         }
 
     def save_chain_acceptance_rates(self, path: Optional[str] = None) -> str:
@@ -1288,15 +1363,15 @@ class RJPTSampler:
             Resolved path written.
         """
         import json
+
         if path is None:
             path = os.path.join(self.outdir, "chain_acceptance.json")
         report = self.chain_acceptance_rates()
-        swap = report['pt_swap']
-        report['pt_swap'] = (swap.tolist() if hasattr(swap, 'tolist')
-                             else list(swap))
-        report['per_proposal'] = self.proposal_acceptance_rates()
+        swap = report["pt_swap"]
+        report["pt_swap"] = swap.tolist() if hasattr(swap, "tolist") else list(swap)
+        report["per_proposal"] = self.proposal_acceptance_rates()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, 'w') as fp:
+        with open(path, "w") as fp:
             json.dump(report, fp, indent=2)
         return path
 
@@ -1323,7 +1398,7 @@ class RJPTSampler:
             data = np.loadtxt(filepath)
             if data.ndim == 1:
                 data = data.reshape(1, -1)
-            samples.append(data[:, :self.ndim])
+            samples.append(data[:, : self.ndim])
             lnlike.append(data[:, self.ndim])
             lnprob.append(data[:, self.ndim + 1])
             accepted.append(data[:, self.ndim + 2])
@@ -1391,5 +1466,3 @@ class RJPTSampler:
         diag["proposal_acceptance"] = self.proposal_acceptance_rates()
 
         return diag
-
-

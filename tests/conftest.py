@@ -1,11 +1,12 @@
-import pytest
-import numpy as np
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
 
-from impulse.sampler_state import PTState, SamplerState
+import numpy as np
+import pytest
+
 from impulse.chain_stats import ChainStats
+from impulse.sampler_state import PTState, SamplerState
 
 
 @pytest.fixture
@@ -19,18 +20,21 @@ def temp_dir():
 @pytest.fixture
 def simple_likelihood():
     """Simple quadratic likelihood function"""
+
     def log_likelihood(x):
         x = np.asarray(x)
         if x.ndim == 1:
             return -0.5 * np.sum(x**2)
         else:
             return -0.5 * np.sum(x**2, axis=1)
+
     return log_likelihood
 
 
 @pytest.fixture
 def simple_prior():
     """Simple uniform prior"""
+
     def log_prior(x):
         x = np.asarray(x)
         if x.ndim == 1:
@@ -40,23 +44,27 @@ def simple_prior():
             mask = np.any(np.abs(x) > 5, axis=1)
             result[mask] = -np.inf
             return result
+
     return log_prior
 
 
 @pytest.fixture
 def vectorized_likelihood():
     """Vectorized likelihood function"""
+
     def log_likelihood(x):
         x = np.asarray(x)
         if x.ndim == 1:
             x = x.reshape(1, -1)
         return -0.5 * np.sum(x**2, axis=1)
+
     return log_likelihood
 
 
 @pytest.fixture
 def vectorized_prior():
     """Vectorized prior function"""
+
     def log_prior(x):
         x = np.asarray(x)
         if x.ndim == 1:
@@ -65,6 +73,7 @@ def vectorized_prior():
         mask = np.any(np.abs(x) > 5, axis=1)
         result[mask] = -np.inf
         return result
+
     return log_prior
 
 
@@ -89,7 +98,7 @@ def sample_state_2d(ptstate_2d):
     temps = ptstate_2d.ladder
     lnprobs = lnpriors + lnlikes / temps
     accepted = np.array([1, 0, 1])
-    
+
     return SamplerState(positions, lnlikes, lnpriors, lnprobs, accepted, temps)
 
 
@@ -102,7 +111,7 @@ def sample_state_3d(ptstate_3d):
     temps = ptstate_3d.ladder
     lnprobs = lnpriors + lnlikes / temps
     accepted = np.ones(5, dtype=int)
-    
+
     return SamplerState(positions, lnlikes, lnpriors, lnprobs, accepted, temps)
 
 
@@ -110,13 +119,7 @@ def sample_state_3d(ptstate_3d):
 def chain_stats_2d(ptstate_2d):
     """ChainStats fixture for 2D case"""
     rng = np.random.default_rng(42)
-    return ChainStats(
-        ndim=2,
-        pt_state=ptstate_2d, 
-        chain_index=0,
-        rng=rng,
-        buffer_size=100
-    )
+    return ChainStats(ndim=2, pt_state=ptstate_2d, chain_index=0, rng=rng, buffer_size=100)
 
 
 @pytest.fixture
@@ -125,13 +128,13 @@ def sample_chain_data():
     np.random.seed(42)
     n_samples = 1000
     n_params = 3
-    
+
     # Generate autocorrelated samples
     samples = np.zeros((n_samples, n_params))
     samples[0] = np.random.randn(n_params)
-    
+
     for i in range(1, n_samples):
         # AR(1) process with correlation 0.8
-        samples[i] = 0.8 * samples[i-1] + 0.6 * np.random.randn(n_params)
-    
+        samples[i] = 0.8 * samples[i - 1] + 0.6 * np.random.randn(n_params)
+
     return samples

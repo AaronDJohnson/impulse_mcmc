@@ -2,10 +2,12 @@
 Tests for parallel likelihood evaluation module.
 """
 
-import pytest
-import numpy as np
 import time
 from unittest.mock import Mock, patch
+
+import numpy as np
+import pytest
+
 from impulse.parallel import ParallelLikelihood
 
 # Multiprocessing tests can deadlock; cap each test at 120s (requires pytest-timeout).
@@ -53,7 +55,7 @@ def cpu_intensive_likelihood(x):
     # Add computation to make parallelization beneficial
     for _ in range(50):
         result += -0.001 * np.sum(x**2, axis=1)
-        result += 0.0001 * np.sum(np.exp(-x**2), axis=1)
+        result += 0.0001 * np.sum(np.exp(-(x**2)), axis=1)
     return result
 
 
@@ -67,6 +69,7 @@ class TestParallelLikelihood:
 
     def test_init_basic(self):
         """Test basic initialization"""
+
         def dummy_likelihood(x):
             return np.sum(x**2, axis=1)
 
@@ -78,14 +81,12 @@ class TestParallelLikelihood:
 
     def test_init_custom_params(self):
         """Test initialization with custom parameters"""
+
         def dummy_likelihood(x):
             return np.sum(x**2, axis=1)
 
         parallel_like = ParallelLikelihood(
-            dummy_likelihood,
-            n_workers=4,
-            batch_size=500,
-            max_batch_size=5000
+            dummy_likelihood, n_workers=4, batch_size=500, max_batch_size=5000
         )
         assert parallel_like.n_workers == 4
         assert parallel_like.batch_size == 500
@@ -93,6 +94,7 @@ class TestParallelLikelihood:
 
     def test_call_empty_input(self):
         """Test handling of empty input"""
+
         def dummy_likelihood(x):
             return np.sum(x**2, axis=1)
 
@@ -102,6 +104,7 @@ class TestParallelLikelihood:
 
     def test_call_1d_input_error(self):
         """Test that 1D input raises error"""
+
         def dummy_likelihood(x):
             return np.sum(x**2, axis=1)
 
@@ -131,11 +134,7 @@ class TestParallelLikelihood:
         expected = quadratic_likelihood(params)
 
         # Parallel evaluation
-        parallel_like = ParallelLikelihood(
-            quadratic_likelihood,
-            n_workers=2,
-            batch_size=100
-        )
+        parallel_like = ParallelLikelihood(quadratic_likelihood, n_workers=2, batch_size=100)
         result = parallel_like(params)
 
         # Results should be identical
@@ -160,10 +159,7 @@ class TestParallelLikelihood:
     def test_large_batch_processing(self):
         """Test processing of large batches that exceed max_batch_size"""
         parallel_like = ParallelLikelihood(
-            sum_likelihood,
-            batch_size=100,
-            max_batch_size=500,
-            n_workers=2
+            sum_likelihood, batch_size=100, max_batch_size=500, n_workers=2
         )
 
         # Large batch that will be chunked
@@ -199,6 +195,7 @@ class TestParallelLikelihood:
 
     def test_cleanup_method(self):
         """Test that cleanup method works without errors"""
+
         def dummy_likelihood(x):
             return np.sum(x**2, axis=1)
 
@@ -216,14 +213,12 @@ class TestParallelLikelihood:
 
     def test_repr(self):
         """Test string representation"""
+
         def dummy_likelihood(x):
             return np.sum(x**2, axis=1)
 
         parallel_like = ParallelLikelihood(
-            dummy_likelihood,
-            n_workers=4,
-            batch_size=500,
-            max_batch_size=2000
+            dummy_likelihood, n_workers=4, batch_size=500, max_batch_size=2000
         )
 
         repr_str = repr(parallel_like)
@@ -242,11 +237,7 @@ class TestParallelLikelihood:
         direct_time = time.time() - start_time
 
         # Parallel evaluation
-        parallel_like = ParallelLikelihood(
-            medium_likelihood,
-            n_workers=2,
-            batch_size=100
-        )
+        parallel_like = ParallelLikelihood(medium_likelihood, n_workers=2, batch_size=100)
 
         start_time = time.time()
         result = parallel_like(params)
@@ -263,15 +254,12 @@ class TestParallelLikelihood:
 
     def test_fallback_on_worker_failure(self):
         """Test fallback to direct evaluation when workers fail"""
-        parallel_like = ParallelLikelihood(
-            simple_likelihood,
-            batch_size=100
-        )
+        parallel_like = ParallelLikelihood(simple_likelihood, batch_size=100)
 
         params = np.random.randn(500, 5)
 
         # Mock pool.map to raise exception
-        with patch.object(parallel_like, '_pool') as mock_pool:
+        with patch.object(parallel_like, "_pool") as mock_pool:
             mock_pool.map.side_effect = Exception("Worker failed")
 
             # Should fallback to direct evaluation without raising
@@ -287,10 +275,7 @@ class TestParallelLikelihood:
     def test_memory_efficiency(self):
         """Test that memory usage doesn't grow with sample count"""
         parallel_like = ParallelLikelihood(
-            sum_likelihood,
-            batch_size=100,
-            max_batch_size=200,
-            n_workers=2
+            sum_likelihood, batch_size=100, max_batch_size=200, n_workers=2
         )
 
         # Process multiple batches of different sizes
@@ -333,10 +318,7 @@ class TestParallelLikelihoodIntegration:
 
         # Test with actual multiprocessing
         parallel_like = ParallelLikelihood(
-            cpu_intensive_likelihood,
-            n_workers=2,
-            batch_size=50,
-            max_batch_size=100
+            cpu_intensive_likelihood, n_workers=2, batch_size=50, max_batch_size=100
         )
 
         # This will actually use multiprocessing

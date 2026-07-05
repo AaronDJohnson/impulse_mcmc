@@ -5,6 +5,7 @@ U-turn detection and divergence tracking.
 """
 
 from dataclasses import dataclass, field
+
 import numpy as np
 
 from impulse.nuts.mass_matrix import MassMatrix
@@ -42,6 +43,7 @@ class NUTSState:
     mean_accept_prob : float
         Mean acceptance probability across the tree.
     """
+
     position: np.ndarray
     logp: float
     grad: np.ndarray
@@ -92,9 +94,20 @@ def leapfrog(position, momentum, grad, step_size, mass_matrix, logp_and_grad):
     return position, momentum, new_logp, new_grad
 
 
-def _build_tree(position, momentum, grad, logp, depth, step_size,
-                direction, mass_matrix, logp_and_grad, H0,
-                max_delta_energy, rng):
+def _build_tree(
+    position,
+    momentum,
+    grad,
+    logp,
+    depth,
+    step_size,
+    direction,
+    mass_matrix,
+    logp_and_grad,
+    H0,
+    max_delta_energy,
+    rng,
+):
     """Recursively build a binary trajectory tree (multinomial sampling).
 
     Parameters
@@ -128,8 +141,7 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
     if depth == 0:
         # Base case: single leapfrog step
         new_pos, new_mom, new_logp, new_grad = leapfrog(
-            position, momentum, grad, direction * step_size,
-            mass_matrix, logp_and_grad
+            position, momentum, grad, direction * step_size, mass_matrix, logp_and_grad
         )
         H_new = -new_logp + mass_matrix.kinetic_energy(new_mom)
         delta_energy = H_new - H0
@@ -141,12 +153,18 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
         accept_prob = min(1.0, np.exp(-delta_energy)) if np.isfinite(delta_energy) else 0.0
 
         return {
-            "position_left": new_pos, "momentum_left": new_mom,
-            "grad_left": new_grad, "logp_left": new_logp,
-            "position_right": new_pos, "momentum_right": new_mom,
-            "grad_right": new_grad, "logp_right": new_logp,
-            "proposal_position": new_pos, "proposal_logp": new_logp,
-            "proposal_grad": new_grad, "proposal_H": H_new,
+            "position_left": new_pos,
+            "momentum_left": new_mom,
+            "grad_left": new_grad,
+            "logp_left": new_logp,
+            "position_right": new_pos,
+            "momentum_right": new_mom,
+            "grad_right": new_grad,
+            "logp_right": new_logp,
+            "proposal_position": new_pos,
+            "proposal_logp": new_logp,
+            "proposal_grad": new_grad,
+            "proposal_H": H_new,
             "log_sum_weight": log_weight,
             "n_leapfrog": 1,
             "divergent": divergent,
@@ -156,8 +174,18 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
 
     # Recursion: build first half-tree
     inner = _build_tree(
-        position, momentum, grad, logp, depth - 1, step_size,
-        direction, mass_matrix, logp_and_grad, H0, max_delta_energy, rng
+        position,
+        momentum,
+        grad,
+        logp,
+        depth - 1,
+        step_size,
+        direction,
+        mass_matrix,
+        logp_and_grad,
+        H0,
+        max_delta_energy,
+        rng,
     )
 
     if inner["divergent"] or inner["turning"]:
@@ -166,17 +194,33 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
     # Build second half-tree from the appropriate endpoint
     if direction == 1:
         outer = _build_tree(
-            inner["position_right"], inner["momentum_right"],
-            inner["grad_right"], inner["logp_right"],
-            depth - 1, step_size, direction, mass_matrix,
-            logp_and_grad, H0, max_delta_energy, rng
+            inner["position_right"],
+            inner["momentum_right"],
+            inner["grad_right"],
+            inner["logp_right"],
+            depth - 1,
+            step_size,
+            direction,
+            mass_matrix,
+            logp_and_grad,
+            H0,
+            max_delta_energy,
+            rng,
         )
     else:
         outer = _build_tree(
-            inner["position_left"], inner["momentum_left"],
-            inner["grad_left"], inner["logp_left"],
-            depth - 1, step_size, direction, mass_matrix,
-            logp_and_grad, H0, max_delta_energy, rng
+            inner["position_left"],
+            inner["momentum_left"],
+            inner["grad_left"],
+            inner["logp_left"],
+            depth - 1,
+            step_size,
+            direction,
+            mass_matrix,
+            logp_and_grad,
+            H0,
+            max_delta_energy,
+            rng,
         )
 
     if outer["divergent"] or outer["turning"]:
@@ -222,8 +266,7 @@ def _build_tree(position, momentum, grad, logp, depth, step_size,
     return inner
 
 
-def nuts_step(state, logp_and_grad, rng, max_tree_depth=10,
-              max_delta_energy=1000.0):
+def nuts_step(state, logp_and_grad, rng, max_tree_depth=10, max_delta_energy=1000.0):
     """Perform one full NUTS transition.
 
     Parameters
@@ -279,9 +322,18 @@ def nuts_step(state, logp_and_grad, rng, max_tree_depth=10,
 
         if direction == 1:
             tree = _build_tree(
-                pos_right, mom_right, grad_right, logp_right,
-                depth, step_size, direction, mass_matrix,
-                logp_and_grad, H0, max_delta_energy, rng
+                pos_right,
+                mom_right,
+                grad_right,
+                logp_right,
+                depth,
+                step_size,
+                direction,
+                mass_matrix,
+                logp_and_grad,
+                H0,
+                max_delta_energy,
+                rng,
             )
             pos_right = tree["position_right"]
             mom_right = tree["momentum_right"]
@@ -289,9 +341,18 @@ def nuts_step(state, logp_and_grad, rng, max_tree_depth=10,
             logp_right = tree["logp_right"]
         else:
             tree = _build_tree(
-                pos_left, mom_left, grad_left, logp_left,
-                depth, step_size, direction, mass_matrix,
-                logp_and_grad, H0, max_delta_energy, rng
+                pos_left,
+                mom_left,
+                grad_left,
+                logp_left,
+                depth,
+                step_size,
+                direction,
+                mass_matrix,
+                logp_and_grad,
+                H0,
+                max_delta_energy,
+                rng,
             )
             pos_left = tree["position_left"]
             mom_left = tree["momentum_left"]

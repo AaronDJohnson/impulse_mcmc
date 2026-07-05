@@ -1,9 +1,10 @@
-import pytest
-import numpy as np
-import tempfile
 import os
 import shutil
+import tempfile
 from pathlib import Path
+
+import numpy as np
+import pytest
 
 from impulse.utils import prepare_files, shift_array
 
@@ -15,11 +16,11 @@ class TestPrepareFiles:
         """Test creating new files when they don't exist"""
         filepaths = [
             os.path.join(temp_dir, "test1.txt"),
-            os.path.join(temp_dir, "subdir", "test2.txt")
+            os.path.join(temp_dir, "subdir", "test2.txt"),
         ]
-        
+
         prepare_files(filepaths, resume=False)
-        
+
         # Check that all files exist
         for filepath in filepaths:
             assert os.path.exists(filepath)
@@ -30,16 +31,16 @@ class TestPrepareFiles:
     def test_prepare_files_overwrite_existing(self, temp_dir):
         """Test overwriting existing files when resume=False"""
         filepath = os.path.join(temp_dir, "existing.txt")
-        
+
         # Create file with content
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             f.write("existing content")
-        
+
         original_size = os.path.getsize(filepath)
         assert original_size > 0
-        
+
         prepare_files([filepath], resume=False)
-        
+
         # File should exist but be empty
         assert os.path.exists(filepath)
         assert os.path.getsize(filepath) == 0
@@ -48,24 +49,24 @@ class TestPrepareFiles:
         """Test keeping existing files when resume=True"""
         filepath = os.path.join(temp_dir, "existing.txt")
         content = "existing content"
-        
+
         # Create file with content
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             f.write(content)
-        
+
         prepare_files([filepath], resume=True)
-        
+
         # File should exist with original content
         assert os.path.exists(filepath)
-        with open(filepath, 'r') as f:
+        with open(filepath, "r") as f:
             assert f.read() == content
 
     def test_prepare_files_creates_directories(self, temp_dir):
         """Test that parent directories are created"""
         nested_path = os.path.join(temp_dir, "deep", "nested", "path", "file.txt")
-        
+
         prepare_files([nested_path], resume=False)
-        
+
         assert os.path.exists(nested_path)
         assert os.path.exists(os.path.dirname(nested_path))
 
@@ -78,13 +79,13 @@ class TestPrepareFiles:
         """Test with mix of existing and new files"""
         existing_file = os.path.join(temp_dir, "existing.txt")
         new_file = os.path.join(temp_dir, "new.txt")
-        
+
         # Create one existing file
-        with open(existing_file, 'w') as f:
+        with open(existing_file, "w") as f:
             f.write("content")
-        
+
         prepare_files([existing_file, new_file], resume=False)
-        
+
         # Both should exist and be empty
         assert os.path.exists(existing_file)
         assert os.path.exists(new_file)
@@ -177,7 +178,7 @@ class TestShiftArray:
         result_right = shift_array(arr, 1)
         result_left = shift_array(arr, -1)
         result_zero = shift_array(arr, 0)
-        
+
         np.testing.assert_array_equal(result_right, np.array([0]))
         np.testing.assert_array_equal(result_left, np.array([0]))
         np.testing.assert_array_equal(result_zero, np.array([42]))

@@ -16,21 +16,23 @@ from impulse.validation import (
     ecdf,
 )
 
-
 # ---------------------------------------------------------------------------
 # compute_sbc_rank
 # ---------------------------------------------------------------------------
+
 
 class TestComputeSbcRank:
     def test_known_samples(self):
         """Rank should count samples strictly less than true value."""
         true = np.array([3.0, 5.0])
-        posterior = np.array([
-            [1.0, 2.0],
-            [2.0, 4.0],
-            [4.0, 6.0],
-            [5.0, 8.0],
-        ])
+        posterior = np.array(
+            [
+                [1.0, 2.0],
+                [2.0, 4.0],
+                [4.0, 6.0],
+                [5.0, 8.0],
+            ]
+        )
         ranks = compute_sbc_rank(true, posterior)
         # dim 0: 1.0 < 3, 2.0 < 3 -> rank 2
         # dim 1: 2.0 < 5, 4.0 < 5 -> rank 2
@@ -65,6 +67,7 @@ class TestComputeSbcRank:
 # compute_sbc_quantile
 # ---------------------------------------------------------------------------
 
+
 class TestComputeSbcQuantile:
     def test_normalized(self):
         """Quantile should be rank / nsamples, in [0, 1]."""
@@ -86,6 +89,7 @@ class TestComputeSbcQuantile:
 # ---------------------------------------------------------------------------
 # compute_model_pit
 # ---------------------------------------------------------------------------
+
 
 class TestComputeModelPit:
     def test_bounds(self):
@@ -131,6 +135,7 @@ class TestComputeModelPit:
 # ecdf
 # ---------------------------------------------------------------------------
 
+
 class TestEcdf:
     def test_sorted(self):
         """ECDF x-values should be sorted."""
@@ -153,6 +158,7 @@ class TestEcdf:
 # ---------------------------------------------------------------------------
 # SBC with exact posterior (validates machinery itself)
 # ---------------------------------------------------------------------------
+
 
 class TestSbcExactPosterior:
     def test_conjugate_normal_uniform_quantiles(self):
@@ -196,8 +202,7 @@ class TestSbcExactPosterior:
         for j in range(ndim):
             stat, pval = stats.kstest(quantiles[:, j], "uniform")
             assert pval > 0.01, (
-                f"Dim {j}: KS test rejected uniformity "
-                f"(stat={stat:.4f}, p={pval:.4f})"
+                f"Dim {j}: KS test rejected uniformity " f"(stat={stat:.4f}, p={pval:.4f})"
             )
 
     def test_detects_bias(self):
@@ -224,20 +229,18 @@ class TestSbcExactPosterior:
             data_mean = data.mean()
             mu_post = var_post * (n_obs * data_mean / var_noise) + bias
             post_samples = rng.normal(mu_post, sigma_post, size=n_post)
-            quantiles[i] = compute_sbc_quantile(
-                np.array([theta_true]), post_samples[:, None]
-            )[0]
+            quantiles[i] = compute_sbc_quantile(np.array([theta_true]), post_samples[:, None])[0]
 
         stat, pval = stats.kstest(quantiles, "uniform")
         assert pval < 0.01, (
-            f"KS test should reject biased posterior "
-            f"(stat={stat:.4f}, p={pval:.4f})"
+            f"KS test should reject biased posterior " f"(stat={stat:.4f}, p={pval:.4f})"
         )
 
 
 # ---------------------------------------------------------------------------
 # matplotlib is optional: lazy-import regression test
 # ---------------------------------------------------------------------------
+
 
 class TestLazyMatplotlibImport:
     def test_import_and_numerics_work_without_matplotlib(self):
@@ -294,7 +297,5 @@ print(impulse.__version__)
             cwd=repo_root,
             timeout=120,
         )
-        assert result.returncode == 0, (
-            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-        )
+        assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         assert result.stdout.strip() == impulse.__version__

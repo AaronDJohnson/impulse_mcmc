@@ -1,5 +1,7 @@
-import numpy as np
 from typing import Callable
+
+import numpy as np
+
 
 class ProductSpace:
     """
@@ -38,11 +40,10 @@ class ProductSpace:
     >>> space = ProductSpace(model_names, likelihoods, priors, param_names)
     >>> # Now can sample over both model structures
     """
-    def __init__(self,
-                 model_names: list,
-                 loglikelihoods: list,
-                 logpriors: list,
-                 param_names: list[list[str]]):
+
+    def __init__(
+        self, model_names: list, loglikelihoods: list, logpriors: list, param_names: list[list[str]]
+    ):
         self.model_names = model_names
         self.loglikelihoods = loglikelihoods
         self.logpriors = logpriors
@@ -53,8 +54,8 @@ class ProductSpace:
         self.all_params = []
         for jj, param_list in enumerate(param_names):
             for i in range(len(param_list)):
-                self.all_params.append(param_list[i] + '_' + model_names[jj])
-        self.all_params.append('nmodel')
+                self.all_params.append(param_list[i] + "_" + model_names[jj])
+        self.all_params.append("nmodel")
         self.ndim = len(self.all_params)
 
         # get indices for each model
@@ -62,7 +63,7 @@ class ProductSpace:
         for i in range(self.num_models):
             self.model_params.append([])
             for param in param_names[i]:
-                self.model_params[i].append(self.all_params.index(param + '_' + model_names[i]))
+                self.model_params[i].append(self.all_params.index(param + "_" + model_names[i]))
 
     def loglikelihood(self, x):
         """
@@ -126,11 +127,10 @@ class NestedProductSpace:
     num_params : int
         Number of parameters for each source
     """
-    def __init__(self,
-                 loglikelihood: Callable,
-                 logprior: Callable,
-                 num_sources: int,
-                 num_params: int):
+
+    def __init__(
+        self, loglikelihood: Callable, logprior: Callable, num_sources: int, num_params: int
+    ):
 
         self.loglikelihood = loglikelihood
         self.logprior = logprior
@@ -166,7 +166,7 @@ class NestedProductSpace:
         nmodel = int(np.rint(params[-1]))
         if nmodel not in self.nmodels:
             return -np.inf
-        return self.loglikelihood(params[:(nmodel + 1) * self.num_params])
+        return self.loglikelihood(params[: (nmodel + 1) * self.num_params])
 
     def get_logprior(self, params):
         """
@@ -193,4 +193,4 @@ class NestedProductSpace:
         nmodel = int(np.rint(params[-1]))
         if nmodel not in self.nmodels:
             return -np.inf
-        return self.logprior(params[:(nmodel + 1) * self.num_params])
+        return self.logprior(params[: (nmodel + 1) * self.num_params])

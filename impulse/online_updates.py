@@ -1,9 +1,11 @@
 import numpy as np
 
-def update_mean(old_arr_length: int,
-                old_arr_avg: np.ndarray,
-                new_arr: np.ndarray,
-                ) -> np.ndarray:
+
+def update_mean(
+    old_arr_length: int,
+    old_arr_avg: np.ndarray,
+    new_arr: np.ndarray,
+) -> np.ndarray:
     """
     Batch update the running mean with new samples.
 
@@ -24,11 +26,10 @@ def update_mean(old_arr_length: int,
     weight = np.sum(new_arr - old_arr_avg, axis=0)
     return old_arr_avg + weight / (old_arr_length + len(new_arr))
 
-def update_covariance(old_arr_length: int,
-                      old_arr_cov: np.ndarray,
-                      old_arr_avg: np.ndarray,
-                      new_arr: np.ndarray
-                      ) -> tuple[np.ndarray, np.ndarray]:
+
+def update_covariance(
+    old_arr_length: int, old_arr_cov: np.ndarray, old_arr_avg: np.ndarray, new_arr: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Batch update the running sample covariance matrix.
 
@@ -58,12 +59,10 @@ def update_covariance(old_arr_length: int,
     cov = ((n - 1) * old_arr_cov + np.dot(y.T, z)) / (n + m - 1)
     return x_avgnew, cov
 
-def svd_groups(svd_U: list,
-               svd_S: list,
-               groups: list,
-               sample_cov: np.ndarray,
-               proposal_L: list|None = None
-               ) -> tuple[list, list, list]:
+
+def svd_groups(
+    svd_U: list, svd_S: list, groups: list, sample_cov: np.ndarray, proposal_L: list | None = None
+) -> tuple[list, list, list]:
     """
     Compute eigen-decomposition for parameter groups from covariance matrix.
 

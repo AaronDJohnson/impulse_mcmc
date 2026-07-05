@@ -4,17 +4,18 @@ import numpy as np
 import pytest
 
 from impulse.nuts.gradient_helpers import (
-    numerical_gradient,
-    make_logp_and_grad_numerical,
     compose_logp_and_grad,
+    make_logp_and_grad_numerical,
+    numerical_gradient,
 )
 
 
 class TestNumericalGradient:
     def test_quadratic(self):
         """Gradient of -0.5 * x^T x is -x."""
+
         def logp(x):
-            return -0.5 * np.sum(x ** 2)
+            return -0.5 * np.sum(x**2)
 
         x = np.array([1.0, 2.0, 3.0])
         grad = numerical_gradient(logp, x)
@@ -23,6 +24,7 @@ class TestNumericalGradient:
     def test_linear(self):
         """Gradient of a^T x is a."""
         a = np.array([3.0, -1.0])
+
         def logp(x):
             return np.dot(a, x)
 
@@ -43,7 +45,7 @@ class TestNumericalGradient:
 class TestMakeLogpAndGradNumerical:
     def test_interface(self):
         def logp(x):
-            return -0.5 * np.sum(x ** 2)
+            return -0.5 * np.sum(x**2)
 
         fn = make_logp_and_grad_numerical(logp)
         x = np.array([1.0, 2.0])
@@ -55,7 +57,7 @@ class TestMakeLogpAndGradNumerical:
 class TestComposeLogpAndGrad:
     def test_with_analytical_grads(self):
         def lnlike(x):
-            return -0.5 * np.sum(x ** 2)
+            return -0.5 * np.sum(x**2)
 
         def lnprior(x):
             return 0.0  # flat prior
@@ -74,8 +76,9 @@ class TestComposeLogpAndGrad:
 
     def test_with_numerical_fallback(self):
         """No gradient functions provided -> uses numerical."""
+
         def lnlike(x):
-            return -0.5 * np.sum(x ** 2)
+            return -0.5 * np.sum(x**2)
 
         def lnprior(x):
             return 0.0
@@ -88,11 +91,12 @@ class TestComposeLogpAndGrad:
 
     def test_mixed_gradients(self):
         """One analytical, one numerical."""
+
         def lnlike(x):
-            return -0.5 * np.sum(x ** 2)
+            return -0.5 * np.sum(x**2)
 
         def lnprior(x):
-            return -0.1 * np.sum(x ** 2)
+            return -0.1 * np.sum(x**2)
 
         def lnlike_grad(x):
             return -x
@@ -107,7 +111,7 @@ class TestComposeLogpAndGrad:
 
     def test_nonfinite_logp_returns_zero_grad(self):
         def lnlike(x):
-            return -0.5 * np.sum(x ** 2)
+            return -0.5 * np.sum(x**2)
 
         def lnprior(x):
             return -np.inf  # always outside prior
@@ -120,11 +124,12 @@ class TestComposeLogpAndGrad:
 
     def test_matches_analytical(self):
         """Numerical gradient should match analytical to ~1e-5."""
+
         def lnlike(x):
             return -0.5 * (x[0] ** 2 + 0.5 * x[1] ** 2 + 0.3 * x[0] * x[1])
 
         def lnprior(x):
-            return -0.01 * np.sum(x ** 2)
+            return -0.01 * np.sum(x**2)
 
         def analytical_grad(x):
             g0 = -(x[0] + 0.15 * x[1]) - 0.02 * x[0]

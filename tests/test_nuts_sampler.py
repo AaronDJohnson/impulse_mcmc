@@ -2,18 +2,19 @@
 
 import os
 import pickle
-import tempfile
 import shutil
+import tempfile
+
 import numpy as np
 import pytest
 
-from impulse.nuts.sampler import NUTSSampler
 from impulse.nuts.gradient_helpers import compose_logp_and_grad, make_logp_and_grad_numerical
+from impulse.nuts.sampler import NUTSSampler
 from impulse.resume import checkpoint_sampler, load_nuts_checkpoint
 
 
 def gaussian_logp_and_grad(x):
-    logp = -0.5 * np.sum(x ** 2)
+    logp = -0.5 * np.sum(x**2)
     grad = -x
     return logp, grad
 
@@ -29,8 +30,12 @@ class TestNUTSSamplerBasic:
     def test_sample_2d_gaussian(self, temp_dir):
         """Sample a 2D Gaussian and verify mean/cov."""
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=gaussian_logp_and_grad,
-            num_warmup=500, seed=42, outdir=temp_dir, save_freq=500,
+            ndim=2,
+            logp_and_grad=gaussian_logp_and_grad,
+            num_warmup=500,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         sampler.sample(np.array([3.0, -2.0]), num_iterations=2000)
 
@@ -59,9 +64,13 @@ class TestNUTSSamplerBasic:
             return logp, grad
 
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=logp_and_grad,
-            num_warmup=1000, mass_matrix_type="diagonal",
-            seed=42, outdir=temp_dir, save_freq=1000,
+            ndim=2,
+            logp_and_grad=logp_and_grad,
+            num_warmup=1000,
+            mass_matrix_type="diagonal",
+            seed=42,
+            outdir=temp_dir,
+            save_freq=1000,
         )
         sampler.sample(np.array([0.0, 0.0]), num_iterations=3000)
 
@@ -75,8 +84,12 @@ class TestNUTSSamplerBasic:
     def test_no_divergences_on_gaussian(self, temp_dir):
         """Well-conditioned Gaussian should have 0 divergences."""
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=gaussian_logp_and_grad,
-            num_warmup=300, seed=42, outdir=temp_dir, save_freq=500,
+            ndim=2,
+            logp_and_grad=gaussian_logp_and_grad,
+            num_warmup=300,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         sampler.sample(np.zeros(2), num_iterations=500)
         diag = sampler.get_diagnostics()
@@ -87,8 +100,12 @@ class TestChainIO:
     def test_roundtrip(self, temp_dir):
         """Chain save/load roundtrip preserves data."""
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=gaussian_logp_and_grad,
-            num_warmup=50, seed=42, outdir=temp_dir, save_freq=100,
+            ndim=2,
+            logp_and_grad=gaussian_logp_and_grad,
+            num_warmup=50,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=100,
         )
         sampler.sample(np.zeros(2), num_iterations=100)
 
@@ -101,7 +118,8 @@ class TestChainIO:
 
     def test_file_not_found(self, temp_dir):
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=gaussian_logp_and_grad,
+            ndim=2,
+            logp_and_grad=gaussian_logp_and_grad,
             outdir=os.path.join(temp_dir, "nonexistent"),
         )
         with pytest.raises(FileNotFoundError):
@@ -112,8 +130,12 @@ class TestCheckpointResume:
     def test_checkpoint_and_load(self, temp_dir):
         """Checkpoint and restore NUTSSampler."""
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=gaussian_logp_and_grad,
-            num_warmup=50, seed=42, outdir=temp_dir, save_freq=50,
+            ndim=2,
+            logp_and_grad=gaussian_logp_and_grad,
+            num_warmup=50,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=50,
         )
         sampler.sample(np.zeros(2), num_iterations=100)
 
@@ -131,8 +153,12 @@ class TestCheckpointResume:
 class TestDiagnostics:
     def test_diagnostics_keys(self, temp_dir):
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=gaussian_logp_and_grad,
-            num_warmup=50, seed=42, outdir=temp_dir, save_freq=100,
+            ndim=2,
+            logp_and_grad=gaussian_logp_and_grad,
+            num_warmup=50,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=100,
         )
         sampler.sample(np.zeros(2), num_iterations=100)
         diag = sampler.get_diagnostics()
@@ -152,16 +178,21 @@ class TestDiagnostics:
 class TestNumericalGradientEndToEnd:
     def test_numerical_gradient_sampler(self, temp_dir):
         """NUTSSampler with numerical gradients should work."""
+
         def lnlike(x):
-            return -0.5 * np.sum(x ** 2)
+            return -0.5 * np.sum(x**2)
 
         def lnprior(x):
             return 0.0 if np.all(np.abs(x) < 10) else -np.inf
 
         logp_and_grad = compose_logp_and_grad(lnlike, lnprior)
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=logp_and_grad,
-            num_warmup=200, seed=42, outdir=temp_dir, save_freq=200,
+            ndim=2,
+            logp_and_grad=logp_and_grad,
+            num_warmup=200,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=200,
         )
         sampler.sample(np.array([1.0, -1.0]), num_iterations=500)
 
@@ -189,9 +220,13 @@ class TestHigherDimensional:
             return logp, grad
 
         sampler = NUTSSampler(
-            ndim=ndim, logp_and_grad=logp_and_grad,
-            num_warmup=500, mass_matrix_type="diagonal",
-            seed=42, outdir=temp_dir, save_freq=1000,
+            ndim=ndim,
+            logp_and_grad=logp_and_grad,
+            num_warmup=500,
+            mass_matrix_type="diagonal",
+            seed=42,
+            outdir=temp_dir,
+            save_freq=1000,
         )
         sampler.sample(np.ones(ndim) * 2, num_iterations=3000)
 
@@ -226,30 +261,32 @@ class TestAnisotropicAdaptation:
         from impulse.diagnostics import effective_sample_size
 
         stds = np.array([10.0, 1.0])
-        var = stds ** 2
+        var = stds**2
 
         def logp_and_grad(x):
-            return -0.5 * np.sum(x ** 2 / var), -x / var
+            return -0.5 * np.sum(x**2 / var), -x / var
 
         def run(mass_matrix_type, outdir):
             sampler = NUTSSampler(
-                ndim=2, logp_and_grad=logp_and_grad,
-                num_warmup=500, mass_matrix_type=mass_matrix_type,
-                seed=42, outdir=outdir, save_freq=2000,
+                ndim=2,
+                logp_and_grad=logp_and_grad,
+                num_warmup=500,
+                mass_matrix_type=mass_matrix_type,
+                seed=42,
+                outdir=outdir,
+                save_freq=2000,
             )
             sampler.sample(np.zeros(2), num_iterations=1500)
             return sampler, sampler.load_chain()["samples"][200:]
 
-        sampler_adapted, samples_adapted = run(
-            "diagonal", os.path.join(temp_dir, "adapted"))
+        sampler_adapted, samples_adapted = run("diagonal", os.path.join(temp_dir, "adapted"))
         _, samples_unit = run("unit", os.path.join(temp_dir, "unit"))
 
         # The adapted M must equal Sigma^{-1}: velocity scaling M^{-1} p
         # matches the target variances (pre-fix this was ~1/var, off by
         # the squared condition number)
         adapted_mm = sampler_adapted.state.mass_matrix
-        np.testing.assert_allclose(
-            adapted_mm.inverse_multiply(np.ones(2)), var, rtol=0.5)
+        np.testing.assert_allclose(adapted_mm.inverse_multiply(np.ones(2)), var, rtol=0.5)
 
         # Post-warmup samples recover the per-dimension scales
         np.testing.assert_allclose(np.std(samples_adapted, axis=0), stds, rtol=0.3)
@@ -260,17 +297,19 @@ class TestAnisotropicAdaptation:
 
         # Adaptation must not be catastrophically worse than identity;
         # with the fix it should be comparable or better in each dimension
-        assert np.all(ess_adapted > 0.2 * ess_unit), (
-            f"ESS adapted {ess_adapted} vs unit {ess_unit}"
-        )
+        assert np.all(ess_adapted > 0.2 * ess_unit), f"ESS adapted {ess_adapted} vs unit {ess_unit}"
 
 
 class TestSaveWarmup:
     def test_save_warmup_increases_chain_length(self, temp_dir):
         sampler = NUTSSampler(
-            ndim=2, logp_and_grad=gaussian_logp_and_grad,
-            num_warmup=50, seed=42, outdir=temp_dir,
-            save_freq=200, save_warmup=True,
+            ndim=2,
+            logp_and_grad=gaussian_logp_and_grad,
+            num_warmup=50,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=200,
+            save_warmup=True,
         )
         sampler.sample(np.zeros(2), num_iterations=100)
         chain = sampler.load_chain()

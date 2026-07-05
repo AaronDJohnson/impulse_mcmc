@@ -2,6 +2,7 @@
 
 These tests skip cleanly if `coppuccino` is not installed.
 """
+
 import importlib
 import os
 import shutil
@@ -9,7 +10,6 @@ import sys
 
 import numpy as np
 import pytest
-
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("coppuccino") is None,
@@ -33,15 +33,21 @@ def test_import_error_without_coppuccino(monkeypatch):
 
 
 def test_proposal_is_no_op_before_buffer_fills():
-    from impulse.flow_proposals import NormalizingFlowProposal
     from impulse.chain_stats import ChainStats
+    from impulse.flow_proposals import NormalizingFlowProposal
     from impulse.sampler_state import PTState
 
     ndim = 2
     ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
     rng = np.random.default_rng(0)
-    cs = ChainStats(ndim=ndim, pt_state=ptstate, chain_index=0, rng=rng,
-                    buffer_size=200, current_sample=np.array([1.0, 2.0]))
+    cs = ChainStats(
+        ndim=ndim,
+        pt_state=ptstate,
+        chain_index=0,
+        rng=rng,
+        buffer_size=200,
+        current_sample=np.array([1.0, 2.0]),
+    )
 
     prop = NormalizingFlowProposal(min_samples=200, refit_interval=10)
     x, qxy = prop(cs)
@@ -58,10 +64,11 @@ def test_fixed_flow_no_refit(tmp_path):
     as a fixed proposal. The flow already matches the target, so the NF
     proposal should be the dominant accepted proposal from iteration 0.
     """
-    from scipy import stats
     from coppuccino import normalizing_flows_fit
-    from impulse.samplers import PTSampler
+    from scipy import stats
+
     from impulse.flow_proposals import NormalizingFlowProposal
+    from impulse.samplers import PTSampler
 
     cov = np.array([[1.0, 0.5], [0.5, 1.0]])
     L = np.linalg.cholesky(cov)
@@ -71,7 +78,9 @@ def test_fixed_flow_no_refit(tmp_path):
     rng = np.random.default_rng(0)
     train = rng.standard_normal(size=(4000, 2)) @ L.T
     flow = normalizing_flows_fit(
-        train, max_epochs=120, rng_seed=0,
+        train,
+        max_epochs=120,
+        rng_seed=0,
         prior_bounds=np.array([[-6.0, 6.0], [-6.0, 6.0]]),
     )
 
@@ -87,10 +96,18 @@ def test_fixed_flow_no_refit(tmp_path):
     assert nf.flow is flow
 
     sampler = PTSampler(
-        ndim=2, lnlike=lnlike, lnprior=lnprior,
-        am_weight=15, scam_weight=30, de_weight=50,
-        ntemps=1, seed=1, outdir=str(tmp_path / "nf_fixed"),
-        buffer_size=2000, cov_update=100, save_freq=2000,
+        ndim=2,
+        lnlike=lnlike,
+        lnprior=lnprior,
+        am_weight=15,
+        scam_weight=30,
+        de_weight=50,
+        ntemps=1,
+        seed=1,
+        outdir=str(tmp_path / "nf_fixed"),
+        buffer_size=2000,
+        cov_update=100,
+        save_freq=2000,
     )
     sampler.proposal_bundle.add_jump(nf, weight=50.0)
     sampler.sample(np.array([[0.5, 0.5]]), num_iterations=3000)
@@ -109,9 +126,7 @@ def test_fixed_flow_no_refit(tmp_path):
     data = sampler.load_chain()
     s = data["samples"][0, 500:]
     for d in range(2):
-        ks, _ = stats.kstest(
-            s[:, d], lambda q: stats.norm.cdf(q, 0.0, np.sqrt(cov[d, d]))
-        )
+        ks, _ = stats.kstest(s[:, d], lambda q: stats.norm.cdf(q, 0.0, np.sqrt(cov[d, d])))
         assert ks < 0.10, f"dim {d}: KS={ks:.3f} too large"
 
 
@@ -123,11 +138,13 @@ def test_chain_acceptance_rates_includes_nf_and_custom(tmp_path):
     verifies every proposal name shows up in the per-chain report.
     """
     from coppuccino import normalizing_flows_fit
-    from impulse.samplers import PTSampler
+
     from impulse.flow_proposals import NormalizingFlowProposal
+    from impulse.samplers import PTSampler
 
     class MyTinyJump:
         """Custom proposal: small Gaussian step (picklable callable class)."""
+
         __name__ = "my_tiny_jump"
 
         def __init__(self, sigma=0.1):
@@ -143,15 +160,26 @@ def test_chain_acceptance_rates_includes_nf_and_custom(tmp_path):
     rng = np.random.default_rng(0)
     flow = normalizing_flows_fit(rng.standard_normal((2000, 2)), max_epochs=60)
 
-    def lnlike(x): return float(-0.5 * (x[0] ** 2 + x[1] ** 2))
-    def lnprior(x): return -np.inf if np.any(np.abs(x) > 6) else 0.0
+    def lnlike(x):
+        return float(-0.5 * (x[0] ** 2 + x[1] ** 2))
+
+    def lnprior(x):
+        return -np.inf if np.any(np.abs(x) > 6) else 0.0
 
     sampler = PTSampler(
-        ndim=2, lnlike=lnlike, lnprior=lnprior,
-        am_weight=15, scam_weight=30, de_weight=50,
-        ntemps=2, min_temp=1.0, max_temp=4.0,
-        seed=0, outdir=str(tmp_path / "mixed"),
-        buffer_size=500, save_freq=2000,
+        ndim=2,
+        lnlike=lnlike,
+        lnprior=lnprior,
+        am_weight=15,
+        scam_weight=30,
+        de_weight=50,
+        ntemps=2,
+        min_temp=1.0,
+        max_temp=4.0,
+        seed=0,
+        outdir=str(tmp_path / "mixed"),
+        buffer_size=500,
+        save_freq=2000,
     )
     sampler.proposal_bundle.add_jump(NormalizingFlowProposal(flow=flow), weight=20.0)
     sampler.proposal_bundle.add_jump(MyTinyJump(sigma=0.2), weight=10.0)
@@ -174,12 +202,16 @@ def test_chain_acceptance_rates_includes_nf_and_custom(tmp_path):
 def test_set_flow_after_unpickle(tmp_path):
     """Fixed flows are dropped during pickle; ``set_flow`` re-attaches."""
     import pickle
+
     from coppuccino import normalizing_flows_fit
+
     from impulse.flow_proposals import NormalizingFlowProposal
 
     rng = np.random.default_rng(0)
     flow = normalizing_flows_fit(
-        rng.standard_normal(size=(1500, 2)), max_epochs=40, rng_seed=0,
+        rng.standard_normal(size=(1500, 2)),
+        max_epochs=40,
+        rng_seed=0,
     )
     nf = NormalizingFlowProposal(flow=flow)
     assert nf.fixed and nf.flow is flow
@@ -203,8 +235,9 @@ def test_prior_recovery_2d_normal(tmp_path):
     KS tests per-dimension against the marginals.
     """
     from scipy import stats
-    from impulse.samplers import PTSampler
+
     from impulse.flow_proposals import NormalizingFlowProposal
+    from impulse.samplers import PTSampler
 
     # Target: zero-mean Gaussian with correlation
     cov = np.array([[1.0, 0.6], [0.6, 1.0]])
@@ -222,16 +255,26 @@ def test_prior_recovery_2d_normal(tmp_path):
 
     outdir = str(tmp_path / "nf_test")
     sampler = PTSampler(
-        ndim=2, lnlike=lnlike, lnprior=lnprior,
+        ndim=2,
+        lnlike=lnlike,
+        lnprior=lnprior,
         # Keep standard adaptive proposals active so the chain mixes
         # whether or not the NF is fitting well at any given moment.
-        am_weight=15, scam_weight=30, de_weight=50,
-        ntemps=1, seed=0, outdir=outdir,
-        buffer_size=2000, cov_update=100, save_freq=2000,
+        am_weight=15,
+        scam_weight=30,
+        de_weight=50,
+        ntemps=1,
+        seed=0,
+        outdir=outdir,
+        buffer_size=2000,
+        cov_update=100,
+        save_freq=2000,
     )
 
     nf = NormalizingFlowProposal(
-        min_samples=1500, refit_interval=1500, max_epochs=120,
+        min_samples=1500,
+        refit_interval=1500,
+        max_epochs=120,
         prior_bounds=np.array([[-8.0, 8.0], [-8.0, 8.0]]),  # tame extrapolation
         rng_seed=0,
     )
@@ -253,9 +296,7 @@ def test_prior_recovery_2d_normal(tmp_path):
 
     # Marginal KS — generous threshold given short chain & autocorrelation
     for d in range(2):
-        ks, _ = stats.kstest(
-            s[:, d], lambda q: stats.norm.cdf(q, 0.0, np.sqrt(cov[d, d]))
-        )
+        ks, _ = stats.kstest(s[:, d], lambda q: stats.norm.cdf(q, 0.0, np.sqrt(cov[d, d])))
         assert ks < 0.10, f"dim {d}: KS={ks:.3f} too large"
 
     # Sanity: the NF proposal was actually used and accepted some moves

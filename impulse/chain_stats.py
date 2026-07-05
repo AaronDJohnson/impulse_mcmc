@@ -1,9 +1,10 @@
-from typing import List, Optional
 from dataclasses import dataclass, field
+from typing import List, Optional
+
 import numpy as np
 
-from impulse.online_updates import update_covariance, svd_groups
-from impulse.sampler_state import SamplerState, PTState
+from impulse.online_updates import svd_groups, update_covariance
+from impulse.sampler_state import PTState, SamplerState
 from impulse.utils import shift_array
 
 
@@ -15,6 +16,7 @@ class _PerModelState:
     model dimension so that within-model proposals use model-specific
     learned statistics.
     """
+
     groups: list
     sample_cov: np.ndarray
     sample_mean: np.ndarray
@@ -76,15 +78,16 @@ class ChainStats:
     - Buffer fills gradually and enables DE proposals when full
     - Temperature-specific statistics help with parallel tempering adaptation
     """
+
     ndim: int
     pt_state: PTState
     chain_index: int
     rng: np.random.Generator
     groups: Optional[list] = None
     sample_cov: Optional[np.ndarray] = None
-    svd_U: List[Optional[np.ndarray]]|None = None  # U in the SVD of samples
-    svd_S: List[Optional[np.ndarray]]|None = None  # Sigma in the SVD of samples
-    proposal_L: List[Optional[np.ndarray]]|None = None  # Precomputed U * sqrt(S)
+    svd_U: List[Optional[np.ndarray]] | None = None  # U in the SVD of samples
+    svd_S: List[Optional[np.ndarray]] | None = None  # Sigma in the SVD of samples
+    proposal_L: List[Optional[np.ndarray]] | None = None  # Precomputed U * sqrt(S)
     sample_mean: Optional[np.ndarray] = None
     current_sample: Optional[np.ndarray] = None
 
@@ -124,15 +127,17 @@ class ChainStats:
         is True; otherwise they either silently degenerate (zero-padded buffer
         rows produce near-zero deltas) or, worse, propagate poisoned history.
         """
-        if hasattr(self, '_per_model') and self._per_model is not None:
-            nmodel = int(np.rint(self.current_sample[self._nmodel_idx])) if self.current_sample is not None else 0
+        if hasattr(self, "_per_model") and self._per_model is not None:
+            nmodel = (
+                int(np.rint(self.current_sample[self._nmodel_idx]))
+                if self.current_sample is not None
+                else 0
+            )
             nmodel = max(0, min(nmodel, self._num_models - 1))
             return self._per_model[nmodel].buffer_full
         return self.buffer_full
 
-    def update_buffer(self,
-                      new_samples: np.ndarray
-                      ) -> None:
+    def update_buffer(self, new_samples: np.ndarray) -> None:
         """
         Add new samples to circular buffer.
 
@@ -152,15 +157,12 @@ class ChainStats:
         >>> # Buffer now contains the new samples in most recent positions
         """
         self._buffer = shift_array(self._buffer, -len(new_samples))
-        self._buffer[-len(new_samples):] = new_samples
+        self._buffer[-len(new_samples) :] = new_samples
         if not self.buffer_full:
             if self.sample_total > self.buffer_size:
                 self.buffer_full = True
 
-    def recursive_update(self,
-                         sample_num: int,
-                         new_samples: np.ndarray
-                         ) -> None:
+    def recursive_update(self, sample_num: int, new_samples: np.ndarray) -> None:
         """
         Update all statistics with new samples using online algorithms.
 
@@ -184,7 +186,7 @@ class ChainStats:
             return
 
         # Per-model path: partition samples by nmodel
-        if hasattr(self, '_per_model') and self._per_model is not None:
+        if hasattr(self, "_per_model") and self._per_model is not None:
             nmodels_arr = np.rint(new_samples[:, self._nmodel_idx]).astype(int)
             for k, pm in self._per_model.items():
                 mask = nmodels_arr == k
@@ -195,7 +197,7 @@ class ChainStats:
                 pm.sample_total += len(model_samples)
                 # buffer update
                 pm.buffer = shift_array(pm.buffer, -len(model_samples))
-                pm.buffer[-len(model_samples):] = model_samples
+                pm.buffer[-len(model_samples) :] = model_samples
                 if not pm.buffer_full and pm.sample_total > self.buffer_size:
                     pm.buffer_full = True
                 # covariance update: recompute from filled buffer portion
@@ -206,12 +208,18 @@ class ChainStats:
                 pm.sample_mean = np.mean(buf, axis=0)
                 pm.sample_cov = np.cov(buf, rowvar=False, ddof=1)
                 pm.svd_U, pm.svd_S, pm.proposal_L = svd_groups(
-                    pm.svd_U, pm.svd_S, pm.groups, pm.sample_cov, pm.proposal_L,
+                    pm.svd_U,
+                    pm.svd_S,
+                    pm.groups,
+                    pm.sample_cov,
+                    pm.proposal_L,
                 )
             return
 
         if self.sample_cov is None or self.sample_mean is None:
-            raise ValueError("sample_cov and sample_mean must be initialized before calling recursive_update")
+            raise ValueError(
+                "sample_cov and sample_mean must be initialized before calling recursive_update"
+            )
         if self.svd_U is None or self.svd_S is None:
             raise ValueError("svd_U and svd_S must be initialized before calling recursive_update")
         if self.groups is None:
@@ -273,13 +281,16 @@ class ChainStats:
 
         self._per_model: dict[int, _PerModelState] = {}
         for k in range(num_models):
-            model_groups = [list(g) for g in all_groups[:k + 1]]
+            model_groups = [list(g) for g in all_groups[: k + 1]]
             model_svd_U: list = [None] * len(model_groups)
             model_svd_S: list = [None] * len(model_groups)
             model_proposal_L: list = [None] * len(model_groups)
             model_svd_U, model_svd_S, model_proposal_L = svd_groups(
-                model_svd_U, model_svd_S, model_groups,
-                self.sample_cov, model_proposal_L,
+                model_svd_U,
+                model_svd_S,
+                model_groups,
+                self.sample_cov,
+                model_proposal_L,
             )
             self._per_model[k] = _PerModelState(
                 groups=model_groups,
@@ -294,13 +305,13 @@ class ChainStats:
     def __setstate__(self, state):
         """Restore from pickle, recomputing proposal_L for old checkpoints."""
         self.__dict__.update(state)
-        if not hasattr(self, 'proposal_L') or self.proposal_L is None:
+        if not hasattr(self, "proposal_L") or self.proposal_L is None:
             self.proposal_L = [None] * len(self.groups)
             for ct, group in enumerate(self.groups):
                 sqrt_s = np.sqrt(np.maximum(self.svd_S[ct], 0.0))
                 self.proposal_L[ct] = self.svd_U[ct] * sqrt_s[None, :]
         # Recompute proposal_L for per-model states
-        if hasattr(self, '_per_model') and self._per_model is not None:
+        if hasattr(self, "_per_model") and self._per_model is not None:
             for pm in self._per_model.values():
                 if pm.proposal_L is None:
                     pm.proposal_L = [None] * len(pm.groups)
@@ -323,7 +334,7 @@ class ChainStats:
             New parameter position, shape (ndim,).
         """
         self.current_sample = position
-        if hasattr(self, '_per_model') and self._per_model is not None:
+        if hasattr(self, "_per_model") and self._per_model is not None:
             nmodel = int(np.rint(position[self._nmodel_idx]))
             nmodel = max(0, min(nmodel, self._num_models - 1))
             pm = self._per_model[nmodel]
@@ -334,6 +345,7 @@ class ChainStats:
             self._buffer = pm.buffer
             self.buffer_full = pm.buffer_full
             self.sample_total = pm.sample_total
+
 
 @dataclass
 class MultiChainStats:
@@ -373,7 +385,8 @@ class MultiChainStats:
     - Enables vectorized updates and queries
     - Essential component of parallel tempering sampling infrastructure
     """
-    chain_stats: List['ChainStats']
+
+    chain_stats: List["ChainStats"]
 
     @property
     def ntemps(self) -> int:
@@ -382,7 +395,7 @@ class MultiChainStats:
     @property
     def ndim(self) -> int:
         return self.chain_stats[0].ndim
-    
+
     @property
     def sample_total(self) -> int:
         return self.chain_stats[0].sample_total
@@ -443,4 +456,3 @@ class MultiChainStats:
         """
         for i, cs in enumerate(self.chain_stats):
             cs.update_sample(state.positions[i])
-

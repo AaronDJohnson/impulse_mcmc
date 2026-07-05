@@ -1,9 +1,12 @@
-from dataclasses import dataclass
-import numpy as np
-import pathlib
 import os
+import pathlib
+from dataclasses import dataclass
+
+import numpy as np
+
 from impulse.sampler_state import SamplerState
 from impulse.utils import prepare_files
+
 
 @dataclass
 class ShortChain:
@@ -39,7 +42,7 @@ class ShortChain:
         Log-posterior values buffer.
     lnlike : np.ndarray, shape (ntemps, short_iters)
         Log-likelihood values buffer.
-    accept : np.ndarray, shape (ntemps, short_iters)  
+    accept : np.ndarray, shape (ntemps, short_iters)
         Acceptance indicators buffer.
     var_temp : np.ndarray, shape (ntemps, short_iters)
         Temperature values buffer.
@@ -59,11 +62,12 @@ class ShortChain:
     - Supports both new runs and resuming from checkpoints
     - Thinning is applied during save_chain(), not during storage
     """
+
     ndim: int
     ntemps: int
     short_iters: int
     iteration: int = 0
-    outdir: str = './chains/'
+    outdir: str = "./chains/"
     resume: bool = False
     thin: int = 1
 
@@ -77,12 +81,11 @@ class ShortChain:
         self.var_temp = np.zeros((self.ntemps, self.short_iters))
         self._unsaved = 0
         self._rows_written = 0
-        self.filenames = [f'chain_{nchain}.txt' for nchain in range(self.ntemps)]
+        self.filenames = [f"chain_{nchain}.txt" for nchain in range(self.ntemps)]
         self.filepaths = [os.path.join(self.outdir, filename) for filename in self.filenames]
         prepare_files(self.filepaths, resume=self.resume)
 
-    def add_state(self,
-                  new_state: SamplerState):
+    def add_state(self, new_state: SamplerState):
         """
         Add a new sampler state to the circular buffer.
 
@@ -173,12 +176,12 @@ class ShortChain:
         value is correct regardless of whether :meth:`save_chain` or
         :meth:`truncate_files_to_saved` runs first after unpickling.
         """
-        if hasattr(self, '_rows_written'):
+        if hasattr(self, "_rows_written"):
             return
         counts = []
         for filepath in self.filepaths:
             if os.path.exists(filepath):
-                with open(filepath, 'r') as fp:
+                with open(filepath, "r") as fp:
                     counts.append(sum(1 for _ in fp))
             else:
                 counts.append(0)
@@ -217,14 +220,22 @@ class ShortChain:
             idx = slice(start, end)
         else:
             # Wraps around (or full buffer when start == end)
-            idx = np.r_[start:self.short_iters, 0:end]
+            idx = np.r_[start : self.short_iters, 0:end]
 
         nrows = 0
         for temp_idx, filepath in enumerate(self.filepaths):
-            to_save = np.column_stack([self.samples[temp_idx, idx], self.lnlike[temp_idx, idx], self.lnprob[temp_idx, idx], self.accept[temp_idx, idx], self.var_temp[temp_idx, idx]])[::self.thin]
+            to_save = np.column_stack(
+                [
+                    self.samples[temp_idx, idx],
+                    self.lnlike[temp_idx, idx],
+                    self.lnprob[temp_idx, idx],
+                    self.accept[temp_idx, idx],
+                    self.var_temp[temp_idx, idx],
+                ]
+            )[:: self.thin]
             nrows = len(to_save)
-            with open(filepath, 'a') as fp:
-                np.savetxt(fp, to_save, fmt='%.18e', delimiter=' ')
+            with open(filepath, "a") as fp:
+                np.savetxt(fp, to_save, fmt="%.18e", delimiter=" ")
         self._unsaved = 0
         self._rows_written += nrows
 
@@ -258,8 +269,8 @@ class ShortChain:
         for filepath in self.filepaths:
             if not os.path.exists(filepath):
                 continue
-            with open(filepath, 'r') as fp:
+            with open(filepath, "r") as fp:
                 lines = fp.readlines()
             if len(lines) > rows:
-                with open(filepath, 'w') as fp:
+                with open(filepath, "w") as fp:
                     fp.writelines(lines[:rows])

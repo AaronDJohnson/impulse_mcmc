@@ -1,21 +1,22 @@
-from typing import Callable, Optional, List
 import logging
 import os
 import warnings
+from typing import Callable, List, Optional
+
 import numpy as np
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-from impulse.proposals import JumpProposals, ProposalBundle, am, scam, de, make_early_de
 from impulse.chain_stats import ChainStats, MultiChainStats
-from impulse.input_function_wrapper import _function_wrapper
-from impulse.sampler_state import SamplerState, PTState, tempered_lnprobs
 from impulse.file_io import ShortChain
-from impulse.sampler_step import vectorized_mh_step, pt_step
-from impulse.resume import checkpoint_sampler, load_checkpoint, check_for_checkpoint
+from impulse.input_function_wrapper import _function_wrapper
+from impulse.proposals import JumpProposals, ProposalBundle, am, de, make_early_de, scam
+from impulse.resume import check_for_checkpoint, checkpoint_sampler, load_checkpoint
 from impulse.rjmcmc_proposals import migrate_legacy_birth_death
-from impulse.wrapping import WrapSpec, PeriodicSpec
+from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
+from impulse.sampler_step import pt_step, vectorized_mh_step
+from impulse.wrapping import PeriodicSpec, WrapSpec
 
 # Sentinel default for ``num_adapt``: distinguishes "not passed" (keep a
 # checkpointed value on resume) from an explicitly passed value — including
@@ -23,6 +24,7 @@ from impulse.wrapping import WrapSpec, PeriodicSpec
 # freeze on purpose, not by accident.  Never stored on a sampler instance,
 # so it can never end up inside a pickled checkpoint.
 _UNSET = object()
+
 
 def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:
     """
@@ -60,7 +62,10 @@ def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:
     rngs = [np.random.default_rng(s) for s in seeds]
     return rngs
 
-def setup_chain_stats(ndim, ptstate, rngs, groups, sample_cov, sample_mean, buffer_size, temps) -> MultiChainStats:
+
+def setup_chain_stats(
+    ndim, ptstate, rngs, groups, sample_cov, sample_mean, buffer_size, temps
+) -> MultiChainStats:
     """
     Initialize chain statistics tracking for all temperature chains.
 
@@ -103,12 +108,26 @@ def setup_chain_stats(ndim, ptstate, rngs, groups, sample_cov, sample_mean, buff
     3
     """
     ntemps = len(temps)
-    chain_stats = [ChainStats(ndim, ptstate, ii, rngs[ii], groups=groups, sample_cov=sample_cov,
-                              sample_mean=sample_mean, buffer_size=buffer_size) for ii in range(ntemps)]
+    chain_stats = [
+        ChainStats(
+            ndim,
+            ptstate,
+            ii,
+            rngs[ii],
+            groups=groups,
+            sample_cov=sample_cov,
+            sample_mean=sample_mean,
+            buffer_size=buffer_size,
+        )
+        for ii in range(ntemps)
+    ]
     multi_chain_stats = MultiChainStats(chain_stats)
     return multi_chain_stats
 
-def setup_standard_jumps(multi_chain_stats: MultiChainStats, am_weight, scam_weight, de_weight) -> ProposalBundle:
+
+def setup_standard_jumps(
+    multi_chain_stats: MultiChainStats, am_weight, scam_weight, de_weight
+) -> ProposalBundle:
     """
     Configure standard MCMC proposal distributions with specified weights.
 
@@ -137,12 +156,15 @@ def setup_standard_jumps(multi_chain_stats: MultiChainStats, am_weight, scam_wei
     >>> bundle = setup_standard_jumps(stats, am_weight=15, scam_weight=30, de_weight=50)
     >>> # Each chain now has three proposal types with specified weights
     """
-    jumps = [JumpProposals(multi_chain_stats.chain_stats[ii]) for ii in range(multi_chain_stats.ntemps)]
+    jumps = [
+        JumpProposals(multi_chain_stats.chain_stats[ii]) for ii in range(multi_chain_stats.ntemps)
+    ]
     for ii in range(multi_chain_stats.ntemps):
         jumps[ii].add_jump(am, am_weight)
         jumps[ii].add_jump(scam, scam_weight)
         jumps[ii].add_jump(de, de_weight)
     return ProposalBundle(jumps)
+
 
 def setup_initial_position(initial_position: np.ndarray, ntemps: int) -> np.ndarray:
     """
@@ -156,7 +178,7 @@ def setup_initial_position(initial_position: np.ndarray, ntemps: int) -> np.ndar
     initial_position : array_like
         Initial parameter values. Can be:
         - 1-D array of shape (ndim,): replicated for all chains
-        - 2-D array of shape (1, ndim): replicated for all chains  
+        - 2-D array of shape (1, ndim): replicated for all chains
         - 2-D array of shape (ntemps, ndim): used directly
     ntemps : int
         Number of temperature chains.
@@ -198,10 +220,13 @@ def setup_initial_position(initial_position: np.ndarray, ntemps: int) -> np.ndar
         elif _x0.shape[0] == 1:
             positions = np.tile(_x0, (ntemps, 1))
         else:
-            raise ValueError(f"initial_position has { _x0.shape[0] } rows but expected 1 or {ntemps}")
+            raise ValueError(
+                f"initial_position has { _x0.shape[0] } rows but expected 1 or {ntemps}"
+            )
     else:
         raise ValueError("initial_position must be 1-D (ndim,) or 2-D (ntemps, ndim)")
     return positions
+
 
 class PTSampler:
     """
@@ -217,7 +242,7 @@ class PTSampler:
         Dimensionality of the parameter space.
     lnlike : callable
         Log-likelihood function that accepts parameter arrays.
-    lnprior : callable  
+    lnprior : callable
         Log-prior function that accepts parameter arrays.
     buffer_size : int, default 50000
         Size of internal buffer for storing samples and computing statistics.
@@ -324,19 +349,19 @@ class PTSampler:
     --------
     >>> import numpy as np
     >>> from impulse import PTSampler
-    >>> 
+    >>>
     >>> # Define a simple 2D Gaussian likelihood
     >>> def log_likelihood(x):
     ...     return -0.5 * np.sum(x**2)
-    >>> 
+    >>>
     >>> # Uniform prior on [-5, 5]^2
     >>> def log_prior(x):
     ...     return 0.0 if np.all(np.abs(x) <= 5) else -np.inf
-    >>> 
+    >>>
     >>> # Create sampler
     >>> sampler = PTSampler(ndim=2, lnlike=log_likelihood, lnprior=log_prior,
     ...                    ntemps=10, seed=42)
-    >>> 
+    >>>
     >>> # Run sampling
     >>> initial_pos = np.array([0.0, 0.0])
     >>> sampler.sample(initial_pos, num_iterations=10000)
@@ -349,45 +374,47 @@ class PTSampler:
     Notes
     -----
     - The sampler automatically saves chains and checkpoints during sampling
-    - Temperature ladder adaptation helps optimize parallel tempering efficiency  
+    - Temperature ladder adaptation helps optimize parallel tempering efficiency
     - Adaptive proposals improve as the sampler learns the target distribution
     - Vectorized functions can significantly improve performance for expensive likelihoods
     """
-    def __init__(self,
-                 ndim: int,
-                 lnlike: Callable,
-                 lnprior: Callable,
-                 buffer_size: int = 50_000,
-                 sample_mean: Optional[np.ndarray] = None,
-                 sample_cov: Optional[np.ndarray] = None,
-                 groups: Optional[list] = None,
-                 loglargs: Optional[tuple] = None,
-                 loglkwargs: Optional[dict] = None,
-                 logpargs: Optional[tuple] = None,
-                 logpkwargs: Optional[dict] = None,
-                 cov_update: int = 100,
-                 save_freq: int = 1000,
-                 scam_weight: float = 30,
-                 am_weight: float = 15,
-                 de_weight: float = 50,
-                 seed: Optional[int] = None,
-                 outdir: str = './chains',
-                 ntemps: int = 21,
-                 swap_steps: int = 1,
-                 min_temp: float = 1.0,
-                 max_temp: Optional[float] = None,
-                 temp_step: Optional[float] = None,
-                 ladder: Optional[np.ndarray] = None,
-                 inf_temp: bool = False,
-                 adapt_t0: int = 100,
-                 adapt_nu: int = 10,
-                 resume: bool = False,
-                 vectorized: bool = False,
-                 jax: bool = False,
-                 threads: int = 1,
-                 periodic: Optional[PeriodicSpec] = None,
-                 num_adapt: Optional[int] = _UNSET,
-                 ) -> None:
+
+    def __init__(
+        self,
+        ndim: int,
+        lnlike: Callable,
+        lnprior: Callable,
+        buffer_size: int = 50_000,
+        sample_mean: Optional[np.ndarray] = None,
+        sample_cov: Optional[np.ndarray] = None,
+        groups: Optional[list] = None,
+        loglargs: Optional[tuple] = None,
+        loglkwargs: Optional[dict] = None,
+        logpargs: Optional[tuple] = None,
+        logpkwargs: Optional[dict] = None,
+        cov_update: int = 100,
+        save_freq: int = 1000,
+        scam_weight: float = 30,
+        am_weight: float = 15,
+        de_weight: float = 50,
+        seed: Optional[int] = None,
+        outdir: str = "./chains",
+        ntemps: int = 21,
+        swap_steps: int = 1,
+        min_temp: float = 1.0,
+        max_temp: Optional[float] = None,
+        temp_step: Optional[float] = None,
+        ladder: Optional[np.ndarray] = None,
+        inf_temp: bool = False,
+        adapt_t0: int = 100,
+        adapt_nu: int = 10,
+        resume: bool = False,
+        vectorized: bool = False,
+        jax: bool = False,
+        threads: int = 1,
+        periodic: Optional[PeriodicSpec] = None,
+        num_adapt: Optional[int] = _UNSET,
+    ) -> None:
 
         if loglargs is None:
             loglargs = ()
@@ -402,15 +429,40 @@ class PTSampler:
         self.ntemps = ntemps
         self.swap_steps = swap_steps
         self.wrap = WrapSpec.from_dict(periodic)
-        self.lnlike = _function_wrapper(lnlike, loglargs, loglkwargs, vectorized=vectorized, jax=jax, threads=threads)
-        self.lnprior = _function_wrapper(lnprior, logpargs, logpkwargs, vectorized=vectorized, jax=jax, threads=threads)
+        self.lnlike = _function_wrapper(
+            lnlike, loglargs, loglkwargs, vectorized=vectorized, jax=jax, threads=threads
+        )
+        self.lnprior = _function_wrapper(
+            lnprior, logpargs, logpkwargs, vectorized=vectorized, jax=jax, threads=threads
+        )
 
         self.rngs = setup_seeds(seed, ntemps)
 
-        self.ptstate = PTState(self.ndim, ntemps, swap_steps=swap_steps, min_temp=min_temp, max_temp=max_temp,
-                               temp_step=temp_step, ladder=ladder, inf_temp=inf_temp, adapt_t0=adapt_t0, adapt_nu=adapt_nu)
-        self.multi_chain_stats = setup_chain_stats(ndim, self.ptstate, self.rngs, groups, sample_cov, sample_mean, buffer_size, self.ptstate.ladder)
-        self.proposal_bundle = setup_standard_jumps(self.multi_chain_stats, am_weight, scam_weight, de_weight)
+        self.ptstate = PTState(
+            self.ndim,
+            ntemps,
+            swap_steps=swap_steps,
+            min_temp=min_temp,
+            max_temp=max_temp,
+            temp_step=temp_step,
+            ladder=ladder,
+            inf_temp=inf_temp,
+            adapt_t0=adapt_t0,
+            adapt_nu=adapt_nu,
+        )
+        self.multi_chain_stats = setup_chain_stats(
+            ndim,
+            self.ptstate,
+            self.rngs,
+            groups,
+            sample_cov,
+            sample_mean,
+            buffer_size,
+            self.ptstate.ladder,
+        )
+        self.proposal_bundle = setup_standard_jumps(
+            self.multi_chain_stats, am_weight, scam_weight, de_weight
+        )
 
         self.cov_update = cov_update
         self.save_freq = save_freq
@@ -441,7 +493,7 @@ class PTSampler:
         bool
             True if adaptation is still allowed at ``iteration``.
         """
-        num_adapt = getattr(self, 'num_adapt', None)
+        num_adapt = getattr(self, "num_adapt", None)
         return num_adapt is None or iteration < num_adapt
 
     def _freeze_adaptive_proposals(self) -> None:
@@ -453,7 +505,7 @@ class PTSampler:
         """
         for jp in self.proposal_bundle.jump_proposals:
             for prop in jp.proposal_list:
-                freeze = getattr(prop, 'freeze_adaptation', None)
+                freeze = getattr(prop, "freeze_adaptation", None)
                 if callable(freeze):
                     freeze()
 
@@ -483,21 +535,12 @@ class PTSampler:
         checkpoint is left untouched and the historical loud warning is
         emitted instead.
         """
-        props = [
-            prop
-            for jp in self.proposal_bundle.jump_proposals
-            for prop in jp.proposal_list
-        ]
-        names = {getattr(prop, '__name__', '') for prop in props}
-        if 'birth_proposal' not in names and 'death_proposal' not in names:
+        props = [prop for jp in self.proposal_bundle.jump_proposals for prop in jp.proposal_list]
+        names = {getattr(prop, "__name__", "") for prop in props}
+        if "birth_proposal" not in names and "death_proposal" not in names:
             return
-        deaths = [
-            p for p in props
-            if getattr(p, '__name__', '') == 'death_proposal'
-        ]
-        if deaths and all(
-                callable(getattr(p, 'draw_from_prior', None))
-                for p in deaths):
+        deaths = [p for p in props if getattr(p, "__name__", "") == "death_proposal"]
+        if deaths and all(callable(getattr(p, "draw_from_prior", None)) for p in deaths):
             warnings.warn(
                 "Resumed checkpoint registers separate standalone "
                 "'birth_proposal'/'death_proposal' jumps whose attribute "
@@ -512,8 +555,7 @@ class PTSampler:
                 UserWarning,
             )
             return
-        migrated = migrate_legacy_birth_death(
-            self.proposal_bundle.jump_proposals)
+        migrated = migrate_legacy_birth_death(self.proposal_bundle.jump_proposals)
         if migrated is not None:
             warnings.warn(
                 "Resumed checkpoint registered separate 'birth_proposal'/"
@@ -538,17 +580,19 @@ class PTSampler:
         )
 
     @classmethod
-    def from_rjmcmc(cls,
-                    rjmcmc_space,
-                    birth_weight: float = 15,
-                    death_weight: float = 15,
-                    nmodel_weight: float = 10,
-                    swap_weight: float = 15,
-                    am_weight: float = 15,
-                    scam_weight: float = 15,
-                    de_weight: float = 15,
-                    de_min_fill: int = 100,
-                    **kwargs):
+    def from_rjmcmc(
+        cls,
+        rjmcmc_space,
+        birth_weight: float = 15,
+        death_weight: float = 15,
+        nmodel_weight: float = 10,
+        swap_weight: float = 15,
+        am_weight: float = 15,
+        scam_weight: float = 15,
+        de_weight: float = 15,
+        de_min_fill: int = 100,
+        **kwargs,
+    ):
         """
         Construct a PTSampler pre-configured for RJMCMC model selection.
 
@@ -627,7 +671,7 @@ class PTSampler:
         >>> sampler.sample(x0, num_iterations=50000)
         """
         # Expand per-source sample_cov / sample_mean to full product space
-        sample_cov = kwargs.pop('sample_cov', None)
+        sample_cov = kwargs.pop("sample_cov", None)
         if sample_cov is not None:
             sample_cov = np.asarray(sample_cov)
             if sample_cov.shape == (rjmcmc_space.num_params, rjmcmc_space.num_params):
@@ -637,7 +681,7 @@ class PTSampler:
                     full_cov[sl, sl] = sample_cov
                 full_cov[-1, -1] = 1.0  # model index
                 sample_cov = full_cov
-        sample_mean = kwargs.pop('sample_mean', None)
+        sample_mean = kwargs.pop("sample_mean", None)
         if sample_mean is not None:
             sample_mean = np.asarray(sample_mean)
             if sample_mean.shape == (rjmcmc_space.num_params,):
@@ -681,14 +725,16 @@ class PTSampler:
             # separate constant-weight jumps violate detailed balance (see
             # impulse.rjmcmc_proposals.BirthDeathProposal).
             if birth_weight + death_weight > 0:
-                sampler.add_custom_jump(rjmcmc_space.get_birth_death_proposal(),
-                                        birth_weight + death_weight)
+                sampler.add_custom_jump(
+                    rjmcmc_space.get_birth_death_proposal(), birth_weight + death_weight
+                )
             sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
             sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
         if de_weight > 0:
             sampler.add_custom_jump(make_early_de(de_min_fill), de_weight)
         sampler.multi_chain_stats.enable_per_model(
-            rjmcmc_space.num_models, rjmcmc_space.num_params,
+            rjmcmc_space.num_models,
+            rjmcmc_space.num_params,
         )
         return sampler
 
@@ -712,10 +758,7 @@ class PTSampler:
         """
         self.proposal_bundle.add_jump(proposal, weight)
 
-    def sample(self,
-               initial_position: np.ndarray,
-               num_iterations: int,
-               thin: int = 1):
+    def sample(self, initial_position: np.ndarray, num_iterations: int, thin: int = 1):
         """
         Run parallel tempering MCMC sampling.
 
@@ -769,9 +812,15 @@ class PTSampler:
         if self.ptstate.ladder is None:  # this shouldn't happen!
             raise ValueError("PTState ladder is not initialized")
         # setup save chains
-        self.short_chain = ShortChain(self.ndim, self.ntemps, self.save_freq,
-                                 iteration=0, outdir=self.outdir, resume=self.resume,
-                                 thin=thin)
+        self.short_chain = ShortChain(
+            self.ndim,
+            self.ntemps,
+            self.save_freq,
+            iteration=0,
+            outdir=self.outdir,
+            resume=self.resume,
+            thin=thin,
+        )
         # iteration of the last covariance refresh; kept on the instance so
         # it is pickled into checkpoints (a resume overwrites this fresh
         # value with the checkpointed one via __dict__.update below)
@@ -784,7 +833,14 @@ class PTSampler:
         lnlike0 = self.lnlike(initial_position)
         lnprior0 = self.lnprior(initial_position)
         lnprob0 = tempered_lnprobs(lnlike0, lnprior0, self.ptstate.ladder)
-        initial_state = SamplerState(initial_position, lnlike0, lnprior0, lnprob0, accepted=np.ones(self.ntemps), temps=self.ptstate.ladder)
+        initial_state = SamplerState(
+            initial_position,
+            lnlike0,
+            lnprior0,
+            lnprob0,
+            accepted=np.ones(self.ntemps),
+            temps=self.ptstate.ladder,
+        )
 
         # check for bad initial samples
         if np.any(~np.isfinite(lnlike0)):
@@ -809,18 +865,20 @@ class PTSampler:
             # the load_checkpoint(...)->sample() path, where unpickling
             # bypasses __init__ (pre-num_adapt checkpoints lack both
             # attributes).
-            constructor_num_adapt = getattr(self, 'num_adapt', None)
-            num_adapt_explicit = getattr(self, '_num_adapt_explicit', False)
+            constructor_num_adapt = getattr(self, "num_adapt", None)
+            num_adapt_explicit = getattr(self, "_num_adapt_explicit", False)
             constructor_resume = self.resume
             constructor_checkpoint_path = self.checkpoint_path
-            self.__dict__.update(loaded.__dict__)  # copy the state from the checkpointed sampler to this one
+            self.__dict__.update(
+                loaded.__dict__
+            )  # copy the state from the checkpointed sampler to this one
             # the checkpoint carries the ORIGINAL run's resume flag (often
             # False) and checkpoint path (None until its first checkpoint);
             # keep this run's values or later file handling would truncate
             # instead of append
             self.resume = constructor_resume
             self.checkpoint_path = constructor_checkpoint_path
-            checkpoint_num_adapt = getattr(loaded, 'num_adapt', None)
+            checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
             if num_adapt_explicit:
                 if checkpoint_num_adapt != constructor_num_adapt:
                     logger.warning(
@@ -832,7 +890,8 @@ class PTSampler:
                         "freeze is irreversible and survives the "
                         "checkpoint, so removing or extending the freeze "
                         "only re-enables the other adaptive components.",
-                        checkpoint_num_adapt, constructor_num_adapt,
+                        checkpoint_num_adapt,
+                        constructor_num_adapt,
                     )
                 self.num_adapt = constructor_num_adapt
             else:
@@ -847,12 +906,24 @@ class PTSampler:
 
         _proposals_frozen = False
 
-        for jj in tqdm(range(self.short_chain.iteration, num_iterations), initial=self.short_chain.iteration, total=num_iterations, desc="Sampling"):
+        for jj in tqdm(
+            range(self.short_chain.iteration, num_iterations),
+            initial=self.short_chain.iteration,
+            total=num_iterations,
+            desc="Sampling",
+        ):
             adapting = self._adaptation_active(jj)
             if not adapting and not _proposals_frozen:
                 self._freeze_adaptive_proposals()
                 _proposals_frozen = True
-            self.state = vectorized_mh_step(self.state, self.proposal_bundle, self.lnlike, self.lnprior, self.rngs[0], wrap=self.wrap)
+            self.state = vectorized_mh_step(
+                self.state,
+                self.proposal_bundle,
+                self.lnlike,
+                self.lnprior,
+                self.rngs[0],
+                wrap=self.wrap,
+            )
             self.proposal_bundle.report_accepts(self.state.accepted)
             # save before add_state to prevent overwriting unsaved data
             if jj > 0 and jj % self.save_freq == 0:
@@ -860,14 +931,17 @@ class PTSampler:
                 self.save_chain_acceptance_rates()
             self.short_chain.add_state(self.state)
             if jj % self.swap_steps == 0 and self.ntemps > 1:
-                self.state = pt_step(self.state, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1])
+                self.state = pt_step(
+                    self.state, self.ptstate, self.lnlike, self.lnprior, self.rngs[-1]
+                )
                 if adapting:
                     self.ptstate.adapt_ladder()
                     # adapt_ladder mutates the ladder (aliased by state.temps) in
                     # place, so the tempered lnprobs must be recomputed for the
                     # new temperatures
                     self.state.lnprobs = tempered_lnprobs(
-                        self.state.lnlikes, self.state.lnpriors, self.ptstate.ladder)
+                        self.state.lnlikes, self.state.lnpriors, self.ptstate.ladder
+                    )
             # Adaptation gate: past num_adapt neither the covariance/mean/SVD
             # nor the DE buffer update, so the transition kernel is fixed (DE
             # keeps proposing from the frozen buffer).
@@ -915,10 +989,9 @@ class PTSampler:
         """
         ladder = self.ptstate.ladder
         return {
-            'temperatures': [] if ladder is None else ladder.tolist(),
-            'mh': self.proposal_bundle.chain_acceptance_rates(),
-            'pt_swap': self.ptstate.compute_accept_ratio() if self.ntemps > 1
-                       else np.array([]),
+            "temperatures": [] if ladder is None else ladder.tolist(),
+            "mh": self.proposal_bundle.chain_acceptance_rates(),
+            "pt_swap": self.ptstate.compute_accept_ratio() if self.ntemps > 1 else np.array([]),
         }
 
     def save_chain_acceptance_rates(self, path: Optional[str] = None) -> str:
@@ -938,15 +1011,15 @@ class PTSampler:
             Resolved path written.
         """
         import json
+
         if path is None:
             path = os.path.join(self.outdir, "chain_acceptance.json")
         report = self.chain_acceptance_rates()
-        swap = report['pt_swap']
-        report['pt_swap'] = (swap.tolist() if hasattr(swap, 'tolist')
-                             else list(swap))
-        report['per_proposal'] = self.proposal_acceptance_rates()
+        swap = report["pt_swap"]
+        report["pt_swap"] = swap.tolist() if hasattr(swap, "tolist") else list(swap)
+        report["per_proposal"] = self.proposal_acceptance_rates()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, 'w') as fp:
+        with open(path, "w") as fp:
             json.dump(report, fp, indent=2)
         return path
 
@@ -982,20 +1055,20 @@ class PTSampler:
         """
         samples, lnlike, lnprob, accepted, temperature = [], [], [], [], []
         for ii in range(self.ntemps):
-            filepath = os.path.join(self.outdir, f'chain_{ii}.txt')
+            filepath = os.path.join(self.outdir, f"chain_{ii}.txt")
             if not os.path.exists(filepath):
                 raise FileNotFoundError(f"Chain file not found: {filepath}")
             data = np.loadtxt(filepath)
-            samples.append(data[:, :self.ndim])
+            samples.append(data[:, : self.ndim])
             lnlike.append(data[:, self.ndim])
             lnprob.append(data[:, self.ndim + 1])
             accepted.append(data[:, self.ndim + 2])
             temperature.append(data[:, self.ndim + 3])
 
         return {
-            'samples': np.array(samples),
-            'lnlike': np.array(lnlike),
-            'lnprob': np.array(lnprob),
-            'accepted': np.array(accepted),
-            'temperature': np.array(temperature),
+            "samples": np.array(samples),
+            "lnlike": np.array(lnlike),
+            "lnprob": np.array(lnprob),
+            "accepted": np.array(accepted),
+            "temperature": np.array(temperature),
         }

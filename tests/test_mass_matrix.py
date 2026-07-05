@@ -1,6 +1,7 @@
 """Tests for mass matrix representations."""
 
 import pickle
+
 import numpy as np
 import pytest
 
@@ -190,8 +191,7 @@ class TestFromPrecision:
         """
         fisher = np.array([[10.0, 2.0], [2.0, 1.0]])
         mm_prec = MassMatrix.from_precision(fisher, MassMatrixType.DENSE)
-        mm_cov = MassMatrix.from_covariance(np.linalg.inv(fisher),
-                                            MassMatrixType.DENSE)
+        mm_cov = MassMatrix.from_covariance(np.linalg.inv(fisher), MassMatrixType.DENSE)
         np.testing.assert_allclose(mm_prec._dense, mm_cov._dense, rtol=1e-10)
         # and from_covariance(fisher) is now the WRONG call for injection:
         mm_wrong = MassMatrix.from_covariance(fisher, MassMatrixType.DENSE)
@@ -225,12 +225,10 @@ class TestDenseInversePath:
         must show up unchanged in the stored metric."""
         M = np.array([[2.0, 0.5], [0.5, 1.0]])
         M_inv_marker = 2.0 * np.linalg.inv(M)  # NOT inv(M): pass-through marker
-        mm = MassMatrix(2, MassMatrixType.DENSE, dense=M,
-                        inverse=M_inv_marker)
+        mm = MassMatrix(2, MassMatrixType.DENSE, dense=M, inverse=M_inv_marker)
         assert mm._inv is not M_inv_marker  # __init__ copies defensively
         np.testing.assert_array_equal(mm._inv, M_inv_marker)
-        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)),
-                                   M_inv_marker @ np.ones(2))
+        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)), M_inv_marker @ np.ones(2))
 
     def test_inverse_keyword_is_keyword_only(self):
         M = np.eye(2)
@@ -251,15 +249,14 @@ class TestDenseInversePath:
         # __dict__ directly without calling __init__.
         legacy = MassMatrix.__new__(MassMatrix)
         legacy.__dict__ = {
-            'ndim': 2,
-            'matrix_type': MassMatrixType.DENSE,
-            '_dense': np.linalg.inv(cov),
-            '_cholesky': np.linalg.cholesky(np.linalg.inv(cov)),
-            '_inv': cov,
+            "ndim": 2,
+            "matrix_type": MassMatrixType.DENSE,
+            "_dense": np.linalg.inv(cov),
+            "_cholesky": np.linalg.cholesky(np.linalg.inv(cov)),
+            "_inv": cov,
         }
         legacy2 = pickle.loads(pickle.dumps(legacy))
-        np.testing.assert_allclose(legacy2.inverse_multiply(np.ones(2)),
-                                   cov @ np.ones(2))
+        np.testing.assert_allclose(legacy2.inverse_multiply(np.ones(2)), cov @ np.ones(2))
         assert np.isfinite(legacy2.kinetic_energy(np.ones(2)))
 
 
@@ -279,8 +276,7 @@ class TestNoAliasingOfCallerArrays:
         cov *= 100.0  # caller mutates its covariance in place
 
         assert mm.kinetic_energy(np.ones(2)) == pytest.approx(ke_before)
-        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)),
-                                   vel_before)
+        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)), vel_before)
 
     def test_from_precision_dense_copies_input(self):
         prec = np.array([[2.0, 0.5], [0.5, 1.0]])
@@ -293,8 +289,7 @@ class TestNoAliasingOfCallerArrays:
         prec *= 100.0  # caller mutates its precision in place
 
         assert mm.kinetic_energy(np.ones(2)) == pytest.approx(ke_before)
-        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)),
-                                   vel_before)
+        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)), vel_before)
         rng = np.random.default_rng(0)
         np.testing.assert_allclose(mm.sample_momentum(rng), p_before)
 
@@ -310,8 +305,7 @@ class TestNoAliasingOfCallerArrays:
         copies, not views of the caller's buffers."""
         dense = np.array([[2.0, 0.5], [0.5, 1.0]])
         inverse = np.linalg.inv(dense)
-        mm = MassMatrix(2, MassMatrixType.DENSE, dense=dense,
-                        inverse=inverse)
+        mm = MassMatrix(2, MassMatrixType.DENSE, dense=dense, inverse=inverse)
         ke_before = mm.kinetic_energy(np.ones(2))
         vel_before = mm.inverse_multiply(np.ones(2))
         rng = np.random.default_rng(0)
@@ -321,8 +315,7 @@ class TestNoAliasingOfCallerArrays:
         inverse *= 100.0
 
         assert mm.kinetic_energy(np.ones(2)) == pytest.approx(ke_before)
-        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)),
-                                   vel_before)
+        np.testing.assert_allclose(mm.inverse_multiply(np.ones(2)), vel_before)
         rng = np.random.default_rng(0)
         np.testing.assert_allclose(mm.sample_momentum(rng), p_before)
 

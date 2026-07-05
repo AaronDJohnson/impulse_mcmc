@@ -1,5 +1,7 @@
+from typing import Any, Callable, Optional
+
 import numpy as np
-from typing import Any, Optional, Callable
+
 
 class _function_wrapper(object):
     """
@@ -78,15 +80,18 @@ class _function_wrapper(object):
     - For vectorized=True, function is called once with full batch
     - Output validation ensures correct leading dimension
     """
-    def __init__(self,
-                 f: Callable,
-                 args: Optional[tuple] = None,
-                 kwargs: Optional[dict] = None,
-                 *,
-                 vectorized: bool = False,
-                 jax: bool = False,
-                 zero_copy: bool = True,
-                 threads: int = 1):
+
+    def __init__(
+        self,
+        f: Callable,
+        args: Optional[tuple] = None,
+        kwargs: Optional[dict] = None,
+        *,
+        vectorized: bool = False,
+        jax: bool = False,
+        zero_copy: bool = True,
+        threads: int = 1,
+    ):
         self.f = f
         self.args = tuple(args) if args else ()
         self.kwargs = dict(kwargs) if kwargs else {}
@@ -126,7 +131,9 @@ class _function_wrapper(object):
                 out_arr = np.asarray(out)
             # check for correct leading dimension
             if out_arr.shape[0] != n:
-                raise ValueError("Vectorized function returned array with incorrect leading dimension")
+                raise ValueError(
+                    "Vectorized function returned array with incorrect leading dimension"
+                )
             return out_arr
 
         # non-vectorized: threaded path when threads > 1 and multiple rows
@@ -165,6 +172,7 @@ class _function_wrapper(object):
     def _get_executor(self):
         if self._executor is None:
             from concurrent.futures import ThreadPoolExecutor
+
             self._executor = ThreadPoolExecutor(max_workers=self.threads)
         return self._executor
 
@@ -179,7 +187,7 @@ class _function_wrapper(object):
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        state['_executor'] = None
+        state["_executor"] = None
         return state
 
     def __del__(self):

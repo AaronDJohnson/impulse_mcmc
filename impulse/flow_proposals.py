@@ -14,6 +14,7 @@ The dependency is optional. The class raises ``ImportError`` with an
 install hint at construction time if ``coppuccino`` (and its JAX-based
 dependencies) are not available.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,7 +35,7 @@ _INSTALL_HINT = (
 
 def _require_coppuccino():
     try:
-        from coppuccino import normalizing_flows_fit, sample, log_prob  # type: ignore
+        from coppuccino import log_prob, normalizing_flows_fit, sample  # type: ignore
     except ImportError as e:
         raise ImportError(_INSTALL_HINT) from e
     return normalizing_flows_fit, sample, log_prob
@@ -115,9 +116,7 @@ class NormalizingFlowProposal:
         self.refit_interval = int(refit_interval)
         self.min_samples = int(min_samples)
         self.max_epochs = int(max_epochs)
-        self.prior_bounds = (
-            None if prior_bounds is None else np.asarray(prior_bounds, dtype=float)
-        )
+        self.prior_bounds = None if prior_bounds is None else np.asarray(prior_bounds, dtype=float)
         self.rng_seed = int(rng_seed)
         self.fit_kwargs = dict(fit_kwargs or {})
         self.cold_chain_only = bool(cold_chain_only)
@@ -127,7 +126,7 @@ class NormalizingFlowProposal:
         self.flow = flow
         self.frozen = False
         self._call_count = 0
-        self._last_fit_at = -10**9
+        self._last_fit_at = -(10**9)
         self._fit_count = 0
 
     def freeze_adaptation(self) -> None:
@@ -160,7 +159,7 @@ class NormalizingFlowProposal:
         state["_sample_fn"] = None
         state["_logprob_fn"] = None
         state["flow"] = None
-        state["_last_fit_at"] = -10**9  # force refit on next call
+        state["_last_fit_at"] = -(10**9)  # force refit on next call
         return state
 
     def __setstate__(self, state):
@@ -170,7 +169,7 @@ class NormalizingFlowProposal:
 
     def _maybe_fit(self, chain_stats: ChainStats) -> None:
         # getattr: proposals unpickled from pre-`frozen` checkpoints lack it
-        if getattr(self, 'frozen', False):
+        if getattr(self, "frozen", False):
             return  # adaptation frozen — keep the current flow as-is
         if self.fixed:
             return  # pre-fitted flow — never refit

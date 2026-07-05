@@ -5,12 +5,13 @@ sample() runs the loop, load_chain() reads results.
 """
 
 import os
+
 import numpy as np
 from tqdm import tqdm
 
-from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.nuts.core import NUTSState, nuts_step
-from impulse.nuts.warmup import WarmupSchedule, find_reasonable_step_size, DualAveraging
+from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
+from impulse.nuts.warmup import DualAveraging, WarmupSchedule, find_reasonable_step_size
 from impulse.resume import checkpoint_sampler
 from impulse.utils import prepare_files
 
@@ -61,11 +62,21 @@ class NUTSSampler:
     >>> chain = sampler.load_chain()
     """
 
-    def __init__(self, ndim, logp_and_grad, num_warmup=1000,
-                 mass_matrix_type="diagonal", target_accept=0.8,
-                 max_tree_depth=10, initial_step_size=None, seed=None,
-                 outdir="./chains", save_freq=1000, resume=False,
-                 save_warmup=False):
+    def __init__(
+        self,
+        ndim,
+        logp_and_grad,
+        num_warmup=1000,
+        mass_matrix_type="diagonal",
+        target_accept=0.8,
+        max_tree_depth=10,
+        initial_step_size=None,
+        seed=None,
+        outdir="./chains",
+        save_freq=1000,
+        resume=False,
+        save_warmup=False,
+    ):
         self.ndim = ndim
         self.logp_and_grad = logp_and_grad
         self.num_warmup = num_warmup
@@ -122,13 +133,17 @@ class NUTSSampler:
             step_size = self.initial_step_size
 
         self.state = NUTSState(
-            position=position, logp=logp, grad=grad,
-            step_size=step_size, mass_matrix=mass_matrix,
+            position=position,
+            logp=logp,
+            grad=grad,
+            step_size=step_size,
+            mass_matrix=mass_matrix,
         )
 
         # --- Warmup phase ---
         warmup_schedule = WarmupSchedule(
-            num_warmup=self.num_warmup, ndim=self.ndim,
+            num_warmup=self.num_warmup,
+            ndim=self.ndim,
             mass_matrix_type=self.mass_matrix_type,
             target_accept=self.target_accept,
             initial_step_size=step_size,
@@ -138,7 +153,9 @@ class NUTSSampler:
 
         for i in tqdm(range(self.num_warmup), desc="Warmup"):
             self.state = nuts_step(
-                self.state, self.logp_and_grad, self.rng,
+                self.state,
+                self.logp_and_grad,
+                self.rng,
                 max_tree_depth=self.max_tree_depth,
             )
 
@@ -186,7 +203,9 @@ class NUTSSampler:
 
         for i in tqdm(range(num_iterations), desc="Sampling"):
             self.state = nuts_step(
-                self.state, self.logp_and_grad, self.rng,
+                self.state,
+                self.logp_and_grad,
+                self.rng,
                 max_tree_depth=self.max_tree_depth,
             )
 
@@ -196,8 +215,7 @@ class NUTSSampler:
 
             if unsaved >= self.save_freq:
                 self._flush_to_disk(filepath, write_idx - unsaved, write_idx)
-                checkpoint_sampler(self, path=checkpoint_path,
-                                   omit=("logp_and_grad",))
+                checkpoint_sampler(self, path=checkpoint_path, omit=("logp_and_grad",))
                 unsaved = 0
 
         # Final flush
@@ -210,11 +228,20 @@ class NUTSSampler:
     def _state_to_row(self):
         """Convert current state to a chain row."""
         s = self.state
-        return np.concatenate([
-            s.position,
-            [s.logp, float(s.accepted), s.tree_depth, float(s.divergent),
-             s.energy_error, s.step_size, s.mean_accept_prob],
-        ])
+        return np.concatenate(
+            [
+                s.position,
+                [
+                    s.logp,
+                    float(s.accepted),
+                    s.tree_depth,
+                    float(s.divergent),
+                    s.energy_error,
+                    s.step_size,
+                    s.mean_accept_prob,
+                ],
+            ]
+        )
 
     def _flush_to_disk(self, filepath, start, end):
         """Write rows [start, end) to disk."""
@@ -239,7 +266,7 @@ class NUTSSampler:
             data = data.reshape(1, -1)
 
         return {
-            "samples": data[:, :self.ndim],
+            "samples": data[:, : self.ndim],
             "logp": data[:, self.ndim],
             "accepted": data[:, self.ndim + 1].astype(bool),
             "tree_depth": data[:, self.ndim + 2].astype(int),
@@ -264,7 +291,7 @@ class NUTSSampler:
 
         # Only look at post-warmup samples
         if self._warmup_saved:
-            data = self._chain_data[self.num_warmup:]
+            data = self._chain_data[self.num_warmup :]
         else:
             data = self._chain_data
 

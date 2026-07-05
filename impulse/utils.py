@@ -1,5 +1,7 @@
-import numpy as np
 from pathlib import Path
+
+import numpy as np
+
 
 def prepare_files(filepaths, resume=False):
     """
@@ -19,7 +21,7 @@ def prepare_files(filepaths, resume=False):
     --------
     >>> prepare_files(['./output/chain_0.txt', './output/chain_1.txt'])
     >>> # Creates files, overwriting if they exist
-    >>> 
+    >>>
     >>> prepare_files(['./output/chain_0.txt'], resume=True)
     >>> # Creates file only if it doesn't exist, preserves existing content
     """
@@ -29,16 +31,14 @@ def prepare_files(filepaths, resume=False):
         if path.exists():
             if not resume:
                 path.unlink()  # remove existing file
-                path.touch()   # create a fresh empty file
+                path.touch()  # create a fresh empty file
             # else: do nothing, keep the existing file
         else:
             path.parent.mkdir(parents=True, exist_ok=True)  # ensure directories exist
-            path.touch()   # create new file
+            path.touch()  # create new file
 
-def shift_array(arr: np.ndarray,
-                num: int,
-                fill_value: float = 0
-                ) -> np.ndarray:
+
+def shift_array(arr: np.ndarray, num: int, fill_value: float = 0) -> np.ndarray:
     """
     Shift an array along axis 0 by specified number of positions.
 

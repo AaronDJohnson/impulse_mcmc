@@ -1,19 +1,20 @@
 """Tests for RJPTSampler — hybrid MH + NUTS + PT sampler."""
 
-import pytest
-import numpy as np
-import tempfile
-import shutil
 import os
 import pickle
+import shutil
+import tempfile
 
-from impulse.rjpt_sampler import RJPTSampler, load_rjpt_checkpoint
+import numpy as np
+import pytest
+
 from impulse.rjmcmc import RJMCMCProductSpace
-
+from impulse.rjpt_sampler import RJPTSampler, load_rjpt_checkpoint
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def temp_dir():
@@ -61,7 +62,7 @@ def _rj_source_draw(rng):
 def _rj_logprior(params):
     n = len(params)
     for i in range(n // NUM_PARAMS):
-        p = params[i * NUM_PARAMS:(i + 1) * NUM_PARAMS]
+        p = params[i * NUM_PARAMS : (i + 1) * NUM_PARAMS]
         if np.any(p < LO) or np.any(p > HI):
             return -np.inf
     return 0.0
@@ -101,13 +102,18 @@ def rjmcmc_space():
 # TestRJPTSamplerBasic
 # ---------------------------------------------------------------------------
 
+
 class TestRJPTSamplerBasic:
 
     def test_init_mh_only(self, temp_dir):
         """MH+PT, no NUTS/RJ."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=3, seed=42, outdir=temp_dir,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
         )
         assert sampler.ndim == 2
         assert sampler.ntemps == 3
@@ -117,9 +123,13 @@ class TestRJPTSamplerBasic:
     def test_init_with_nuts(self, temp_dir):
         """lnlike_grad provided enables NUTS."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=3, seed=42, outdir=temp_dir,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
         )
         assert sampler.nuts_enabled is True
         assert sampler.max_tree_depth == 10
@@ -128,7 +138,10 @@ class TestRJPTSamplerBasic:
     def test_from_rjmcmc(self, rjmcmc_space, temp_dir):
         """RJ via classmethod."""
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=3, seed=42, outdir=temp_dir,
+            rjmcmc_space,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
         )
         assert sampler.ndim == rjmcmc_space.ndim
         assert sampler._rjmcmc_space is rjmcmc_space
@@ -137,12 +150,11 @@ class TestRJPTSamplerBasic:
         # per-model buffers never reach buffer_full at realistic lengths)
         n_proposals = len(sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert n_proposals == 7
-        names = [p.__name__ for p in
-                 sampler.proposal_bundle.jump_proposals[0].proposal_list]
-        assert 'birth_death' in names
-        assert 'early_de' in names
-        assert 'birth_proposal' not in names
-        assert 'death_proposal' not in names
+        names = [p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list]
+        assert "birth_death" in names
+        assert "early_de" in names
+        assert "birth_proposal" not in names
+        assert "death_proposal" not in names
 
     def test_from_rjmcmc_single_model_space(self, temp_dir):
         """Regression: a single-model space must construct successfully.
@@ -159,18 +171,23 @@ class TestRJPTSamplerBasic:
             source_prior_draw=_rj_source_draw,
         )
         sampler = RJPTSampler.from_rjmcmc(
-            space, ntemps=3, seed=42, outdir=temp_dir,
+            space,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
         )
         assert sampler.ndim == NUM_PARAMS + 1
-        names = sorted(p.__name__ for p in
-                       sampler.proposal_bundle.jump_proposals[0].proposal_list)
-        assert names == ['am', 'de', 'early_de', 'scam']
+        names = sorted(p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list)
+        assert names == ["am", "de", "early_de", "scam"]
 
     def test_from_rjmcmc_per_source_cov(self, rjmcmc_space, temp_dir):
         """Per-source sample_cov is expanded to full product space."""
         per_source_cov = np.array([[4.0, 0.5], [0.5, 1.0]])
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=temp_dir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
             sample_cov=per_source_cov,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
@@ -184,7 +201,10 @@ class TestRJPTSamplerBasic:
         """Per-source sample_mean is expanded to full product space."""
         per_source_mean = np.array([2.5, 1.5])
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=temp_dir,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
             sample_mean=per_source_mean,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
@@ -198,7 +218,9 @@ class TestRJPTSamplerBasic:
         sampler = RJPTSampler.from_rjmcmc(
             rjmcmc_space,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=3, seed=42, outdir=temp_dir,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
         )
         assert sampler.nuts_enabled is True
         assert sampler._rjmcmc_space is rjmcmc_space
@@ -206,8 +228,13 @@ class TestRJPTSamplerBasic:
     def test_threads_param(self, temp_dir):
         """RJPTSampler(threads=2) initializes and forwards to wrappers."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=2, seed=42, outdir=temp_dir, threads=2,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            threads=2,
         )
         assert sampler.lnlike.threads == 2
         assert sampler.lnprior.threads == 2
@@ -215,8 +242,12 @@ class TestRJPTSamplerBasic:
     def test_add_custom_jump(self, temp_dir):
         """Proposal added to all chains."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=2, seed=42, outdir=temp_dir,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
         )
 
         def custom(chain_stats):
@@ -231,13 +262,19 @@ class TestRJPTSamplerBasic:
 # TestRJPTSamplerMHPT
 # ---------------------------------------------------------------------------
 
+
 class TestRJPTSamplerMHPT:
 
     def test_sample_gaussian_2d(self, temp_dir):
         """Basic MH+PT sampling on 2D Gaussian."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=3, seed=42, outdir=temp_dir, save_freq=500,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=500)
         assert sampler.short_chain.iteration == 500
@@ -247,52 +284,65 @@ class TestRJPTSamplerMHPT:
         n_iter = 100
         ntemps = 3
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=ntemps, seed=42, outdir=temp_dir, save_freq=500,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=ntemps,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=n_iter)
 
         rates = sampler.proposal_acceptance_rates()
-        assert set(rates.keys()) == {'am', 'scam', 'de'}
+        assert set(rates.keys()) == {"am", "scam", "de"}
 
-        total_calls = sum(info['calls'] for info in rates.values())
+        total_calls = sum(info["calls"] for info in rates.values())
         assert total_calls == n_iter * ntemps
 
-        total_accepts = sum(info['accepts'] for info in rates.values())
+        total_accepts = sum(info["accepts"] for info in rates.values())
         assert total_accepts <= total_calls
         assert total_accepts > 0
 
         for info in rates.values():
-            assert len(info['per_chain']) == ntemps
-            if info['calls'] > 0:
-                assert info['rate'] == pytest.approx(
-                    info['accepts'] / info['calls'], abs=1e-12
-                )
+            assert len(info["per_chain"]) == ntemps
+            if info["calls"] > 0:
+                assert info["rate"] == pytest.approx(info["accepts"] / info["calls"], abs=1e-12)
 
     def test_diagnostics_includes_proposal_acceptance(self, temp_dir):
         """get_diagnostics includes proposal_acceptance with correct structure."""
         ntemps = 3
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=ntemps, seed=42, outdir=temp_dir, save_freq=500,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=ntemps,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=100)
 
         diag = sampler.get_diagnostics()
-        assert 'proposal_acceptance' in diag
-        pa = diag['proposal_acceptance']
-        assert set(pa.keys()) == {'am', 'scam', 'de'}
+        assert "proposal_acceptance" in diag
+        pa = diag["proposal_acceptance"]
+        assert set(pa.keys()) == {"am", "scam", "de"}
         for info in pa.values():
-            assert 'calls' in info and 'accepts' in info and 'rate' in info
-            assert len(info['per_chain']) == ntemps
+            assert "calls" in info and "accepts" in info and "rate" in info
+            assert len(info["per_chain"]) == ntemps
 
     def test_load_chain_format(self, temp_dir):
         """Correct dict keys and shapes."""
         ntemps = 3
         n_iter = 200
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=ntemps, seed=42, outdir=temp_dir, save_freq=200,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=ntemps,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=200,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=n_iter)
 
@@ -310,8 +360,13 @@ class TestRJPTSamplerMHPT:
         from impulse.sampler_state import tempered_lnprobs
 
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=4, seed=42, outdir=temp_dir, save_freq=500,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=4,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         initial_ladder = sampler.ptstate.ladder.copy()
         sampler.sample(np.array([0.1, 0.1]), num_iterations=200)
@@ -319,15 +374,22 @@ class TestRJPTSamplerMHPT:
         # adaptation must actually have moved the interior rungs
         assert not np.allclose(sampler.ptstate.ladder, initial_ladder)
         expected = tempered_lnprobs(
-            sampler.state.lnlikes, sampler.state.lnpriors, sampler.ptstate.ladder,
+            sampler.state.lnlikes,
+            sampler.state.lnpriors,
+            sampler.ptstate.ladder,
         )
         np.testing.assert_allclose(sampler.state.lnprobs, expected, atol=1e-12)
 
     def test_checkpoint_resume(self, temp_dir):
         """Round-trip pickle checkpoint."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=2, seed=42, outdir=temp_dir, save_freq=100,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=100,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=200)
 
@@ -351,15 +413,22 @@ class TestRJPTSamplerMHPT:
 # TestRJPTSamplerNUTS
 # ---------------------------------------------------------------------------
 
+
 class TestRJPTSamplerNUTS:
 
     def test_sample_gaussian_with_nuts(self, temp_dir):
         """PT+NUTS on 2D Gaussian, verify mean and variance."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=3, seed=42, outdir=temp_dir, save_freq=1000,
-            max_tree_depth=6, hot_chain_max_depth=3,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=1000,
+            max_tree_depth=6,
+            hot_chain_max_depth=3,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=2000)
 
@@ -373,9 +442,13 @@ class TestRJPTSamplerNUTS:
     def test_tempered_gradient(self, temp_dir):
         """Gradient scaled by 1/T."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=3, seed=42, outdir=temp_dir,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
         )
         # Build initial state to test gradient
         x0 = setup_initial_position_for_test(sampler)
@@ -396,9 +469,14 @@ class TestRJPTSamplerNUTS:
     def test_step_size_cached(self, temp_dir):
         """Step size found and reused."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=2, seed=42, outdir=temp_dir, save_freq=50,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=50,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=50)
         # Step sizes should be cached
@@ -407,9 +485,14 @@ class TestRJPTSamplerNUTS:
     def test_diagnostics(self, temp_dir):
         """tree_depth, divergent, etc. present in diagnostics."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=2, seed=42, outdir=temp_dir, save_freq=100,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=100,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=100)
 
@@ -424,9 +507,14 @@ class TestRJPTSamplerNUTS:
     def test_nuts_diagnostics_in_chain(self, temp_dir):
         """NUTS diagnostic columns appear in load_chain output."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=2, seed=42, outdir=temp_dir, save_freq=100,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=100,
         )
         sampler.sample(np.array([0.1, 0.1]), num_iterations=100)
 
@@ -442,12 +530,17 @@ class TestRJPTSamplerNUTS:
 # TestRJPTSamplerRJMCMC
 # ---------------------------------------------------------------------------
 
+
 class TestRJPTSamplerRJMCMC:
 
     def test_rjmcmc_short_run(self, rjmcmc_space, temp_dir):
         """Smoke test: RJ sampler runs without error."""
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=3, seed=42, outdir=temp_dir, save_freq=500,
+            rjmcmc_space,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
@@ -470,7 +563,11 @@ class TestRJPTSamplerRJMCMC:
         tests/test_rjmcmc_detailed_balance.py), this recovers the preferred
         model reliably (checked with seeds 42, 43, and 7)."""
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=5, seed=42, outdir=temp_dir, save_freq=5000,
+            rjmcmc_space,
+            ntemps=5,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=5000,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
@@ -503,14 +600,20 @@ class TestRJPTSamplerRJMCMC:
                 sin_term = np.sin(2 * np.pi * f * T_GRID)
                 cos_term = np.cos(2 * np.pi * f * T_GRID)
                 grad[i * NUM_PARAMS] = np.sum(residual * sin_term) / SIGMA**2
-                grad[i * NUM_PARAMS + 1] = np.sum(residual * a * 2 * np.pi * T_GRID * cos_term) / SIGMA**2
+                grad[i * NUM_PARAMS + 1] = (
+                    np.sum(residual * a * 2 * np.pi * T_GRID * cos_term) / SIGMA**2
+                )
             return ll, grad
 
         sampler = RJPTSampler.from_rjmcmc(
             rjmcmc_space,
             lnlike_grad=rj_lnlike_grad,
-            ntemps=3, seed=42, outdir=temp_dir, save_freq=200,
-            max_tree_depth=4, hot_chain_max_depth=2,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=200,
+            max_tree_depth=4,
+            hot_chain_max_depth=2,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
@@ -525,7 +628,10 @@ class TestRJPTSamplerRJMCMC:
         sampler = RJPTSampler.from_rjmcmc(
             rjmcmc_space,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=2, seed=42, outdir=temp_dir, save_freq=300,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=300,
             max_tree_depth=3,
         )
         rng = np.random.default_rng(42)
@@ -539,16 +645,20 @@ class TestRJPTSamplerRJMCMC:
 # TestPerModelStats
 # ---------------------------------------------------------------------------
 
+
 class TestPerModelStats:
     """Per-model adaptive statistics for RJPTSampler."""
 
     def test_per_model_enabled_from_rjmcmc(self, rjmcmc_space, temp_dir):
         """from_rjmcmc enables per-model stats on all chains."""
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=3, seed=42, outdir=temp_dir,
+            rjmcmc_space,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
         )
         for cs in sampler.multi_chain_stats.chain_stats:
-            assert hasattr(cs, '_per_model')
+            assert hasattr(cs, "_per_model")
             assert len(cs._per_model) == MAX_SOURCES
             assert len(cs._per_model[0].groups) == 1
             assert len(cs._per_model[2].groups) == 3
@@ -556,7 +666,11 @@ class TestPerModelStats:
     def test_rjmcmc_smoke_with_per_model(self, rjmcmc_space, temp_dir):
         """Smoke test: RJPTSampler runs with per-model stats."""
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=3, seed=42, outdir=temp_dir, save_freq=500,
+            rjmcmc_space,
+            ntemps=3,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=500,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
@@ -567,7 +681,11 @@ class TestPerModelStats:
     def test_pickle_roundtrip_rjpt(self, rjmcmc_space, temp_dir):
         """Pickle round-trip preserves per-model state."""
         sampler = RJPTSampler.from_rjmcmc(
-            rjmcmc_space, ntemps=2, seed=42, outdir=temp_dir, save_freq=200,
+            rjmcmc_space,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=200,
         )
         rng = np.random.default_rng(42)
         x0 = rjmcmc_space.draw_initial_position(rng, nmodel=0)
@@ -577,7 +695,7 @@ class TestPerModelStats:
         data = pickle.dumps(cs_before)
         cs_after = pickle.loads(data)
 
-        assert hasattr(cs_after, '_per_model')
+        assert hasattr(cs_after, "_per_model")
         assert len(cs_after._per_model) == MAX_SOURCES
         for k in range(MAX_SOURCES):
             assert cs_after._per_model[k].sample_total == cs_before._per_model[k].sample_total
@@ -587,16 +705,24 @@ class TestPerModelStats:
 # TestRJPTNumAdapt
 # ---------------------------------------------------------------------------
 
+
 class TestRJPTNumAdapt:
     """Adaptation-freeze semantics of RJPTSampler(num_adapt=...)."""
 
     def _make(self, temp_dir, num_adapt):
         return RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=2, seed=42, outdir=temp_dir, save_freq=10_000,
-            cov_update=10, mass_matrix_adapt_interval=10,
-            mass_matrix_min_samples=5, num_adapt=num_adapt,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=10_000,
+            cov_update=10,
+            mass_matrix_adapt_interval=10,
+            mass_matrix_min_samples=5,
+            num_adapt=num_adapt,
         )
 
     @staticmethod
@@ -618,9 +744,7 @@ class TestRJPTNumAdapt:
                 snap["step_sizes"] = dict(sampler._step_sizes)
                 snap["mass_matrices"] = dict(sampler._mass_matrices)
                 snap["da_objects"] = dict(sampler._dual_averagers)
-                snap["da_counts"] = {
-                    k: da.count for k, da in sampler._dual_averagers.items()
-                }
+                snap["da_counts"] = {k: da.count for k, da in sampler._dual_averagers.items()}
             orig(accepts)
 
         sampler.proposal_bundle.report_accepts = spy
@@ -629,8 +753,11 @@ class TestRJPTNumAdapt:
     def test_num_adapt_default_none(self, temp_dir):
         """Default num_adapt=None adapts forever (historical behavior)."""
         sampler = RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
-            ntemps=2, outdir=temp_dir,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            ntemps=2,
+            outdir=temp_dir,
         )
         assert sampler.num_adapt is None
         assert sampler._adaptation_active(10**9) is True
@@ -684,34 +811,37 @@ class TestRJPTNumAdapt:
             for k, da in sampler._dual_averagers.items()
         )
         # mass matrices kept being re-estimated
-        assert any(
-            sampler._mass_matrices[k] is not mm
-            for k, mm in snap["mass_matrices"].items()
-        )
+        assert any(sampler._mass_matrices[k] is not mm for k, mm in snap["mass_matrices"].items())
 
 
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
 
+
 def setup_initial_position_for_test(sampler):
     """Create a valid SamplerState for testing internal methods."""
-    from impulse.samplers import setup_initial_position
     from impulse.sampler_state import SamplerState
+    from impulse.samplers import setup_initial_position
 
     positions = setup_initial_position(np.zeros(sampler.ndim), sampler.ntemps)
     lnlike0 = sampler.lnlike(positions)
     lnprior0 = sampler.lnprior(positions)
     lnprob0 = 1.0 / sampler.ptstate.ladder * lnlike0 + lnprior0
     return SamplerState(
-        positions, lnlike0, lnprior0, lnprob0,
-        accepted=np.ones(sampler.ntemps), temps=sampler.ptstate.ladder,
+        positions,
+        lnlike0,
+        lnprior0,
+        lnprob0,
+        accepted=np.ones(sampler.ntemps),
+        temps=sampler.ptstate.ladder,
     )
 
 
 # ---------------------------------------------------------------------------
 # TestStepSizeFreezeFinalization
 # ---------------------------------------------------------------------------
+
 
 class TestStepSizeFreezeFinalization:
     """The num_adapt freeze must pin the SMOOTHED dual-averaging step size
@@ -725,9 +855,14 @@ class TestStepSizeFreezeFinalization:
 
     def _make(self, temp_dir, **kwargs):
         return RJPTSampler(
-            ndim=2, lnlike=_simple_lnlike, lnprior=_simple_lnprior,
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
             lnlike_grad=_simple_lnlike_grad,
-            ntemps=2, seed=42, outdir=temp_dir, save_freq=10_000,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            save_freq=10_000,
             **kwargs,
         )
 
@@ -740,10 +875,8 @@ class TestStepSizeFreezeFinalization:
         da = DualAveraging(target_accept=0.8, initial_step_size=0.2)
         for accept_prob in [0.1, 0.3, 0.6, 0.9, 0.5]:
             primal = da.update(accept_prob)
-        primal = float(np.clip(primal, sampler._step_size_min,
-                               sampler._step_size_max))
-        smoothed = float(np.clip(da.finalize(), sampler._step_size_min,
-                                 sampler._step_size_max))
+        primal = float(np.clip(primal, sampler._step_size_min, sampler._step_size_max))
+        smoothed = float(np.clip(da.finalize(), sampler._step_size_min, sampler._step_size_max))
         assert primal != pytest.approx(smoothed)  # meaningful distinction
 
         key = (0, 2)
@@ -757,9 +890,12 @@ class TestStepSizeFreezeFinalization:
 
         sampler = self._make(temp_dir)
         key = (0, 2)
-        sampler._dual_averagers = {key: DualAveraging(
-            target_accept=0.8, initial_step_size=0.7,
-        )}
+        sampler._dual_averagers = {
+            key: DualAveraging(
+                target_accept=0.8,
+                initial_step_size=0.7,
+            )
+        }
         sampler._step_sizes = {key: 0.123}
         sampler._finalize_step_sizes()
         assert sampler._step_sizes[key] == 0.123
@@ -783,8 +919,10 @@ class TestStepSizeFreezeFinalization:
         (smoothed) values, not the last primal iterates."""
         n_adapt, n_iter = 38, 60
         sampler = self._make(
-            temp_dir, cov_update=10,
-            mass_matrix_adapt_interval=10, mass_matrix_min_samples=5,
+            temp_dir,
+            cov_update=10,
+            mass_matrix_adapt_interval=10,
+            mass_matrix_min_samples=5,
             num_adapt=n_adapt,
         )
 
@@ -805,8 +943,7 @@ class TestStepSizeFreezeFinalization:
         def spy_mm_adapt():
             before = dict(sampler._mass_matrices)
             orig_mm_adapt()
-            if any(sampler._mass_matrices.get(k) is not v
-                   for k, v in before.items()):
+            if any(sampler._mass_matrices.get(k) is not v for k, v in before.items()):
                 commits.append(it["jj"])
 
         sampler._maybe_adapt_mass_matrices = spy_mm_adapt
@@ -825,9 +962,13 @@ class TestStepSizeFreezeFinalization:
         for key, da in sampler._dual_averagers.items():
             if da.count == 0:
                 continue
-            expected = float(np.clip(
-                da.finalize(), sampler._step_size_min, sampler._step_size_max,
-            ))
+            expected = float(
+                np.clip(
+                    da.finalize(),
+                    sampler._step_size_min,
+                    sampler._step_size_max,
+                )
+            )
             assert sampler._step_sizes[key] == pytest.approx(expected)
             checked += 1
         assert checked > 0
@@ -835,11 +976,8 @@ class TestStepSizeFreezeFinalization:
         # And it is genuinely the smoothed value, not the primal iterate:
         # for at least one chain the two differ.
         primals = {
-            key: float(np.clip(np.exp(da.log_step), sampler._step_size_min,
-                               sampler._step_size_max))
-            for key, da in sampler._dual_averagers.items() if da.count > 0
+            key: float(np.clip(np.exp(da.log_step), sampler._step_size_min, sampler._step_size_max))
+            for key, da in sampler._dual_averagers.items()
+            if da.count > 0
         }
-        assert any(
-            not np.isclose(primals[key], sampler._step_sizes[key])
-            for key in primals
-        )
+        assert any(not np.isclose(primals[key], sampler._step_sizes[key]) for key in primals)
