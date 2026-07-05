@@ -67,7 +67,7 @@ class BirthProposal:
         ``log_proposal_density`` is not given.  If ``None`` the prior is
         assumed flat over the (in-bounds) source parameters; supply it for
         any non-flat prior.
-        :class:`~impulse.rjmcmc.RJMCMCProductSpace` wires this automatically.
+        :class:`~impulse.rjmcmc.BirthDeathProductSpace` wires this automatically.
     prob_schedule : callable, optional
         ``prob_schedule(nmodel, max_sources) -> (p_birth, p_death)``.
 

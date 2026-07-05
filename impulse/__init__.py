@@ -84,8 +84,9 @@ from .resume import (
     load_rjpt_checkpoint,
 )
 
-# RJMCMC
-from .rjmcmc import RJMCMCProductSpace
+# Product-space model selection (birth/death moves)
+from .rjmcmc import RJMCMCProductSpace  # deprecated alias
+from .rjmcmc import BirthDeathProductSpace
 from .rjpt_sampler import RJPTSampler
 
 # Samplers
@@ -110,7 +111,8 @@ __all__ = [
     "RJPTSampler",
     "NUTSSampler",
     # Model spaces
-    "RJMCMCProductSpace",
+    "BirthDeathProductSpace",
+    "RJMCMCProductSpace",  # deprecated alias for BirthDeathProductSpace
     "NestedProductSpace",
     # Diagnostics
     "model_visitation_stats",

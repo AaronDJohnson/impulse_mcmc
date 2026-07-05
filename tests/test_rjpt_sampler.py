@@ -8,7 +8,7 @@ import tempfile
 import numpy as np
 import pytest
 
-from impulse.rjmcmc import RJMCMCProductSpace
+from impulse.rjmcmc import BirthDeathProductSpace
 from impulse.rjpt_sampler import RJPTSampler, load_rjpt_checkpoint
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ def _rj_loglike(params):
 
 @pytest.fixture
 def rjmcmc_space():
-    return RJMCMCProductSpace(
+    return BirthDeathProductSpace(
         loglikelihood=_rj_loglike,
         logprior=_rj_logprior,
         num_sources=MAX_SOURCES,
@@ -163,7 +163,7 @@ class TestRJPTSamplerBasic:
         skip the trans-dimensional jumps (all meaningless with one model)
         and register only the standard continuous jumps.
         """
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_rj_loglike,
             logprior=_rj_logprior,
             num_sources=1,

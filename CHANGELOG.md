@@ -56,6 +56,11 @@ rewrite and shares no API with it.
 
 ### Deprecated
 
+- `RJMCMCProductSpace` is renamed to `BirthDeathProductSpace`, which
+  accurately describes what it is: a product-space (composite-model-space)
+  sampler with birth/death model moves, not dimension-changing reversible
+  jump in the Green (1995) sense. `RJMCMCProductSpace` remains importable as
+  a deprecated alias and may be removed in a future release.
 - The pickle checkpoint format (`sampler_checkpoint.pkl`) is deprecated in
   favor of the no-code-execution `.npz` + `.json` format and is slated for
   removal in a future 2.x release. `load_checkpoint`, `load_rjpt_checkpoint`,

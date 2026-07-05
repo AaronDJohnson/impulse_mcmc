@@ -1,6 +1,16 @@
 """
-RJMCMCProductSpace — user-facing class for reversible-jump MCMC
-in the product-space embedding.
+BirthDeathProductSpace — user-facing class for product-space (composite
+model space) model selection with birth/death moves.
+
+This is a product-space / saturated-space sampler: the state has fixed
+dimension (all source slots plus a model index), the likelihood reads only
+the active slots, and the prior is evaluated on all slots. Model moves are
+ordinary Metropolis-Hastings birth/death (plus a direct model-index jump
+and a source swap) on the fixed-dimension state — not dimension-changing
+reversible jump in the Green (1995) sense, and no trans-dimensional
+Jacobian appears. It is the product-space member of the trans-model MCMC
+family (Carlin & Chib 1995; Godsill 2001). ``RJMCMCProductSpace`` is kept
+as a deprecated alias.
 """
 
 from typing import Callable, Optional
@@ -18,18 +28,27 @@ from impulse.rjmcmc_proposals import (
 )
 
 
-class RJMCMCProductSpace(NestedProductSpace):
+class BirthDeathProductSpace(NestedProductSpace):
     """
-    Product space for reversible-jump MCMC with birth/death proposals.
+    Product-space model selection with birth/death moves.
 
     Extends :class:`NestedProductSpace` with factory methods for
     birth, death, model-index jump, and source-swap proposals so users
     don't have to compute Hastings ratios by hand.
 
+    This is a **product-space** (composite-model-space) sampler, *not*
+    dimension-changing reversible jump: the state has fixed dimension
+    (every source slot plus a model index), and birth/death change only the
+    model index while re-drawing the affected slot. There is no
+    trans-dimensional Jacobian; the newly activated parameters enter through
+    an ordinary Metropolis-Hastings proposal-density ratio.
+
     The prior is evaluated on **all** source parameters (active and inactive),
-    not just the active ones.  This ensures that newly activated parameters
-    are within bounds and that the implicit Occam's razor from the prior
-    volume ratio is correct.
+    not just the active ones.  This keeps newly activated parameters within
+    bounds and supplies the Occam penalty: the inactive slots carry their
+    prior in the target, so marginalizing them out yields the correct model
+    posterior (the product-space analogue of the reversible-jump prior-volume
+    ratio).
 
     Parameters
     ----------
@@ -69,7 +88,7 @@ class RJMCMCProductSpace(NestedProductSpace):
 
     Examples
     --------
-    >>> space = RJMCMCProductSpace(
+    >>> space = BirthDeathProductSpace(
     ...     loglikelihood=my_loglike,
     ...     logprior=my_logprior,
     ...     num_sources=3,
@@ -357,3 +376,11 @@ class RJMCMCProductSpace(NestedProductSpace):
             x0[layout.source_slice(i)] = self.source_prior_draw(rng)
         layout.set_model_index(x0, nmodel)
         return x0
+
+
+# Deprecated alias. This class was named ``RJMCMCProductSpace`` through
+# 2.0.0-dev, but it is a product-space (composite-model-space) sampler, not
+# dimension-changing reversible jump; the accurate name is
+# ``BirthDeathProductSpace``. The alias is retained for backward
+# compatibility and may be removed in a future release.
+RJMCMCProductSpace = BirthDeathProductSpace

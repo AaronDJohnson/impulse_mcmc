@@ -220,7 +220,7 @@ class PTSampler(_PTSamplerBase):
 
         Parameters
         ----------
-        rjmcmc_space : RJMCMCProductSpace
+        rjmcmc_space : BirthDeathProductSpace
             Configured RJMCMC product space object.
         birth_weight : float
             Contribution to the combined birth-death kernel's selection
@@ -280,8 +280,8 @@ class PTSampler(_PTSamplerBase):
 
         Examples
         --------
-        >>> from impulse.rjmcmc import RJMCMCProductSpace
-        >>> space = RJMCMCProductSpace(loglike, logprior, 3, 3, draw_fn)
+        >>> from impulse.rjmcmc import BirthDeathProductSpace
+        >>> space = BirthDeathProductSpace(loglike, logprior, 3, 3, draw_fn)
         >>> sampler = PTSampler.from_rjmcmc(space, ntemps=15, seed=42)
         >>> x0 = space.draw_initial_position(np.random.default_rng(42))
         >>> sampler.sample(x0, num_iterations=50000)

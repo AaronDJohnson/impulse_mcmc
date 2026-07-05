@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from impulse.rjmcmc import RJMCMCProductSpace
+from impulse.rjmcmc import BirthDeathProductSpace
 
 NUM_PARAMS = 3
 MAX_SOURCES = 3
@@ -37,7 +37,7 @@ def _logprior(params):
 
 @pytest.fixture
 def space():
-    return RJMCMCProductSpace(
+    return BirthDeathProductSpace(
         loglikelihood=_loglike,
         logprior=_logprior,
         num_sources=MAX_SOURCES,
@@ -46,7 +46,7 @@ def space():
     )
 
 
-class TestRJMCMCProductSpaceInit:
+class TestBirthDeathProductSpaceInit:
     def test_ndim(self, space):
         assert space.ndim == NDIM
 

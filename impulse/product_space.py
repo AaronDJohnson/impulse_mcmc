@@ -7,7 +7,7 @@ arbitrary model lists with per-model likelihoods/priors;
 :class:`NestedProductSpace` specializes to nested "N identical sources"
 models with a shared per-source parameterization, routing only the active
 sources' parameters to the likelihood AND the prior. Note the contrast with
-:class:`impulse.rjmcmc.RJMCMCProductSpace`, which overrides ``get_logprior``
+:class:`impulse.rjmcmc.BirthDeathProductSpace`, which overrides ``get_logprior``
 to evaluate the prior on ALL source slots (active and inactive), as required
 for exact reversible-jump birth/death moves.
 """
@@ -228,7 +228,7 @@ class ProductSpace:
     This class is intentionally NOT exported from the top-level
     ``impulse`` namespace and is not used by the samplers themselves:
     the RJMCMC machinery is built on :class:`NestedProductSpace` /
-    :class:`impulse.rjmcmc.RJMCMCProductSpace` ("N identical sources").
+    :class:`impulse.rjmcmc.BirthDeathProductSpace` ("N identical sources").
     It is kept as a standalone utility for the heterogeneous case — a
     fixed list of structurally different models, each with its own
     likelihood/prior/parameter names — which the nested classes cannot

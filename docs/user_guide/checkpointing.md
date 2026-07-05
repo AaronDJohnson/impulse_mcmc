@@ -71,10 +71,10 @@ clear error naming the first mismatch (e.g. a missing custom jump or a changed
 weight), rather than silently restoring into the wrong sampler:
 
 ```python
-from impulse.rjmcmc import RJMCMCProductSpace
+from impulse.rjmcmc import BirthDeathProductSpace
 
 def make_rj_sampler():
-    space = RJMCMCProductSpace(loglike, logprior, num_sources=3,
+    space = BirthDeathProductSpace(loglike, logprior, num_sources=3,
                                num_params=2, source_prior_draw=draw)
     # Same weights and the same custom jumps as the original run:
     return RJPTSampler.from_rjmcmc(space, ntemps=8, seed=1,

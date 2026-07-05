@@ -11,7 +11,7 @@ as in ``impulse.__init__``.
    PTSampler
    RJPTSampler
    NUTSSampler
-   RJMCMCProductSpace
+   BirthDeathProductSpace
    NestedProductSpace
    model_visitation_stats
    bayes_factor_from_chain

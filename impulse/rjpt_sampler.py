@@ -454,7 +454,7 @@ class RJPTSampler(_PTSamplerBase):
 
         Parameters
         ----------
-        rjmcmc_space : RJMCMCProductSpace
+        rjmcmc_space : BirthDeathProductSpace
             Configured RJMCMC product space.
         lnlike_grad : callable, optional
             Gradient function for NUTS on active continuous params.

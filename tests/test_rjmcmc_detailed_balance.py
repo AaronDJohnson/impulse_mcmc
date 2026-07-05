@@ -75,7 +75,7 @@ from impulse.proposals import (
     make_early_de,
     make_source_swap_proposal,
 )
-from impulse.rjmcmc import RJMCMCProductSpace
+from impulse.rjmcmc import BirthDeathProductSpace
 from impulse.rjmcmc_proposals import (
     BirthProposal,
     DeathProposal,
@@ -137,7 +137,7 @@ def _run_birth_death(num_sources, num_params, c, prior, n_iter, seed):
     rng = np.random.default_rng(seed)
 
     # supply the single-source prior density so the birth move can cancel the
-    # overwritten slot's prior contribution (RJMCMCProductSpace wires this too).
+    # overwritten slot's prior contribution (BirthDeathProductSpace wires this too).
     log_prior_density = None if prior == "flat" else src_logpdf
     kernel = make_birth_death_proposal(
         num_params,
@@ -365,7 +365,7 @@ def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT, e
     """Chain on ``logL = a*sum(t) + b*n`` with the full production mixture.
 
     The trans-dimensional kernel is built through
-    ``RJMCMCProductSpace.get_birth_death_proposal`` (production wiring,
+    ``BirthDeathProductSpace.get_birth_death_proposal`` (production wiring,
     including the per-source prior-density resolution), and competes at
     constant ``JumpProposals`` weights with the production ``nmodel_jump``
     and ``source_swap`` moves plus an exact within-model Gibbs move.
@@ -384,7 +384,7 @@ def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT, e
         return a * float(np.sum(active)) + b * active.size
 
     if draw_mode == "prior":
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=loglike,
             logprior=_unit_flat_logprior,
             num_sources=num_sources,
@@ -392,7 +392,7 @@ def _run_full_mixture(num_sources, n_iter, seed, draw_mode, a=_TILT, b=-_TILT, e
             source_prior_draw=_unit_uniform_draw,
         )
     else:  # birth draws from Beta(3, 1) != prior (q != p Hastings terms)
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=loglike,
             logprior=_unit_flat_logprior,
             num_sources=num_sources,

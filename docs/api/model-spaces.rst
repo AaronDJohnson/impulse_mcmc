@@ -9,13 +9,13 @@ callable must satisfy.
 
 .. autosummary::
 
-   RJMCMCProductSpace
+   BirthDeathProductSpace
    NestedProductSpace
 
-RJMCMCProductSpace
-------------------
+BirthDeathProductSpace
+----------------------
 
-.. autoclass:: RJMCMCProductSpace
+.. autoclass:: BirthDeathProductSpace
    :members:
 
 NestedProductSpace

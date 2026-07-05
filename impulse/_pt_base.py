@@ -307,7 +307,7 @@ def _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs: dict) -> tuple:
 
     Parameters
     ----------
-    rjmcmc_space : RJMCMCProductSpace
+    rjmcmc_space : BirthDeathProductSpace
         Configured RJMCMC product space.
     kwargs : dict
         Keyword arguments destined for the sampler constructor; mutated in

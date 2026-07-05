@@ -16,13 +16,13 @@ each, the parameter vector is
 with `ndim = num_sources * num_params + 1`. `nmodel = k` means sources
 `0..k` are active (`k + 1` active sources).
 
-## RJMCMCProductSpace: the contract
+## BirthDeathProductSpace: the contract
 
-{class}`~impulse.RJMCMCProductSpace` wires your model into this embedding.
+{class}`~impulse.BirthDeathProductSpace` wires your model into this embedding.
 
 ```python
 import numpy as np
-from impulse import PTSampler, RJMCMCProductSpace
+from impulse import PTSampler, BirthDeathProductSpace
 
 rng = np.random.default_rng(0)
 t = np.linspace(0.0, 1.0, 100)
@@ -59,7 +59,7 @@ def draw_source(rng):
     # one source's parameters, drawn from the per-source prior
     return np.array([rng.uniform(0.0, 5.0), rng.uniform(1.0, 10.0)])
 
-space = RJMCMCProductSpace(
+space = BirthDeathProductSpace(
     loglikelihood=loglike,
     logprior=logprior,
     num_sources=MAX_SOURCES,
@@ -74,7 +74,7 @@ The contract, precisely:
   first `(nmodel + 1) * num_params` entries.
 - **`logprior(params)` receives ALL `num_sources * num_params` source
   parameters**, active and inactive (this is where
-  `RJMCMCProductSpace` differs from its base class
+  `BirthDeathProductSpace` differs from its base class
   {class}`~impulse.NestedProductSpace`, whose prior sees only active
   slots). Inactive slots stay inside the prior support and contribute the
   correct Occam factor to birth/death moves.

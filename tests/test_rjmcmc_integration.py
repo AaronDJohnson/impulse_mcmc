@@ -13,7 +13,7 @@ import tempfile
 import numpy as np
 import pytest
 
-from impulse.rjmcmc import RJMCMCProductSpace
+from impulse.rjmcmc import BirthDeathProductSpace
 from impulse.samplers import PTSampler
 
 # -----------------------------------------------------------------------
@@ -65,7 +65,7 @@ def _loglike(params):
 
 @pytest.fixture
 def rjmcmc_space():
-    return RJMCMCProductSpace(
+    return BirthDeathProductSpace(
         loglikelihood=_loglike,
         logprior=_logprior,
         num_sources=MAX_SOURCES,
@@ -117,7 +117,7 @@ class TestFromRJMCMC:
         swap — all meaningless with one model) instead of building them
         and raising.  Only the standard continuous jumps are registered.
         """
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=_logprior,
             num_sources=1,
@@ -171,10 +171,10 @@ class TestFromRJMCMC:
 
 
 class TestSourcePriorLogpdfResolution:
-    """The per-source prior-density fallback probe in RJMCMCProductSpace."""
+    """The per-source prior-density fallback probe in BirthDeathProductSpace."""
 
     def test_additive_prior_passes_probe(self):
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=_logprior,
             num_sources=MAX_SOURCES,
@@ -192,7 +192,7 @@ class TestSourcePriorLogpdfResolution:
             p = np.asarray(params, float)
             return -0.5 * float(np.sum(p)) ** 2  # not additive across slots
 
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=coupled_logprior,
             num_sources=MAX_SOURCES,
@@ -211,7 +211,7 @@ class TestSourcePriorLogpdfResolution:
                 raise ValueError("expected the full parameter vector")
             return 0.0
 
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=strict_logprior,
             num_sources=MAX_SOURCES,
@@ -235,7 +235,7 @@ class TestSourcePriorLogpdfResolution:
         def broad_draw(rng):
             return rng.uniform(LO - 2.0, HI + 2.0)  # mostly out of bounds
 
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=_logprior,
             num_sources=MAX_SOURCES,
@@ -256,7 +256,7 @@ class TestSourcePriorLogpdfResolution:
         def broad_logpdf(params):
             return float(-np.sum(np.log((HI + 2.0) - (LO - 2.0))))
 
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=_logprior,
             num_sources=MAX_SOURCES,
@@ -277,7 +277,7 @@ class TestSourcePriorLogpdfResolution:
         def raising_draw(rng):
             raise AssertionError("probe must not draw for num_sources=1")
 
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=_logprior,
             num_sources=1,
@@ -290,7 +290,7 @@ class TestSourcePriorLogpdfResolution:
         def per_source(params):
             return 0.0
 
-        space = RJMCMCProductSpace(
+        space = BirthDeathProductSpace(
             loglikelihood=_loglike,
             logprior=_logprior,
             num_sources=MAX_SOURCES,

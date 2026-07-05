@@ -132,6 +132,6 @@ across checkpoint/resume.
 Custom moves that change the model index of a reversible-jump run must
 supply exact Hastings terms, including the probability of *selecting* the
 forward and reverse moves. This is why birth and death ship as one
-combined kernel ({meth}`~impulse.RJMCMCProductSpace.get_birth_death_proposal`)
+combined kernel ({meth}`~impulse.BirthDeathProductSpace.get_birth_death_proposal`)
 rather than two registrable pieces — read {doc}`rjmcmc` before writing
 your own.

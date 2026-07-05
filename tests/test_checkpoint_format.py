@@ -33,7 +33,7 @@ from impulse.resume import (
     restore_state_checkpoint,
     save_state_checkpoint,
 )
-from impulse.rjmcmc import RJMCMCProductSpace
+from impulse.rjmcmc import BirthDeathProductSpace
 from impulse.rjpt_sampler import RJPTSampler
 from impulse.samplers import PTSampler
 
@@ -122,7 +122,7 @@ def _rj_lnlike_grad(active):
 
 
 def _make_rj_space():
-    return RJMCMCProductSpace(
+    return BirthDeathProductSpace(
         loglikelihood=_rj_loglike,
         logprior=_rj_logprior,
         num_sources=MAX_SOURCES,

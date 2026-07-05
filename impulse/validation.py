@@ -439,7 +439,7 @@ def run_sbc_model_selection(
     sampler_factory : callable
         ``(true_nmodel, true_params, data, rng, outdir) -> (sampler, space)``
         Creates, configures, runs ``.sample()``, and returns the sampler
-        and ``RJMCMCProductSpace``.
+        and ``BirthDeathProductSpace``.
     model_prior_draw : callable
         ``(rng) -> int``, draws a model index from the prior.
     param_prior_draw : callable
