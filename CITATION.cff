@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: impulse-mcmc
+version: 2.0.0
+date-released: 2026-07-04
+authors:
+  - family-names: Johnson
+    given-names: Aaron D.
+    email: aaron9035@gmail.com
+repository-code: "https://github.com/AaronDJohnson/impulse_mcmc"
+license: MIT
+abstract: >-
+  Parallel-tempering MCMC with adaptive proposals, NUTS, and
+  reversible-jump model selection.
+keywords:
+  - MCMC
+  - parallel tempering
+  - reversible-jump
+  - Bayesian inference
+  - NUTS
