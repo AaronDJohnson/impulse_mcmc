@@ -1,3 +1,13 @@
+"""Online (incremental) statistics for adaptive proposals.
+
+Batch-recursive updates of the running sample mean (:func:`update_mean`) and
+sample covariance (:func:`update_covariance`) let the sampler fold new
+iterations into its covariance estimates without revisiting old samples, and
+:func:`svd_groups` decomposes the covariance of each parameter group into
+the SVD factors that orient and scale the AM/SCAM jumps in
+:mod:`impulse.proposals`.
+"""
+
 import numpy as np
 
 

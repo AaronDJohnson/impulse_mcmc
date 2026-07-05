@@ -1,3 +1,16 @@
+"""Convergence and model-selection diagnostics for MCMC chains.
+
+Provides FFT-based autocorrelation-length estimates via initial-positive-
+sequence and initial-monotone-sequence estimators
+(:func:`autocorr_length_ips_ims`), per-parameter effective sample sizes
+(:func:`effective_sample_size`), and the Gelman-Rubin split-R-hat statistic
+(:func:`grubin`). For reversible-jump runs, :func:`model_visitation_stats`
+summarizes an RJMCMC chain's model-index column (posterior model
+probabilities, visit counts, transition matrix, dwell times) and
+:func:`bayes_factor_from_chain` estimates Bayes factors from posterior model
+frequencies.
+"""
+
 import numpy as np
 from numpy.fft import irfft, rfft
 from scipy.stats import norm

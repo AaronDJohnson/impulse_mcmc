@@ -1,3 +1,14 @@
+"""Chain storage: in-memory buffering and per-temperature chain files.
+
+:class:`ShortChain` is a ring buffer that accumulates :class:`SamplerState`
+snapshots between flushes and appends them to one text file per temperature
+chain (``chain_<i>.txt``: samples, log-likelihood, log-posterior, acceptance,
+temperature) every ``save_freq`` iterations. It also implements thinning,
+resume-time appending, and truncation of chain files back to the
+checkpointed row count (``truncate_files_to_saved``), which is what makes
+interrupted-then-resumed runs bit-identical to uninterrupted ones.
+"""
+
 import os
 import pathlib
 from dataclasses import dataclass

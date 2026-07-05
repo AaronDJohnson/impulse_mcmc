@@ -1,3 +1,17 @@
+"""Product-space embeddings for trans-dimensional (model-selection) MCMC.
+
+Competing models are embedded in one fixed-dimension parameter vector whose
+last coordinate is an integer model index, so a standard MCMC sampler can
+move between models by changing that index. :class:`ProductSpace` handles
+arbitrary model lists with per-model likelihoods/priors;
+:class:`NestedProductSpace` specializes to nested "N identical sources"
+models with a shared per-source parameterization, routing only the active
+sources' parameters to the likelihood AND the prior. Note the contrast with
+:class:`impulse.rjmcmc.RJMCMCProductSpace`, which overrides ``get_logprior``
+to evaluate the prior on ALL source slots (active and inactive), as required
+for exact reversible-jump birth/death moves.
+"""
+
 from typing import Callable
 
 import numpy as np

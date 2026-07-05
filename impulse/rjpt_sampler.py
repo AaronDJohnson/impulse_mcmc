@@ -527,9 +527,30 @@ class RJPTSampler:
         Parameters
         ----------
         proposal : callable
-            Proposal function ``(ChainStats) -> (sample, qxy)``.
+            Proposal with signature ``proposal(chain_stats: ChainStats) ->
+            (new_sample: np.ndarray, qxy: float)``, where ``qxy`` is the
+            log proposal-density ratio
+
+                ``qxy = log q(x | y) - log q(y | x)``,
+
+            with ``x`` the CURRENT sample, ``y`` the PROPOSED sample, and
+            ``q(a | b)`` the density of proposing ``a`` from ``b``.
+            ``qxy`` is ADDED to the log-posterior ratio in the
+            Metropolis-Hastings acceptance, so positive ``qxy`` favors
+            acceptance. Symmetric proposals (``q(y|x) == q(x|y)``, e.g. a
+            Gaussian random walk) must return ``qxy = 0.0``; for an
+            asymmetric example (a multiplicative random walk whose ``qxy``
+            is the log-Jacobian of the rescaling) see the "Custom
+            proposals" section of the README and docs.
+
+            The proposal must be PICKLABLE — checkpoints pickle every
+            registered proposal — so use a module-level function or a
+            callable class, never a closure or lambda. Callable classes
+            must define a ``__name__`` attribute; it keys acceptance-rate
+            reports and the internal DE buffer-fallback check.
         weight : float
-            Relative weight for this proposal.
+            Relative weight for this proposal (normalized against all
+            registered proposals).
         """
         self.proposal_bundle.add_jump(proposal, weight)
 
@@ -540,9 +561,9 @@ class RJPTSampler:
     def set_mass_matrix(self, n_active: int, mass_matrix: MassMatrix):
         """Inject an external mass matrix (e.g., Fisher-based) for a given dimension.
 
-        The matrix is preserved until at least ``2 * mass_matrix_min_samples``
-        non-divergent cold-chain samples accumulate, after which online
-        adaptation may overwrite it.
+        The injected matrix is preserved for the entire run: online
+        mass-matrix adaptation never overwrites an injected entry (only the
+        dual-averaging step size continues to re-tune against it).
 
         Parameters
         ----------

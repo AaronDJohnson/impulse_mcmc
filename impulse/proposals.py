@@ -1,3 +1,26 @@
+"""MCMC proposal distributions and the containers that mix them.
+
+Proposal contract: every proposal is a callable
+``proposal(chain_stats: ChainStats) -> (new_sample: np.ndarray, qxy: float)``
+where ``qxy`` is the log proposal-density ratio
+
+    qxy = log q(x | y) - log q(y | x),
+
+with ``x`` the CURRENT sample and ``y`` the PROPOSED sample (``q(a | b)`` is
+the density of proposing ``a`` from ``b``). ``qxy`` is ADDED to the
+log-posterior ratio in the Metropolis-Hastings acceptance, so positive
+``qxy`` favors acceptance and symmetric proposals return ``0.0``. Proposals
+must be picklable (checkpoints pickle every registered proposal): use
+module-level functions or callable classes, and give callable classes a
+``__name__`` attribute (it keys acceptance reports and the DE buffer-fallback
+check). The module provides the adaptive kernels :func:`am`, :func:`scam`,
+:func:`de`, and :class:`EarlyDE` (via :func:`make_early_de`), the
+:func:`gaussian` fallback, the RJMCMC label-switching
+:class:`SourceSwapProposal`, and the per-chain :class:`JumpProposals` /
+per-ladder :class:`ProposalBundle` containers that select among registered
+proposals by weight.
+"""
+
 import math
 from dataclasses import dataclass
 from typing import Callable, List, Tuple

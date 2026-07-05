@@ -1,3 +1,16 @@
+"""Pickle-based checkpointing and resume for all samplers.
+
+:func:`checkpoint_sampler` atomically writes a whole sampler object to disk
+(temporarily detaching the user's unpicklable likelihood/prior callables);
+:func:`load_checkpoint`, :func:`load_rjpt_checkpoint`, and
+:func:`load_nuts_checkpoint` restore a checkpoint and rebind the user
+callables; :func:`check_for_checkpoint` locates ``sampler_checkpoint.pkl``
+in an output directory. Checkpoints capture every RNG stream at an exact
+iteration boundary, which is what makes resume bit-exact. They are Python
+pickles, so loading one can execute arbitrary code — only resume from
+checkpoints you trust (see SECURITY.md).
+"""
+
 import os
 import pathlib
 import pickle

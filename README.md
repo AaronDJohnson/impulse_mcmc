@@ -4,45 +4,41 @@ A modular and efficient implementation of parallel tempering MCMC with adaptive 
 
 [![Python Version](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Documentation](https://img.shields.io/badge/docs-github%20pages-blue.svg)](https://aarondjohnson.github.io/impulse_mcmc/)
 
 ## Overview
 
-**impulse-mcmc** is a high-performance parallel tempering MCMC sampler designed for efficient exploration of complex posterior distributions. It combines multiple adaptive proposal mechanisms with vectorized computation and robust checkpoint/resume functionality for production-scale Bayesian inference.
+**impulse-mcmc** is a parallel tempering MCMC sampler for production-scale Bayesian
+inference. It combines adaptive proposals (AM, SCAM, differential evolution,
+normalizing flows), automatic temperature-ladder adaptation, reversible-jump model
+selection, and gradient-based NUTS transitions with bit-exact checkpoint/resume.
 
-## Key Features
+Three samplers share one interface:
 
-- **Parallel Tempering**: Enhanced mixing in complex posterior landscapes through temperature-based chain swapping
-- **Adaptive Proposals**: Multiple proposal distributions (AM, SCAM, DE) that automatically adapt during sampling
-- **Vectorized Computation**: Efficient likelihood evaluation through vectorized operations
-- **Temperature Optimization**: Automatic temperature ladder optimization for optimal acceptance rates
-- **Checkpoint/Resume**: Robust checkpointing for long-running inference tasks
-- **Comprehensive Diagnostics**: Built-in convergence monitoring and chain statistics
-- **Flexible Interface**: Support for both vectorized and scalar user-defined functions
+- **`PTSampler`** — parallel tempering with adaptive Metropolis-Hastings proposals
+- **`RJPTSampler`** — parallel tempering interleaved with NUTS and reversible-jump moves
+- **`NUTSSampler`** — standalone No-U-Turn Sampler for gradient-based problems
 
 ## Installation
 
-Requires Python 3.10 or newer.
+Requires Python ≥ 3.10. Core dependencies are just NumPy, SciPy, and tqdm.
 
 ```bash
-pip install impulse-mcmc
+pip install impulse-mcmc              # core
+pip install "impulse-mcmc[plots]"     # + matplotlib for the impulse.validation SBC plots
+pip install "impulse-mcmc[flow]"      # + coppuccino for normalizing-flow proposals
+pip install "impulse-mcmc[dev]"       # + test and lint tooling
 ```
 
-The SBC plotting helpers in `impulse.validation` (ECDF, coverage, and rank-histogram plots) need matplotlib, available via the `plots` extra:
-
-```bash
-pip install "impulse-mcmc[plots]"
-```
-
-Or install from source:
+Or from source:
 
 ```bash
 git clone https://github.com/AaronDJohnson/impulse_mcmc.git
 cd impulse_mcmc
-pip install -e .            # core
-pip install -e ".[plots]"   # with plotting support
+pip install -e ".[plots,flow,dev]"
 ```
 
-## Quick Start
+## Quick start
 
 ```python
 import numpy as np
@@ -59,117 +55,296 @@ def log_prior(x):
 sampler = PTSampler(ndim=2, lnlike=log_likelihood, lnprior=log_prior, ntemps=10)
 sampler.sample([0.0, 0.0], num_iterations=10000)
 
-# Load results from saved chain files
+# Load results from the saved chain files
 chain = sampler.load_chain()
-cold_chain_samples = chain['samples'][0]  # shape (nsamples, ndim)
+cold_chain_samples = chain["samples"][0]  # shape (nsamples, ndim)
 ```
 
-## Advanced Usage
+Chains, acceptance-rate reports, and checkpoints are written to `outdir`
+(default `./chains`).
 
-### Vectorized Likelihood Functions
+## Vectorized likelihoods
 
-For improved performance with expensive likelihood calculations:
+For expensive models, evaluate all temperature chains in one batched call by
+passing `vectorized=True`. Both the likelihood **and** the prior must then accept
+a `(n, ndim)` array and return a length-`n` array:
 
 ```python
-def vectorized_log_likelihood(x_array):
-    """
-    x_array has shape (n_samples, ndim)
-    Returns array of shape (n_samples,)
-    """
-    return -0.5 * np.sum(x_array**2, axis=1)
+import numpy as np
+from impulse import PTSampler
+
+def log_likelihood_vec(x):
+    # x has shape (n, ndim); return shape (n,)
+    return -0.5 * np.sum(x**2, axis=1)
+
+def log_prior_vec(x):
+    return np.where(np.all(np.abs(x) <= 5, axis=1), 0.0, -np.inf)
 
 sampler = PTSampler(
-    ndim=2,
-    lnlike=vectorized_log_likelihood,
-    lnprior=log_prior,
-    ntemps=10,
-    vectorized=True
+    ndim=2, lnlike=log_likelihood_vec, lnprior=log_prior_vec,
+    ntemps=10, vectorized=True, outdir="./chains_vec",
 )
+sampler.sample(np.zeros(2), num_iterations=5000)
 ```
 
-### Custom Proposal Distributions
+If the likelihood is JAX-jitted, also pass `jax=True`: the sampler then keeps the
+batch shape constant on every call (masking invalid rows afterwards) so the JIT
+cache is reused instead of recompiling.
+
+## Parallel tempering features
+
+- **Adaptive proposals** — a weighted mixture of adaptive Metropolis (`am_weight`),
+  single-component adaptive Metropolis (`scam_weight`), and differential evolution
+  (`de_weight`) that learn the target's covariance and history as sampling proceeds.
+- **EarlyDE** — a differential-evolution variant that activates once the sample
+  history buffer holds `min_fill` samples instead of waiting for a completely full
+  buffer. This restores the history-based, ridge-following DE move at realistic run
+  lengths — essential in reversible-jump runs, where per-model buffers never fill —
+  and `from_rjmcmc` registers it automatically (`de_min_fill`). Add it to any
+  sampler with:
+  `from impulse.proposals import make_early_de` then
+  `sampler.add_custom_jump(make_early_de(min_fill), weight)`.
+- **Temperature-ladder adaptation** — the geometric ladder adapts toward uniform
+  swap acceptance between neighbours (`adapt_t0`, `adapt_nu` control the schedule).
+- **`inf_temp=True`** — replaces the hottest rung with a T = ∞ chain that samples
+  the prior (`ntemps` total chains, `ntemps - 1` finite), improving hot-chain
+  mixing and enabling prior-dominated moves to propagate down the ladder.
+- **`num_adapt`** — freezes **all** adaptation (proposal covariances, DE buffers,
+  ladder adaptation, NUTS step sizes/mass matrices, flow refits) once the global
+  iteration counter reaches `num_adapt`. The transition kernel is fixed from then
+  on, so post-freeze samples are exactly Markovian. Recommended usage: set
+  `num_adapt` to your intended warmup length and discard all pre-freeze samples as
+  warmup. The default `None` adapts forever (diminishing adaptation).
 
 ```python
-# Configure proposal weights (relative, automatically normalized)
 sampler = PTSampler(
-    ndim=10,
-    lnlike=log_likelihood,
-    lnprior=log_prior,
-    am_weight=15,    # Adaptive Metropolis
-    scam_weight=30,  # Single Component AM
-    de_weight=50,    # Differential Evolution
+    ndim=2, lnlike=log_likelihood, lnprior=log_prior,
+    ntemps=8,                   # geometric ladder starting at min_temp
+    inf_temp=True,              # hottest rung becomes T = inf (samples the prior)
+    adapt_t0=100, adapt_nu=10,  # temperature-ladder adaptation schedule
+    num_adapt=5000,             # freeze ALL adaptation at iteration 5000
+    seed=123, outdir="./chains_pt",
 )
-
-# Add a custom proposal to all temperature chains
-def my_proposal(chain_stats):
-    new_sample = chain_stats.current_sample + chain_stats.rng.standard_normal(chain_stats.ndim) * 0.1
-    log_proposal_ratio = 0.0  # symmetric proposal
-    return new_sample, log_proposal_ratio
-
-sampler.add_custom_jump(my_proposal, weight=25)
+sampler.sample(np.zeros(2), num_iterations=8000)  # discard the first 5000 as warmup
 ```
 
-### Checkpoint and Resume
+## RJMCMC model selection
+
+`RJMCMCProductSpace` embeds up to `num_sources` identical "source" slots (each with
+`num_params` parameters) plus a model index in one product space, and
+`PTSampler.from_rjmcmc` wires up the trans-dimensional kernels: one **combined
+birth/death kernel** (separate birth and death jumps would violate detailed
+balance), a uniform model-index jump, a source-swap (label-switching) move, and
+EarlyDE.
+
+The prior contract differs from the likelihood contract:
+
+- `loglikelihood(active_params)` receives only the **active** sources' parameters,
+  shape `((nmodel + 1) * num_params,)`.
+- `logprior(all_params)` receives **ALL** source slots — active and inactive —
+  shape `(num_sources * num_params,)`. It must bound-check every slot, and (unless
+  you pass `source_prior_logpdf` explicitly) it must be additive across slots,
+  i.e. a product of independent per-source priors.
 
 ```python
-# Checkpoints are saved automatically during sampling.
-# To resume from a previous run, set resume=True:
-sampler = PTSampler(
-    ndim=2,
-    lnlike=log_likelihood,
-    lnprior=log_prior,
-    outdir="./chains",
-    resume=True
+import numpy as np
+from impulse import (PTSampler, RJMCMCProductSpace,
+                     bayes_factor_from_chain, model_visitation_stats)
+
+# Data generated by ONE source of amplitude ~1
+rng = np.random.default_rng(0)
+data = 1.0 + 0.1 * rng.standard_normal(50)
+
+MAX_SOURCES, NUM_PARAMS = 3, 1  # up to 3 sources, 1 parameter (amplitude) each
+
+def rj_log_likelihood(active_params):
+    # only the ACTIVE sources' parameters: shape ((nmodel + 1) * NUM_PARAMS,)
+    return -0.5 * np.sum((data - active_params.sum()) ** 2) / 0.1**2
+
+def rj_log_prior(all_params):
+    # ALL source slots, active and inactive: shape (MAX_SOURCES * NUM_PARAMS,)
+    if np.all((all_params >= 0.0) & (all_params <= 2.0)):
+        return -all_params.size * np.log(2.0)  # independent Uniform(0, 2) per slot
+    return -np.inf
+
+def draw_source(rng):
+    return rng.uniform(0.0, 2.0, size=NUM_PARAMS)  # one source's params from the prior
+
+space = RJMCMCProductSpace(
+    loglikelihood=rj_log_likelihood,
+    logprior=rj_log_prior,
+    num_sources=MAX_SOURCES,
+    num_params=NUM_PARAMS,
+    source_prior_draw=draw_source,
 )
 
-sampler.sample([0.0, 0.0], num_iterations=50000)
+sampler = PTSampler.from_rjmcmc(space, ntemps=8, seed=42, outdir="./chains_rj")
+x0 = space.draw_initial_position(np.random.default_rng(42))
+sampler.sample(x0, num_iterations=5000)
+
+cold = sampler.load_chain()["samples"][0]      # model index is the last column
+stats = model_visitation_stats(cold, num_models=MAX_SOURCES, burn=1000)
+print("P(k+1 sources):", stats["posterior_probs"])
+print("B(1 source vs 2):", bayes_factor_from_chain(cold, model_i=0, model_j=1, burn=1000))
 ```
 
-## Core Components
+`model_visitation_stats` also returns visit counts, the model transition matrix,
+and mean dwell times — useful for judging how well the chain mixes across models.
 
-### PTSampler
-The main interface for parallel tempering MCMC sampling with:
-- Adaptive temperature ladders
-- Multiple proposal mechanisms
-- Checkpoint/resume capabilities
+## NUTS and RJPTSampler
 
-### Proposal Distributions
-- **AM**: Adaptive Metropolis with global covariance adaptation
-- **SCAM**: Single Component Adaptive Metropolis for high-dimensional problems
-- **DE**: Differential Evolution proposals using chain history
+`NUTSSampler` is a standalone No-U-Turn Sampler driven by a single
+`logp_and_grad(x) -> (logp, grad)` callable; `compose_logp_and_grad` builds one
+from separate likelihood/prior (falling back to numerical gradients for any piece
+you don't supply):
 
-### Diagnostics
-Built-in convergence diagnostics including:
-- Gelman-Rubin statistic
-- Effective sample size
-- Acceptance rate monitoring
-- Temperature swap statistics
+```python
+import numpy as np
+from impulse import NUTSSampler, compose_logp_and_grad
 
-## Requirements
+def nuts_lnlike(x):
+    return -0.5 * np.sum(x**2)
 
-- Python ≥ 3.10
-- NumPy ≥ 1.24
-- SciPy ≥ 1.10
-- tqdm ≥ 4.60
-- matplotlib (optional — only for the plotting helpers in `impulse.validation`; install via the `plots` extra)
+def nuts_lnlike_grad(x):
+    return -x
 
-## Examples
+def nuts_lnprior(x):
+    return 0.0
 
-Complete examples are available in the `examples/` directory:
-- `sinusoid.ipynb` — Sinusoidal model fitting with PTSampler
-- `high_dimensional_test.ipynb` — High-dimensional sampling
-- `product_space_sinusoids.ipynb` — Product-space RJMCMC
-- `rjmcmc_sinusoids.ipynb` — RJMCMC model selection for sinusoids
-- `rjmcmc_nuts_sinusoids.ipynb` — Hybrid RJMCMC + NUTS sampling
-- `rjpt_sinusoids.ipynb` — RJPTSampler with MH and NUTS comparison
+logp_and_grad = compose_logp_and_grad(nuts_lnlike, nuts_lnprior, nuts_lnlike_grad)
+nuts = NUTSSampler(ndim=2, logp_and_grad=logp_and_grad, seed=42, outdir="./chains_nuts")
+nuts.sample(np.zeros(2), num_iterations=1000)
+```
 
-## Contributing
+`RJPTSampler` interleaves MH proposals (including reversible-jump moves), NUTS
+transitions on the active continuous parameters, and PT swaps. Pass `lnlike_grad`
+with signature `(active_params) -> (loglike, gradient)`; continuing the RJMCMC
+example above:
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+```python
+from impulse import RJPTSampler
+
+def rj_log_likelihood_grad(active_params):
+    resid = data - active_params.sum()
+    return -0.5 * np.sum(resid**2) / 0.1**2, np.full(active_params.size, resid.sum() / 0.1**2)
+
+rjpt = RJPTSampler.from_rjmcmc(
+    space, lnlike_grad=rj_log_likelihood_grad, ntemps=4, seed=7, outdir="./chains_rjpt"
+)
+rjpt.sample(x0, num_iterations=1000)
+```
+
+Without `lnlike_grad`, `RJPTSampler` skips NUTS and behaves like `PTSampler`.
+
+## Normalizing-flow proposals
+
+With the `[flow]` extra installed, add a flow-based independence proposal that fits
+itself to the cold chain's recent history (or wrap a pre-fitted `coppuccino` flow):
+
+```python
+from impulse.flow_proposals import NormalizingFlowProposal  # pip install "impulse-mcmc[flow]"
+
+sampler.add_custom_jump(NormalizingFlowProposal(min_samples=1000), weight=10)
+```
+
+## Custom proposals
+
+Any callable with the signature `proposal(chain_stats) -> (new_sample, qxy)` can be
+registered on every temperature chain via `add_custom_jump`. The `ChainStats`
+argument provides `current_sample`, `rng`, `ndim`, learned covariances, and the
+sample-history buffer.
+
+**The `qxy` convention:** `qxy = log q(x|y) - log q(y|x)`, where `x` is the
+**current** sample, `y` is the **proposed** sample, and `q(a|b)` is the density of
+proposing `a` from `b`. It is **added** to the log-posterior ratio in the
+Metropolis-Hastings acceptance, so positive `qxy` favors acceptance, and symmetric
+proposals return `qxy = 0.0`.
+
+Proposals must be **picklable** — checkpoints pickle every registered proposal —
+so use module-level functions or callable classes (not closures or lambdas).
+Callable classes must define a `__name__` attribute; it keys the acceptance-rate
+reports and internal proposal checks.
+
+An asymmetric example — a multiplicative random walk, where `qxy` is the
+log-Jacobian of the rescaling:
+
+```python
+import numpy as np
+from impulse import PTSampler
+
+class ScaleJump:
+    """Rescale one random coordinate: y_i = x_i * exp(eps), eps ~ N(0, sigma^2)."""
+
+    __name__ = "scale_jump"  # required for callable-class proposals
+
+    def __init__(self, sigma=0.5):
+        self.sigma = sigma
+
+    def __call__(self, chain_stats):
+        x = chain_stats.current_sample.copy()
+        i = chain_stats.rng.integers(chain_stats.ndim)
+        eps = chain_stats.rng.normal(0.0, self.sigma)
+        x[i] *= np.exp(eps)
+        # q(y|x) = N(eps; 0, s^2) / y_i and q(x|y) = N(-eps; 0, s^2) / x_i, so
+        # qxy = log q(x|y) - log q(y|x) = log(y_i / x_i) = eps
+        return x, eps
+
+def pos_log_likelihood(x):
+    return -0.5 * np.sum(np.log(x) ** 2)  # log-normal target, x > 0
+
+def pos_log_prior(x):
+    return 0.0 if np.all((x > 1e-6) & (x < 1e6)) else -np.inf
+
+sampler = PTSampler(ndim=2, lnlike=pos_log_likelihood, lnprior=pos_log_prior,
+                    ntemps=4, seed=3, outdir="./chains_custom")
+sampler.add_custom_jump(ScaleJump(sigma=0.5), weight=25)
+sampler.sample(np.ones(2), num_iterations=5000)
+print(sampler.proposal_acceptance_rates()["scale_jump"]["rate"])
+```
+
+## Checkpoint and resume
+
+Checkpoints are written automatically every `save_freq` iterations. Resuming is
+**bit-exact** for checkpoints written by 2.0: an interrupted run resumed to `N`
+total iterations produces chain files identical to a single uninterrupted
+`N`-iteration run (every RNG stream is captured at an iteration boundary, and stale
+chain-file rows are truncated on resume). `num_iterations` is a *global* target —
+pass the total, not the increment:
+
+```python
+# The quick-start run above left a checkpoint in ./chains; continue it to 20000.
+sampler = PTSampler(ndim=2, lnlike=log_likelihood, lnprior=log_prior,
+                    ntemps=10, outdir="./chains", resume=True)
+sampler.sample([0.0, 0.0], num_iterations=20000)
+```
+
+Checkpoints are Python **pickles**: loading one can execute arbitrary code, so only
+resume from checkpoints you (or a pipeline you trust) wrote — see
+[SECURITY.md](SECURITY.md) for the full trust boundary, including a warning about
+world-writable `outdir` locations.
+
+## Migrating from 1.x
+
+- 2.0.0 is a complete rewrite: the old `base.py` / `mhsampler.py` / `ptsampler.py`
+  API is removed and replaced by `PTSampler`, `RJPTSampler`, and `NUTSSampler`.
+- Chains are bit-different from 1.x at the same seed; matplotlib moved behind the
+  `[plots]` extra; `MassMatrix.from_covariance` now inverts its argument (Stan
+  convention) — use `MassMatrix.from_precision` for Fisher matrices.
+- See the full breaking-changes list in [CHANGELOG.md](CHANGELOG.md) under 2.0.0.
+
+## Documentation and links
+
+- **Documentation**: <https://aarondjohnson.github.io/impulse_mcmc/>
+- **Examples**: complete notebooks in [`examples/`](examples/) (sinusoid fitting,
+  high-dimensional sampling, RJMCMC model selection, hybrid RJMCMC + NUTS)
+- **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Security policy**: [SECURITY.md](SECURITY.md)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md)
+- **Issues**: <https://github.com/AaronDJohnson/impulse_mcmc/issues>
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).
 
 ## Citation
 
@@ -180,13 +355,7 @@ If you use impulse-mcmc in your research, please cite:
   author = {Johnson, Aaron D.},
   title = {impulse-mcmc: A modular parallel tempering MCMC sampler},
   url = {https://github.com/AaronDJohnson/impulse_mcmc},
-  version = {1.0.0},
-  year = {2025}
+  version = {2.0.0},
+  year = {2026}
 }
 ```
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/AaronDJohnson/impulse_mcmc/issues)
-- **Documentation**: See docstrings and examples for detailed usage
-- **Email**: aaron9035@gmail.com

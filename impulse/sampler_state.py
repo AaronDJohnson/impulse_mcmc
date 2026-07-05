@@ -1,3 +1,15 @@
+"""State containers for parallel tempering.
+
+:class:`SamplerState` holds the per-temperature positions, log-likelihoods,
+log-priors, tempered log-posteriors, and acceptance flags for one iteration
+across the whole ladder. :class:`PTState` owns the temperature ladder and
+its adaptation (swap bookkeeping, ladder adaptation, swap acceptance
+ratios), including geometric ladder construction and the optional
+infinite-temperature chain. :func:`tempered_lnprobs` computes
+``beta * lnlike + lnprior`` with explicit handling of ``T = inf`` so the
+prior-sampling chain never produces ``0 * (-inf) = NaN``.
+"""
+
 from dataclasses import dataclass
 
 import numpy as np

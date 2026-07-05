@@ -1,3 +1,15 @@
+"""Standardized wrapper around user likelihood and prior callables.
+
+:class:`_function_wrapper` gives every user function a single batched
+interface: it binds extra ``args``/``kwargs``, evaluates non-vectorized
+functions row by row over ``(n, ndim)`` inputs (allocating float64 output so
+``-inf`` rows cannot overflow integer returns), passes batches straight
+through when ``vectorized=True``, and validates output shapes. The
+``jax=True`` mode keeps the batch shape constant on every call (invalid rows
+are masked after the fact) so JIT-compiled likelihoods never recompile, and
+an optional thread pool parallelizes row-by-row evaluation.
+"""
+
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np

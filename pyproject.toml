@@ -45,6 +45,7 @@ flow = [
 
 [project.urls]
 Homepage = "https://github.com/AaronDJohnson/impulse_mcmc"
+Documentation = "https://aarondjohnson.github.io/impulse_mcmc/"
 Issues = "https://github.com/AaronDJohnson/impulse_mcmc/issues"
 
 [build-system]

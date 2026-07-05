@@ -1,3 +1,16 @@
+"""Per-chain statistics that drive the adaptive proposals.
+
+:class:`ChainStats` tracks, for one temperature chain, the running sample
+mean/covariance, the per-group SVD used to orient AM/SCAM jumps, and the
+circular sample-history buffer consumed by the differential-evolution moves;
+``update_sample`` refreshes the view of the current sample before each
+proposal call. For RJMCMC, per-model statistics (:class:`_PerModelState`)
+can be enabled so that within-model proposals use covariances and buffers
+learned separately for each model index. :class:`MultiChainStats` holds one
+:class:`ChainStats` per temperature and applies batched recursive updates
+across the ladder.
+"""
+
 from dataclasses import dataclass, field
 from typing import List, Optional
 

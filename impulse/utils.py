@@ -1,3 +1,11 @@
+"""Small shared helpers.
+
+:func:`prepare_files` creates (or, on resume, preserves) the chain output
+files and their parent directories before sampling starts, and
+:func:`shift_array` rolls entries of the circular sample-history buffers
+used by :mod:`impulse.chain_stats`.
+"""
+
 from pathlib import Path
 
 import numpy as np

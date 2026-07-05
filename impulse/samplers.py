@@ -1,3 +1,18 @@
+"""The main parallel-tempering sampler.
+
+:class:`PTSampler` runs adaptive parallel-tempering MCMC: a weighted mixture
+of AM/SCAM/DE (and user-registered) proposals per temperature chain,
+neighbour swaps with automatic temperature-ladder adaptation, periodic
+chain saving, and bit-exact pickle-based checkpoint/resume. The
+:meth:`PTSampler.from_rjmcmc` constructor pre-wires a sampler for
+reversible-jump model selection (combined birth/death kernel, model-index
+jump, source swap, EarlyDE). Module-level helpers — :func:`setup_seeds`,
+:func:`setup_chain_stats`, :func:`setup_standard_jumps`, and
+:func:`setup_initial_position` — build the per-chain RNGs, statistics,
+proposal mixtures, and initial positions, and are shared with
+:class:`impulse.rjpt_sampler.RJPTSampler`.
+"""
+
 import logging
 import os
 import warnings
@@ -746,15 +761,37 @@ class PTSampler:
         Parameters
         ----------
         proposal : callable
-            A proposal function that takes ChainStats and returns (new_sample, qxy).
+            Proposal with signature ``proposal(chain_stats: ChainStats) ->
+            (new_sample: np.ndarray, qxy: float)``, where ``qxy`` is the
+            log proposal-density ratio
+
+                ``qxy = log q(x | y) - log q(y | x)``,
+
+            with ``x`` the CURRENT sample, ``y`` the PROPOSED sample, and
+            ``q(a | b)`` the density of proposing ``a`` from ``b``.
+            ``qxy`` is ADDED to the log-posterior ratio in the
+            Metropolis-Hastings acceptance, so positive ``qxy`` favors
+            acceptance. Symmetric proposals (``q(y|x) == q(x|y)``, e.g. a
+            Gaussian random walk) must return ``qxy = 0.0``; for an
+            asymmetric example (a multiplicative random walk whose ``qxy``
+            is the log-Jacobian of the rescaling) see the "Custom
+            proposals" section of the README and docs.
+
+            The proposal must be PICKLABLE — checkpoints pickle every
+            registered proposal — so use a module-level function or a
+            callable class, never a closure or lambda. Callable classes
+            must define a ``__name__`` attribute; it keys acceptance-rate
+            reports and the internal DE buffer-fallback check.
         weight : float
-            Relative weight for this proposal type.
+            Relative weight for this proposal type (normalized against all
+            registered proposals).
 
         Examples
         --------
         >>> def custom_proposal(chain_stats):
-        ...     # Custom proposal logic here
-        ...     return new_sample, log_proposal_ratio
+        ...     x = chain_stats.current_sample.copy()
+        ...     x += 0.1 * chain_stats.rng.standard_normal(chain_stats.ndim)
+        ...     return x, 0.0  # symmetric proposal => qxy = 0
         >>> sampler.add_custom_jump(custom_proposal, weight=25)
         """
         self.proposal_bundle.add_jump(proposal, weight)

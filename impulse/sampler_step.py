@@ -1,3 +1,16 @@
+"""Core Markov transition steps shared by the PT samplers.
+
+:func:`vectorized_mh_step` advances every temperature chain by one
+Metropolis-Hastings update in a single batched pass: it collects one
+proposal per chain from the :class:`ProposalBundle`, applies periodic
+wrapping, evaluates the likelihood and prior on the whole batch
+(prior-invalid rows are skipped, or masked afterwards in the
+constant-shape ``jax`` mode), and accepts with the ``qxy``-corrected
+tempered ratio. :func:`pt_step` performs the parallel-tempering swap sweep
+between neighbouring temperatures, from hottest to coldest, recording swap
+acceptance for ladder adaptation.
+"""
+
 from typing import Callable, Optional
 
 import numpy as np
