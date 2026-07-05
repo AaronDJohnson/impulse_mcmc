@@ -8,6 +8,9 @@ import time
 from unittest.mock import Mock, patch
 from impulse.parallel import ParallelLikelihood
 
+# Multiprocessing tests can deadlock; cap each test at 120s (requires pytest-timeout).
+pytestmark = pytest.mark.timeout(120)
+
 
 # Test likelihood functions defined at module level for pickle compatibility
 def simple_likelihood(x):

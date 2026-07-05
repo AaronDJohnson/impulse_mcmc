@@ -12,7 +12,34 @@ import tempfile
 import shutil
 
 import numpy as np
-import matplotlib.pyplot as plt
+
+
+def _require_matplotlib():
+    """
+    Import and return matplotlib.pyplot for the plotting helpers.
+
+    matplotlib is an optional dependency: the numeric SBC functions in this
+    module work without it, and only the plotting functions need it.
+
+    Returns
+    -------
+    module
+        The ``matplotlib.pyplot`` module.
+
+    Raises
+    ------
+    ImportError
+        If matplotlib is not installed.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError(
+            "matplotlib is required for the plotting functions in "
+            "impulse.validation but is not installed. Install it with "
+            "'pip install impulse-mcmc[plots]' (or 'pip install matplotlib')."
+        ) from exc
+    return plt
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +170,7 @@ def sbc_ecdf_plot(quantiles, param_names=None, ax=None, alpha=0.05):
     n_sim, ndim = quantiles.shape
 
     if ax is None:
+        plt = _require_matplotlib()
         _, ax = plt.subplots()
 
     # DKW confidence band
@@ -196,6 +224,7 @@ def coverage_plot(quantiles, nominal_levels=None, ax=None):
     nominal_levels = np.asarray(nominal_levels)
 
     if ax is None:
+        plt = _require_matplotlib()
         _, ax = plt.subplots()
 
     ax.plot([0, 1], [0, 1], "k--", lw=0.8)
@@ -246,6 +275,7 @@ def rank_histogram(ranks, n_posterior_samples, param_names=None, axes=None):
     n_sim, ndim = ranks.shape
 
     if axes is None:
+        plt = _require_matplotlib()
         _, axes = plt.subplots(1, ndim, figsize=(4 * ndim, 3), squeeze=False)
         axes = axes.ravel()
 

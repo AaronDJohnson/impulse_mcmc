@@ -54,7 +54,7 @@ See the examples/ directory for complete usage examples including:
 - Hybrid RJMCMC + NUTS + PT sampling
 """
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 # Samplers
 from .samplers import PTSampler

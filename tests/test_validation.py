@@ -1,9 +1,14 @@
 """Tests for impulse.validation SBC utilities."""
 
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 from scipy import stats
 
+import impulse
 from impulse.validation import (
     compute_model_pit,
     compute_sbc_quantile,
@@ -228,3 +233,68 @@ class TestSbcExactPosterior:
             f"KS test should reject biased posterior "
             f"(stat={stat:.4f}, p={pval:.4f})"
         )
+
+
+# ---------------------------------------------------------------------------
+# matplotlib is optional: lazy-import regression test
+# ---------------------------------------------------------------------------
+
+class TestLazyMatplotlibImport:
+    def test_import_and_numerics_work_without_matplotlib(self):
+        """
+        With matplotlib blocked, 'import impulse' and the numeric SBC
+        functions must work, and the plotting functions must raise an
+        ImportError pointing at the [plots] extra.
+
+        Runs in a subprocess so blocking matplotlib cannot interfere with
+        other tests in this process.
+        """
+        code = """
+import sys
+
+class _BlockMatplotlib:
+    def find_spec(self, name, path=None, target=None):
+        if name == "matplotlib" or name.startswith("matplotlib."):
+            raise ImportError(f"{name} is blocked for this test")
+        return None
+
+sys.meta_path.insert(0, _BlockMatplotlib())
+assert "matplotlib" not in sys.modules
+
+import numpy as np
+import impulse
+import impulse.validation as v
+
+# Numeric SBC functions stay matplotlib-free.
+ranks = v.compute_sbc_rank(np.array([0.5]), np.array([[0.1], [0.9]]))
+assert ranks[0] == 1, ranks
+q = v.compute_sbc_quantile(np.array([0.5]), np.array([[0.1], [0.9]]))
+assert q[0] == 0.5, q
+
+# Plotting functions raise a helpful ImportError.
+for fn in (
+    lambda: v.sbc_ecdf_plot(np.linspace(0.05, 0.95, 10)),
+    lambda: v.coverage_plot(np.linspace(0.05, 0.95, 10)),
+    lambda: v.rank_histogram(np.arange(10), 20),
+):
+    try:
+        fn()
+    except ImportError as e:
+        assert "impulse-mcmc[plots]" in str(e), str(e)
+    else:
+        raise AssertionError("plot function should raise without matplotlib")
+
+print(impulse.__version__)
+"""
+        repo_root = Path(impulse.__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            cwd=repo_root,
+            timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+        assert result.stdout.strip() == impulse.__version__

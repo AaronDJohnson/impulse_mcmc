@@ -21,8 +21,16 @@ A modular and efficient implementation of parallel tempering MCMC with adaptive 
 
 ## Installation
 
+Requires Python 3.10 or newer.
+
 ```bash
 pip install impulse-mcmc
+```
+
+The SBC plotting helpers in `impulse.validation` (ECDF, coverage, and rank-histogram plots) need matplotlib, available via the `plots` extra:
+
+```bash
+pip install "impulse-mcmc[plots]"
 ```
 
 Or install from source:
@@ -30,7 +38,8 @@ Or install from source:
 ```bash
 git clone https://github.com/AaronDJohnson/impulse_mcmc.git
 cd impulse_mcmc
-pip install -e .
+pip install -e .            # core
+pip install -e ".[plots]"   # with plotting support
 ```
 
 ## Quick Start
@@ -139,9 +148,10 @@ Built-in convergence diagnostics including:
 ## Requirements
 
 - Python ≥ 3.10
-- NumPy ≥ 2.2.2
-- SciPy ≥ 1.15.1
-- tqdm ≥ 4.67.1
+- NumPy ≥ 1.24
+- SciPy ≥ 1.10
+- tqdm ≥ 4.60
+- matplotlib (optional — only for the plotting helpers in `impulse.validation`; install via the `plots` extra)
 
 ## Examples
 

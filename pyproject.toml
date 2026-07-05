@@ -1,6 +1,6 @@
 [project]
 name = "impulse-mcmc"
-version = "1.0.0"
+dynamic = ["version"]
 authors = [
   { name="Aaron D. Johnson", email="aaron9035@gmail.com" },
 ]
@@ -9,21 +9,32 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 classifiers = [
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering",
+    "Typing :: Typed",
 ]
+# Floors are verified by the floor-pinned CI job; see CHANGELOG.md (2.0.0).
 dependencies = [
-  "numpy >= 2.2.2",
-  "scipy >= 1.15.1",
-  "tqdm >= 4.67.1",
+  "numpy >= 1.24",
+  "scipy >= 1.10",
+  "tqdm >= 4.60",
 ]
 
 [project.optional-dependencies]
+plots = [
+  "matplotlib",
+]
 dev = [
   "pytest",
   "pytest-cov",
+  "pytest-timeout",
   "flake8",
   "black",
   "isort",
@@ -37,11 +48,17 @@ Homepage = "https://github.com/AaronDJohnson/impulse_mcmc"
 Issues = "https://github.com/AaronDJohnson/impulse_mcmc/issues"
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["impulse*"]
+
+[tool.setuptools.package-data]
+impulse = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = {attr = "impulse.__version__"}
 
 [tool.pytest.ini_options]
 markers = [

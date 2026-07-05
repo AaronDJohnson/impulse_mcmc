@@ -12,7 +12,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ['3.10', '3.11', '3.12']
+        python-version: ['3.10', '3.11', '3.12', '3.13']
 
     steps:
     - uses: actions/checkout@v4
@@ -22,23 +22,91 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Install dependencies
+    - name: Install package
       run: |
         python -m pip install --upgrade pip
         pip install -e .
-        pip install pytest pytest-cov
 
-    - name: Run tests
+    - name: Import smoke test (declared deps only)
+      run: python -c "import impulse; print(impulse.__version__)"
+
+    - name: Install test dependencies
+      run: pip install pytest pytest-cov
+
+    - name: Run tests (fast suite)
       run: |
-        pytest tests/ -v --cov=impulse --cov-report=xml --cov-report=term --ignore=tests/test_parallel.py
+        pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=79 --ignore=tests/test_parallel.py
 
+    # Coverage ENFORCEMENT is --cov-fail-under above (measured 82% at gate
+    # introduction; 79 leaves headroom against per-platform drift). The
+    # codecov upload is reporting only: one matrix cell, non-blocking,
+    # because tokenless v4 uploads are rate-limit flaky. Set a
+    # CODECOV_TOKEN secret and fail_ci_if_error: true to harden it.
     - name: Upload coverage to Codecov
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
       uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
+
+  slow-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install package
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e .
+
+    - name: Import smoke test (declared deps only)
+      run: python -c "import impulse; print(impulse.__version__)"
+
+    - name: Install test dependencies
+      run: pip install pytest
+
+    - name: Run slow tests
+      run: |
+        pytest tests/ -v -m slow --ignore=tests/test_parallel.py
+
+  floor-versions:
+    # Verify the declared lower bounds (numpy>=1.24, scipy>=1.10, tqdm>=4.60) still work.
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install floor-pinned dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install 'numpy==1.24.*' 'scipy==1.10.*' 'tqdm==4.60.*'
+
+    - name: Install package (keeping floor pins)
+      run: pip install -e .
+
+    - name: Import smoke test (floor deps)
+      run: python -c "import impulse; print(impulse.__version__)"
+
+    - name: Install test dependencies
+      run: pip install pytest
+
+    - name: Run tests (fast suite, no coverage)
+      run: |
+        pytest tests/ -v -m "not slow" --ignore=tests/test_parallel.py
 
   lint:
     runs-on: ubuntu-latest
