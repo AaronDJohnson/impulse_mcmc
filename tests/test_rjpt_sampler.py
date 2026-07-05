@@ -702,6 +702,90 @@ class TestPerModelStats:
 
 
 # ---------------------------------------------------------------------------
+# TestNUTSAdapterComponent
+# ---------------------------------------------------------------------------
+
+
+class TestNUTSAdapterComponent:
+    """The per-model NUTS adaptation state lives in a PerModelNUTSAdapter
+    component (checkpointed as ``_nuts_adapter``); the historical private
+    attribute names remain readable/writable views of it."""
+
+    def _make(self, temp_dir, **kwargs):
+        return RJPTSampler(
+            ndim=2,
+            lnlike=_simple_lnlike,
+            lnprior=_simple_lnprior,
+            lnlike_grad=_simple_lnlike_grad,
+            ntemps=2,
+            seed=42,
+            outdir=temp_dir,
+            **kwargs,
+        )
+
+    def test_checkpoint_pickles_adapter_not_raw_attributes(self, temp_dir):
+        """New checkpoints serialize the adapter object; none of the 2.0-era
+        raw attribute names appear in the pickled instance dict (the compat
+        views are class-level properties, never pickled)."""
+        from impulse.nuts.adapter import PerModelNUTSAdapter
+
+        sampler = self._make(temp_dir, save_freq=10)
+        sampler.sample(np.array([0.1, 0.1]), num_iterations=25)
+
+        with open(os.path.join(temp_dir, "sampler_checkpoint.pkl"), "rb") as fp:
+            loaded = pickle.load(fp)
+        d = loaded.__dict__
+        assert isinstance(d.get("_nuts_adapter"), PerModelNUTSAdapter)
+        assert not PerModelNUTSAdapter.has_legacy_state(d)
+        # compat views work on the unpickled sampler and mirror the adapter
+        assert loaded._step_sizes is d["_nuts_adapter"].step_sizes
+        assert len(loaded._step_sizes) > 0
+
+    def test_adapter_config_from_constructor(self, temp_dir):
+        """Constructor NUTS-adaptation arguments land on the adapter and
+        stay visible under the historical private names."""
+        sampler = self._make(
+            temp_dir,
+            mass_matrix_adapt_interval=17,
+            mass_matrix_min_samples=6,
+            step_size_min=1e-3,
+            step_size_max=2.5,
+        )
+        adapter = sampler._nuts_adapter
+        assert adapter.mass_matrix_adapt_interval == 17
+        assert adapter.mass_matrix_min_samples == 6
+        assert adapter.step_size_min == 1e-3
+        assert adapter.step_size_max == 2.5
+        assert sampler._mass_matrix_adapt_interval == 17
+        assert sampler._mass_matrix_min_samples == 6
+        assert sampler._step_size_min == 1e-3
+        assert sampler._step_size_max == 2.5
+
+    def test_injected_mass_matrix_never_overwritten(self, temp_dir):
+        """set_mass_matrix installs an injected matrix that online
+        mass-matrix adaptation must never replace, across several elapsed
+        adaptation intervals."""
+        from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
+
+        sampler = self._make(
+            temp_dir,
+            save_freq=10_000,
+            mass_matrix_adapt_interval=10,
+            mass_matrix_min_samples=5,
+        )
+        injected = MassMatrix.from_precision(np.diag([2.0, 4.0]), MassMatrixType.DIAGONAL)
+        sampler.set_mass_matrix(2, injected)
+        assert sampler._mass_matrix_injected == {2}
+
+        sampler.sample(np.array([0.5, -0.5]), num_iterations=60)
+
+        # several intervals elapsed, matrix still the injected OBJECT
+        assert sampler._mass_matrices[2] is injected
+        # and step sizes kept re-tuning against it
+        assert any(da.count > 0 for da in sampler._dual_averagers.values())
+
+
+# ---------------------------------------------------------------------------
 # TestRJPTNumAdapt
 # ---------------------------------------------------------------------------
 

@@ -1,42 +1,58 @@
 """RJPTSampler — Parallel Tempering with optional NUTS and RJMCMC.
 
-A peer of PTSampler that interleaves MH, NUTS, and PT steps.
-Reuses existing building blocks without subclassing PTSampler.
+A peer of PTSampler that interleaves MH, NUTS, and PT steps. Both samplers
+share the internal parallel-tempering engine in :mod:`impulse._pt_base`
+(constructor wiring, sample-loop skeleton, resume handling, acceptance
+reporting); this module adds the NUTS transition machinery, per-model
+step-size/mass-matrix adaptation, and NUTS diagnostics I/O.
 """
 
 import logging
 import os
-import warnings
 from typing import Callable, Optional
 
 import numpy as np
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-from impulse.chain_stats import ChainStats, MultiChainStats
-from impulse.file_io import ShortChain
-from impulse.input_function_wrapper import _function_wrapper
+from impulse._pt_base import (
+    _UNSET,
+    _expand_rjmcmc_cov_mean,
+    _PTSamplerBase,
+    _register_rjmcmc_jumps,
+)
+from impulse.nuts.adapter import PerModelNUTSAdapter
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
-from impulse.nuts.warmup import DualAveraging, find_reasonable_step_size
-from impulse.proposals import JumpProposals, ProposalBundle, am, de, make_early_de, scam
-from impulse.resume import check_for_checkpoint, checkpoint_sampler, load_rjpt_checkpoint
-from impulse.rjmcmc_proposals import migrate_legacy_birth_death
-from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
-from impulse.sampler_step import pt_step, vectorized_mh_step
-from impulse.samplers import (
-    _UNSET,
-    setup_chain_stats,
-    setup_initial_position,
-    setup_seeds,
-    setup_standard_jumps,
-)
+from impulse.resume import checkpoint_sampler, load_rjpt_checkpoint
+from impulse.sampler_state import SamplerState, tempered_lnprobs
 from impulse.utils import prepare_files
-from impulse.wrapping import PeriodicSpec, WrapSpec
+from impulse.wrapping import PeriodicSpec
 
 
-class RJPTSampler:
+def _adapter_view(field: str) -> property:
+    """Compat property exposing a ``PerModelNUTSAdapter`` field under its 2.0 name.
+
+    impulse 2.0 kept the per-model NUTS adaptation caches as raw private
+    attributes on the RJPTSampler instance; tests and diagnostics poke
+    them.  These class-level properties keep that surface readable AND
+    writable while the state lives on the adapter — and, being class-level,
+    they never enter ``__dict__``, so new checkpoints pickle only
+    ``_nuts_adapter``.  Every access routes through
+    :meth:`RJPTSampler._ensure_nuts_adapter`, which transparently migrates
+    2.0-era raw attributes restored by unpickling into an adapter.
+    """
+
+    def fget(self: "RJPTSampler"):
+        return getattr(self._ensure_nuts_adapter(), field)
+
+    def fset(self: "RJPTSampler", value) -> None:
+        setattr(self._ensure_nuts_adapter(), field, value)
+
+    return property(fget, fset)
+
+
+class RJPTSampler(_PTSamplerBase):
     """Parallel Tempering sampler with optional NUTS and RJMCMC.
 
     Interleaves Metropolis-Hastings proposals (including RJ birth/death),
@@ -105,6 +121,8 @@ class RJPTSampler:
         Same as :class:`PTSampler`.
     """
 
+    _logger = logger
+
     def __init__(
         self,
         ndim: int,
@@ -153,35 +171,28 @@ class RJPTSampler:
         periodic: Optional[PeriodicSpec] = None,
         num_adapt: Optional[int] = _UNSET,
     ) -> None:
-        if loglargs is None:
-            loglargs = ()
-        if loglkwargs is None:
-            loglkwargs = {}
-        if logpargs is None:
-            logpargs = ()
-        if logpkwargs is None:
-            logpkwargs = {}
-
-        self.ndim = ndim
-        self.ntemps = ntemps
-        self.swap_steps = swap_steps
-        self.wrap = WrapSpec.from_dict(periodic)
-        self.lnlike = _function_wrapper(
-            lnlike, loglargs, loglkwargs, vectorized=vectorized, jax=jax, threads=threads
-        )
-        self.lnprior = _function_wrapper(
-            lnprior, logpargs, logpkwargs, vectorized=vectorized, jax=jax, threads=threads
-        )
-
-        # Keep raw references for NUTS gradient building
-        self._raw_lnlike = lnlike
-        self._raw_lnprior = lnprior
-
-        self.rngs = setup_seeds(seed, ntemps)
-
-        self.ptstate = PTState(
-            self.ndim,
-            ntemps,
+        # Shared PT wiring (function wrappers, RNGs, PT state, chain stats,
+        # proposal bundle, num_adapt sentinel handling)
+        super().__init__(
+            ndim,
+            lnlike,
+            lnprior,
+            buffer_size=buffer_size,
+            sample_mean=sample_mean,
+            sample_cov=sample_cov,
+            groups=groups,
+            loglargs=loglargs,
+            loglkwargs=loglkwargs,
+            logpargs=logpargs,
+            logpkwargs=logpkwargs,
+            cov_update=cov_update,
+            save_freq=save_freq,
+            scam_weight=scam_weight,
+            am_weight=am_weight,
+            de_weight=de_weight,
+            seed=seed,
+            outdir=outdir,
+            ntemps=ntemps,
             swap_steps=swap_steps,
             min_temp=min_temp,
             max_temp=max_temp,
@@ -190,33 +201,17 @@ class RJPTSampler:
             inf_temp=inf_temp,
             adapt_t0=adapt_t0,
             adapt_nu=adapt_nu,
-        )
-        self.multi_chain_stats = setup_chain_stats(
-            ndim,
-            self.ptstate,
-            self.rngs,
-            groups,
-            sample_cov,
-            sample_mean,
-            buffer_size,
-            self.ptstate.ladder,
-        )
-        self.proposal_bundle = setup_standard_jumps(
-            self.multi_chain_stats,
-            am_weight,
-            scam_weight,
-            de_weight,
+            resume=resume,
+            vectorized=vectorized,
+            jax=jax,
+            threads=threads,
+            periodic=periodic,
+            num_adapt=num_adapt,
         )
 
-        self.cov_update = cov_update
-        self.save_freq = save_freq
-        self.outdir = outdir
-        self.resume = resume
-        # NEVER store the _UNSET sentinel on self (it must not end up in
-        # pickled checkpoints); remember instead whether the caller passed
-        # num_adapt explicitly, which controls the resume semantics.
-        self._num_adapt_explicit = num_adapt is not _UNSET
-        self.num_adapt = None if num_adapt is _UNSET else num_adapt
+        # Keep raw references for NUTS gradient building
+        self._raw_lnlike = lnlike
+        self._raw_lnprior = lnprior
 
         # NUTS configuration
         self.lnlike_grad = lnlike_grad
@@ -231,19 +226,15 @@ class RJPTSampler:
         else:
             self._mass_matrix_type = mass_matrix_type
 
-        # NUTS caches (picklable)
-        self._step_sizes: dict = {}  # (chain_idx, nmodel_or_ndim) -> float
-        self._mass_matrices: dict = {}  # nmodel_or_ndim -> MassMatrix
-
-        # Online NUTS adaptation state (picklable)
-        self._dual_averagers: dict = {}  # (chain_idx, n_active) -> DualAveraging
-        self._nuts_sample_buffers: dict = {}  # n_active -> list[np.ndarray]
-        self._mass_matrix_injected: set = set()  # n_active values with externally set mass matrices
-        self._nuts_steps_since_mm_update: dict = {}  # n_active -> int counter
-        self._mass_matrix_adapt_interval = mass_matrix_adapt_interval
-        self._mass_matrix_min_samples = mass_matrix_min_samples
-        self._step_size_min = step_size_min
-        self._step_size_max = step_size_max
+        # Per-model NUTS adaptation state (picklable component; keyed by
+        # n_active). 2.0 checkpoints carried this state as raw instance
+        # attributes instead — see _ensure_nuts_adapter for the migration.
+        self._nuts_adapter = PerModelNUTSAdapter(
+            mass_matrix_adapt_interval=mass_matrix_adapt_interval,
+            mass_matrix_min_samples=mass_matrix_min_samples,
+            step_size_min=step_size_min,
+            step_size_max=step_size_max,
+        )
 
         # RJ-specific (set by from_rjmcmc)
         self._rjmcmc_space = None
@@ -252,139 +243,155 @@ class RJPTSampler:
         self._nuts_diag_data: Optional[list] = None
 
     # ------------------------------------------------------------------
-    # Adaptation freeze
+    # NUTS adapter access and 2.0-checkpoint migration
     # ------------------------------------------------------------------
 
-    def _adaptation_active(self, iteration: int) -> bool:
-        """True while adaptation may still run at this global iteration.
+    def _ensure_nuts_adapter(self) -> PerModelNUTSAdapter:
+        """Return the NUTS adapter, migrating 2.0-era raw attributes if present.
 
-        The ``getattr`` guards the public
-        ``load_rjpt_checkpoint(...)`` -> ``.sample()`` path: checkpoints
-        written before ``num_adapt`` existed produce samplers without the
-        attribute (unpickling bypasses ``__init__``), and missing means
-        adapt forever — the historical behavior.
-
-        Parameters
-        ----------
-        iteration : int
-            Global iteration counter (persists across checkpoint resume).
-
-        Returns
-        -------
-        bool
-            True if adaptation is still allowed at ``iteration``.
+        impulse 2.0 pickled the per-model NUTS adaptation caches as raw
+        dict/set attributes directly on the RJPTSampler instance.
+        Unpickling such a checkpoint (both the ``resume=True``
+        ``__dict__.update`` path in ``sample()`` and the public
+        ``load_rjpt_checkpoint(...)`` path) leaves those raw entries in
+        ``self.__dict__``, where the class-level compat properties shadow
+        them; they are consumed here to rebuild the adapter with identical
+        state.  Like the legacy birth/death migration this runs on resume,
+        but silently — it is an internal representation change with
+        identical behavior, so there is nothing to warn about.  A sampler
+        with neither the adapter nor raw attributes (pre-NUTS-adaptation
+        checkpoints) gets a fresh adapter with default configuration,
+        mirroring the historical ``_prepare_run`` back-fill.
         """
-        num_adapt = getattr(self, "num_adapt", None)
-        return num_adapt is None or iteration < num_adapt
-
-    def _freeze_adaptive_proposals(self) -> None:
-        """Permanently freeze registered proposals that adapt internal state.
-
-        Duck-typed: any proposal exposing a callable ``freeze_adaptation``
-        (e.g. :class:`~impulse.flow_proposals.NormalizingFlowProposal`)
-        is told to stop refitting. Idempotent.
-        """
-        for jp in self.proposal_bundle.jump_proposals:
-            for prop in jp.proposal_list:
-                freeze = getattr(prop, "freeze_adaptation", None)
-                if callable(freeze):
-                    freeze()
-
-    def _migrate_or_warn_legacy_birth_death(self) -> None:
-        """Migrate resumed pre-fix RJ birth/death wiring, or warn loudly.
-
-        Checkpoints written before the detailed-balance fix register
-        ``birth_proposal`` and ``death_proposal`` as SEPARATE
-        constant-weight jumps. That wiring violates detailed balance and
-        biases the model posterior toward fewer sources; resuming it
-        unchanged reproduces the bias. Detection starts from the proposal
-        ``__name__``\\ s over the restored proposal lists, then inspects the
-        attribute layout: CURRENT-code standalone registrations carry the
-        same ``__name__``\\ s, but the current ``DeathProposal`` stores
-        ``draw_from_prior`` (it re-fills the vacated slot) while the legacy
-        one never did.  A pair whose death proposals all carry
-        ``draw_from_prior`` is therefore NOT migrated — it is not legacy —
-        and an accurate warning is emitted instead (standalone birth/death
-        registration violates detailed balance; use the combined kernel).
-
-        When a true legacy pair is found, a best-effort migration
-        (:func:`impulse.rjmcmc_proposals.migrate_legacy_birth_death`)
-        reconstructs the combined ``birth_death`` kernel from the
-        unpickled legacy birth proposal and replaces the pair in every
-        chain with their summed selection weight, then warns that
-        PRE-resume samples remain biased. If reconstruction fails the
-        checkpoint is left untouched and the historical loud warning is
-        emitted instead.
-        """
-        props = [prop for jp in self.proposal_bundle.jump_proposals for prop in jp.proposal_list]
-        names = {getattr(prop, "__name__", "") for prop in props}
-        if "birth_proposal" not in names and "death_proposal" not in names:
-            return
-        deaths = [p for p in props if getattr(p, "__name__", "") == "death_proposal"]
-        if deaths and all(callable(getattr(p, "draw_from_prior", None)) for p in deaths):
-            warnings.warn(
-                "Resumed checkpoint registers separate standalone "
-                "'birth_proposal'/'death_proposal' jumps whose attribute "
-                "layout matches current-code standalone registrations (the "
-                "death proposal carries draw_from_prior), not a pre-fix "
-                "legacy checkpoint; no migration was attempted. Standalone "
-                "birth/death registration in a constant-weight mixture "
-                "violates detailed balance and biases the model posterior "
-                "toward fewer sources: register the ONE combined "
-                "birth-death kernel (make_birth_death_proposal or "
-                "from_rjmcmc) instead.",
-                UserWarning,
+        state = self.__dict__
+        if PerModelNUTSAdapter.has_legacy_state(state):
+            # Raw 2.0 attributes win over any constructor-fresh adapter:
+            # they carry the checkpointed adaptation state. Config scalars
+            # MISSING from the checkpoint fall back to the resuming
+            # constructor's values (the fresh adapter), matching the old
+            # __dict__.update-then-backfill semantics.
+            state["_nuts_adapter"] = PerModelNUTSAdapter.from_legacy_state(
+                state, defaults=state.get("_nuts_adapter")
             )
-            return
-        migrated = migrate_legacy_birth_death(self.proposal_bundle.jump_proposals)
-        if migrated is not None:
-            warnings.warn(
-                "Resumed checkpoint registered separate 'birth_proposal'/"
-                "'death_proposal' jumps (pre-detailed-balance-fix wiring). "
-                "The checkpoint was migrated automatically: the pair was "
-                "replaced by the combined 'birth_death' kernel with their "
-                "summed selection weight, so sampling continues from a "
-                "detailed-balance-correct kernel. Model posteriors built "
-                "from PRE-resume samples remain biased toward fewer "
-                "sources and should be discarded.",
-                UserWarning,
-            )
-            return
-        warnings.warn(
-            "Resumed checkpoint registers separate 'birth_proposal'/"
-            "'death_proposal' jumps: it predates the detailed-balance "
-            "fix and carries the biased birth/death wiring, so model "
-            "posteriors will remain biased toward fewer sources. Start "
-            "a fresh run (or re-register the combined birth-death "
-            "kernel) for correct model posteriors.",
-            UserWarning,
-        )
+        adapter = state.get("_nuts_adapter")
+        if adapter is None:
+            adapter = PerModelNUTSAdapter()
+            state["_nuts_adapter"] = adapter
+        return adapter
+
+    # Compat views of the adapter state under the historical private names
+    # (see _adapter_view). Read/write; never pickled.
+    _step_sizes = _adapter_view("step_sizes")
+    _mass_matrices = _adapter_view("mass_matrices")
+    _dual_averagers = _adapter_view("dual_averagers")
+    _nuts_sample_buffers = _adapter_view("sample_buffers")
+    _mass_matrix_injected = _adapter_view("mass_matrix_injected")
+    _nuts_steps_since_mm_update = _adapter_view("steps_since_mm_update")
+    _mass_matrix_adapt_interval = _adapter_view("mass_matrix_adapt_interval")
+    _mass_matrix_min_samples = _adapter_view("mass_matrix_min_samples")
+    _step_size_min = _adapter_view("step_size_min")
+    _step_size_max = _adapter_view("step_size_max")
+
+    # ------------------------------------------------------------------
+    # Adaptation freeze
+    # ------------------------------------------------------------------
 
     def _finalize_step_sizes(self) -> None:
         """Replace primal dual-averaging iterates with smoothed step sizes.
 
-        Called once at the ``num_adapt`` freeze transition. During
-        adaptation ``_step_sizes`` tracks the noisy PRIMAL dual-averaging
-        iterate ``exp(log_step)``, which deliberately overshoots (its
-        anchor is ``mu = log(10 * step)``); the converged estimate is the
-        smoothed ``DualAveraging.finalize()`` value ``exp(log_step_bar)``.
-        Freezing the primal iterate — especially in the transient right
-        after a mass-matrix commit resets dual averaging — can pin a step
-        size several times the converged value with no way to correct it.
-
-        A dual averager that never received an update (or yields a
-        non-finite/non-positive value) leaves the current step size
-        untouched. Idempotent: finalize() is a pure read of DA state.
+        Called once at the ``num_adapt`` freeze transition; see
+        :meth:`impulse.nuts.adapter.PerModelNUTSAdapter.finalize_step_sizes`
+        for the full rationale (the smoothed ``DualAveraging.finalize()``
+        value is pinned, not the noisy primal iterate).
         """
-        for key, da in self._dual_averagers.items():
-            if getattr(da, "count", 0) == 0:
-                continue  # never updated; nothing smoothed to freeze to
-            finalized = da.finalize()
-            if not np.isfinite(finalized) or finalized <= 0:
-                continue  # keep the current step size
-            self._step_sizes[key] = float(
-                np.clip(finalized, self._step_size_min, self._step_size_max)
-            )
+        self._ensure_nuts_adapter().finalize_step_sizes()
+
+    # ------------------------------------------------------------------
+    # Shared-engine hook points
+    # ------------------------------------------------------------------
+
+    def _load_checkpoint(self, path: str):
+        """Load an RJPT checkpoint, rebinding the unpicklable callables."""
+        return load_rjpt_checkpoint(
+            path,
+            lnlike=self.lnlike,
+            lnprior=self.lnprior,
+            raw_lnlike=self._raw_lnlike,
+            raw_lnprior=self._raw_lnprior,
+            lnlike_grad=self.lnlike_grad,
+        )
+
+    def _write_checkpoint(self) -> None:
+        """Checkpoint, omitting the raw/gradient callables (unpicklable)."""
+        checkpoint_sampler(
+            self,
+            path=self.checkpoint_path,
+            omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
+        )
+
+    def _prepare_run(self, resumed: bool) -> None:
+        """Legacy attribute back-fill, NUTS diagnostics setup, NUTS warmup.
+
+        Runs after resume handling, before the sampling loop — exactly
+        where the pre-refactor ``sample()`` performed these steps.
+        """
+        # Backward-compat: 2.0 checkpoints carry the NUTS adaptation caches
+        # as raw instance attributes (migrated into the adapter here), and
+        # old checkpoints may predate num_adapt entirely.
+        self._ensure_nuts_adapter()
+        if not hasattr(self, "num_adapt"):
+            self.num_adapt = None
+
+        # NUTS diagnostics file
+        if self.nuts_enabled:
+            self._nuts_diag_data = []
+            self._nuts_diag_path = os.path.join(self.outdir, "nuts_diagnostics.txt")
+            prepare_files([self._nuts_diag_path], resume=self.resume)
+            if resumed:
+                # mirror the chain-file truncation: drop diagnostics rows
+                # written after the checkpoint (the resumed iterations
+                # re-generate them)
+                self._truncate_nuts_diagnostics()
+            else:
+                self._nuts_diag_rows_written = 0
+
+        # NUTS warmup: find initial step sizes
+        if self.nuts_enabled:
+            for k in range(self.ntemps):
+                logp_and_grad, active_idx = self._make_tempered_logp_grad(k, self.state)
+                active_params = self.state.positions[k][active_idx]
+                if len(active_params) > 0:
+                    self._nuts_adapter.get_or_find_step_size(
+                        k,
+                        active_params,
+                        logp_and_grad,
+                        self.rngs[k],
+                        self.target_accept,
+                    )
+
+    def _on_adaptation_freeze(self) -> None:
+        """Freeze adaptive proposals and the NUTS step sizes."""
+        super()._on_adaptation_freeze()
+        # Freeze the smoothed dual-averaging step sizes, not the
+        # noisy primal iterates tracked during adaptation
+        self._finalize_step_sizes()
+
+    def _post_mh_step(self, adapting: bool) -> None:
+        """Step B: NUTS transition on active continuous params (if enabled)."""
+        if self.nuts_enabled:
+            self.state, cold_diag = self._nuts_step_all_chains(self.state, adapt=adapting)
+            if cold_diag is not None:
+                # initialized in _prepare_run whenever nuts_enabled
+                assert self._nuts_diag_data is not None
+                self._nuts_diag_data.append(cold_diag)
+            if adapting:
+                self._maybe_adapt_mass_matrices()
+
+    def _save_flush(self) -> None:
+        """Flush chain files, acceptance rates, and NUTS diagnostics."""
+        super()._save_flush()
+        if self.nuts_enabled:
+            self._flush_nuts_diagnostics()
 
     # ------------------------------------------------------------------
     # from_rjmcmc classmethod
@@ -448,25 +455,7 @@ class RJPTSampler:
         ``PTSampler.from_rjmcmc`` for the full rationale.
         """
         # Expand per-source sample_cov / sample_mean to full product space
-        sample_cov = kwargs.pop("sample_cov", None)
-        if sample_cov is not None:
-            sample_cov = np.asarray(sample_cov)
-            if sample_cov.shape == (rjmcmc_space.num_params, rjmcmc_space.num_params):
-                full_cov = np.zeros((rjmcmc_space.ndim, rjmcmc_space.ndim))
-                for i in range(rjmcmc_space.num_models):
-                    sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
-                    full_cov[sl, sl] = sample_cov
-                full_cov[-1, -1] = 1.0  # model index
-                sample_cov = full_cov
-        sample_mean = kwargs.pop("sample_mean", None)
-        if sample_mean is not None:
-            sample_mean = np.asarray(sample_mean)
-            if sample_mean.shape == (rjmcmc_space.num_params,):
-                full_mean = np.zeros(rjmcmc_space.ndim)
-                for i in range(rjmcmc_space.num_models):
-                    sl = slice(i * rjmcmc_space.num_params, (i + 1) * rjmcmc_space.num_params)
-                    full_mean[sl] = sample_mean
-                sample_mean = full_mean
+        sample_cov, sample_mean = _expand_rjmcmc_cov_mean(rjmcmc_space, kwargs)
 
         sampler = cls(
             ndim=rjmcmc_space.ndim,
@@ -485,35 +474,15 @@ class RJPTSampler:
             **kwargs,
         )
         sampler._rjmcmc_space = rjmcmc_space
-        # Trans-dimensional and label-permuting jumps only exist for
-        # multi-model spaces: with a single model there is no birth/death
-        # move to make, no other model index to jump to, and no second
-        # source slot to swap with (BirthDeathProposal itself rejects
-        # max_sources < 2), so only the standard continuous jumps are
-        # registered.
-        if rjmcmc_space.num_models > 1:
-            if birth_weight != death_weight:
-                warnings.warn(
-                    "birth_weight != death_weight has no effect on the birth/death "
-                    "split: birth and death form one combined kernel selected with "
-                    "weight birth_weight + death_weight, and the split is governed "
-                    "by the space's prob_schedule.",
-                    UserWarning,
-                )
-            # Birth and death must be one kernel with schedule-driven selection;
-            # separate constant-weight jumps violate detailed balance (see
-            # impulse.rjmcmc_proposals.BirthDeathProposal).
-            if birth_weight + death_weight > 0:
-                sampler.add_custom_jump(
-                    rjmcmc_space.get_birth_death_proposal(), birth_weight + death_weight
-                )
-            sampler.add_custom_jump(rjmcmc_space.get_nmodel_jump(), nmodel_weight)
-            sampler.add_custom_jump(rjmcmc_space.get_source_swap_proposal(), swap_weight)
-        if de_weight > 0:
-            sampler.add_custom_jump(make_early_de(de_min_fill), de_weight)
-        sampler.multi_chain_stats.enable_per_model(
-            rjmcmc_space.num_models,
-            rjmcmc_space.num_params,
+        _register_rjmcmc_jumps(
+            sampler,
+            rjmcmc_space,
+            birth_weight=birth_weight,
+            death_weight=death_weight,
+            nmodel_weight=nmodel_weight,
+            swap_weight=swap_weight,
+            de_weight=de_weight,
+            de_min_fill=de_min_fill,
         )
         return sampler
 
@@ -552,7 +521,7 @@ class RJPTSampler:
             Relative weight for this proposal (normalized against all
             registered proposals).
         """
-        self.proposal_bundle.add_jump(proposal, weight)
+        super().add_custom_jump(proposal, weight)
 
     # ------------------------------------------------------------------
     # Public: mass matrix injection
@@ -582,65 +551,7 @@ class RJPTSampler:
         inverts its argument and would silently install the inverse of
         the intended metric.
         """
-        self._mass_matrices[n_active] = mass_matrix
-        self._mass_matrix_injected.add(n_active)
-        # Reset any DualAveraging instances for this n_active so step sizes
-        # re-tune to the new mass matrix.
-        for key in list(self._dual_averagers.keys()):
-            if key[1] == n_active:
-                current_step = self._step_sizes.get(key, 0.1)
-                self._dual_averagers[key] = DualAveraging(
-                    target_accept=self.target_accept,
-                    initial_step_size=current_step,
-                )
-
-    # ------------------------------------------------------------------
-    # Internal: mass matrix adaptation from samples
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _adapt_mass_matrix_from_samples(samples, n_active, mass_matrix_type):
-        """Compute regularized covariance from samples and return a MassMatrix.
-
-        Parameters
-        ----------
-        samples : list of np.ndarray
-            Position samples, each of shape ``(n_active,)``.
-        n_active : int
-            Dimensionality.
-        mass_matrix_type : MassMatrixType
-            Desired mass matrix type.
-
-        Returns
-        -------
-        MassMatrix
-            New mass matrix M = (regularized covariance)^{-1}.
-        """
-        arr = np.array(samples)
-        n = len(arr)
-        if n < 2:
-            return MassMatrix(n_active, MassMatrixType.UNIT)
-
-        sample_cov = np.cov(arr, rowvar=False)
-        if sample_cov.ndim == 0:
-            sample_cov = sample_cov.reshape(1, 1)
-
-        # Regularization: shrink toward diagonal (Stan's approach)
-        shrinkage = 5.0 / (n + 5.0)
-        reg_cov = (1 - shrinkage) * sample_cov + shrinkage * np.diag(np.diag(sample_cov) + 1e-3)
-
-        # from_covariance inverts: mass matrix M = reg_cov^{-1} (Stan's
-        # inverse metric equals the posterior covariance)
-        if mass_matrix_type == MassMatrixType.DIAGONAL:
-            return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
-        elif mass_matrix_type == MassMatrixType.DENSE:
-            reg_cov += 1e-8 * np.eye(n_active)
-            try:
-                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DENSE)
-            except np.linalg.LinAlgError:
-                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
-        else:
-            return MassMatrix(n_active, MassMatrixType.UNIT)
+        self._ensure_nuts_adapter().set_mass_matrix(n_active, mass_matrix, self.target_accept)
 
     # ------------------------------------------------------------------
     # Internal: NUTS helpers
@@ -705,43 +616,6 @@ class RJPTSampler:
             return int(np.rint(params[-1]))
         return self.ndim
 
-    def _get_or_find_step_size(self, chain_idx, active_params, logp_and_grad, rng):
-        """Look up or compute step size for this chain/model dimension.
-
-        Also ensures a DualAveraging instance exists for online adaptation.
-        """
-        n_active = len(active_params)
-        cache_key = (chain_idx, n_active)
-
-        if cache_key not in self._step_sizes:
-            # Create mass matrix for this dimension if needed
-            if n_active not in self._mass_matrices:
-                self._mass_matrices[n_active] = MassMatrix(n_active, MassMatrixType.UNIT)
-
-            mass_matrix = self._mass_matrices[n_active]
-            logp, grad = logp_and_grad(active_params)
-            if not np.isfinite(logp):
-                step_size = 0.1  # fallback
-            else:
-                step_size = find_reasonable_step_size(
-                    active_params,
-                    logp,
-                    grad,
-                    logp_and_grad,
-                    mass_matrix,
-                    rng,
-                )
-            self._step_sizes[cache_key] = step_size
-
-        # Ensure a DualAveraging instance exists for this (chain, n_active)
-        if cache_key not in self._dual_averagers:
-            self._dual_averagers[cache_key] = DualAveraging(
-                target_accept=self.target_accept,
-                initial_step_size=self._step_sizes[cache_key],
-            )
-
-        return self._step_sizes[cache_key]
-
     def _nuts_step_all_chains(self, state, adapt: bool = True):
         """Run one NUTS transition on each temperature chain.
 
@@ -774,16 +648,15 @@ class RJPTSampler:
             logp_and_grad, _ = self._make_tempered_logp_grad(k, state)
             rng = self.rngs[k]
 
-            step_size = self._get_or_find_step_size(
+            step_size = self._nuts_adapter.get_or_find_step_size(
                 k,
                 active_params,
                 logp_and_grad,
                 rng,
+                self.target_accept,
             )
 
-            if n_active not in self._mass_matrices:
-                self._mass_matrices[n_active] = MassMatrix(n_active, MassMatrixType.UNIT)
-            mass_matrix = self._mass_matrices[n_active]
+            mass_matrix = self._nuts_adapter.mass_matrix_for(n_active)
 
             logp_val, grad_val = logp_and_grad(active_params)
             if not np.isfinite(logp_val) or not np.all(np.isfinite(grad_val)):
@@ -819,31 +692,22 @@ class RJPTSampler:
                 else self.lnprior(new_positions[k : k + 1])[0]
             )
 
-            # Online step size adaptation via dual averaging.
-            # ALL steps (divergent or not) feed DA. Divergent steps push
-            # step size down (accept_prob ≈ 0), non-divergent push up.
-            # np.clip prevents catastrophic collapse or explosion.
+            # Online step size adaptation via dual averaging (adapter-owned).
             # Past the num_adapt freeze (adapt=False) DA is not updated and
-            # _step_sizes keeps its last adapted value, so the kernel is fixed.
-            da_key = (k, n_active)
+            # the step size keeps its last adapted value, so the kernel is
+            # fixed.
             if adapt:
-                if da_key in self._dual_averagers:
-                    adapted_step = self._dual_averagers[da_key].update(
-                        nuts_state.mean_accept_prob,
-                    )
-                    adapted_step = np.clip(adapted_step, self._step_size_min, self._step_size_max)
-                    self._step_sizes[da_key] = adapted_step
-                else:
-                    self._step_sizes[da_key] = nuts_state.step_size
+                self._nuts_adapter.update_step_size(
+                    k,
+                    n_active,
+                    nuts_state.mean_accept_prob,
+                    nuts_state.step_size,
+                )
 
             # Cold chain: collect non-divergent samples for mass matrix
             # adaptation (frozen along with mass-matrix re-estimation)
             if adapt and k == 0 and not nuts_state.divergent:
-                if n_active not in self._nuts_sample_buffers:
-                    self._nuts_sample_buffers[n_active] = []
-                self._nuts_sample_buffers[n_active].append(
-                    nuts_state.position.copy(),
-                )
+                self._nuts_adapter.buffer_cold_sample(n_active, nuts_state.position)
 
             # Cold chain diagnostics
             if k == 0:
@@ -851,7 +715,7 @@ class RJPTSampler:
                     "tree_depth": nuts_state.tree_depth,
                     "divergent": int(nuts_state.divergent),
                     "energy_error": nuts_state.energy_error,
-                    "step_size": self._step_sizes[da_key],
+                    "step_size": self._nuts_adapter.current_step_size(k, n_active),
                     "mean_accept_prob": nuts_state.mean_accept_prob,
                     "n_active": n_active,
                 }
@@ -867,123 +731,33 @@ class RJPTSampler:
         )
         return new_state, cold_diag
 
+    def _cold_active_params(self):
+        """Fresh copy of the cold chain's active continuous parameters."""
+        cold_params = self.state.positions[0]
+        active_idx = self._get_active_indices(cold_params)
+        return cold_params[active_idx].copy()
+
+    def _cold_logp_and_grad(self):
+        """The cold chain's tempered ``(x_active) -> (logp, grad)``."""
+        return self._make_tempered_logp_grad(0, self.state)[0]
+
     def _maybe_adapt_mass_matrices(self):
-        """Periodically re-estimate mass matrices from cold-chain samples.
+        """Periodically re-estimate NUTS mass matrices from cold-chain samples.
 
-        Called once per iteration from the sample loop. For each ``n_active``
-        with buffered samples, checks whether enough steps and samples have
-        accumulated to warrant a mass matrix update.
-
-        Three protections are applied:
-        1. Injected (Fisher) mass matrices are never overwritten.
-        2. When a mass matrix changes, step sizes are recalibrated via
-           ``find_reasonable_step_size`` instead of inheriting the old value.
-        3. Candidate mass matrices are validated with trial NUTS steps;
-           if a majority diverge the candidate is rejected.
+        Called once per iteration from the sample loop; delegates to
+        :meth:`impulse.nuts.adapter.PerModelNUTSAdapter.maybe_adapt_mass_matrices`
+        (interval/min-sample gating, injected-matrix protection, step-size
+        recalibration, and trial-step validation), passing the cold chain's
+        position, tempered gradient, and RNG stream. Kept as a sampler
+        method so the ``_post_mh_step`` call site stays patchable.
         """
-        for n_active in list(self._nuts_sample_buffers.keys()):
-            # Increment step counter
-            self._nuts_steps_since_mm_update.setdefault(n_active, 0)
-            self._nuts_steps_since_mm_update[n_active] += 1
-
-            # Check interval
-            if self._nuts_steps_since_mm_update[n_active] < self._mass_matrix_adapt_interval:
-                continue
-
-            samples = self._nuts_sample_buffers.get(n_active, [])
-            n_samples = len(samples)
-
-            # Need minimum samples
-            if n_samples < self._mass_matrix_min_samples:
-                continue
-
-            # FIX 1: Never overwrite injected (Fisher) mass matrices.
-            # These are analytically computed and far superior to sample estimates.
-            if n_active in self._mass_matrix_injected:
-                self._nuts_steps_since_mm_update[n_active] = 0
-                continue
-
-            # Compute candidate mass matrix from samples
-            candidate_mm = self._adapt_mass_matrix_from_samples(
-                samples,
-                n_active,
-                self._mass_matrix_type,
-            )
-
-            # FIX 2: Find step size appropriate for the NEW mass matrix
-            # (old code inherited the old step size, causing immediate divergences)
-            cold_params = self.state.positions[0]
-            active_idx = self._get_active_indices(cold_params)
-            active_params = cold_params[active_idx].copy()
-
-            if len(active_params) != n_active:
-                # Model dimension changed since buffer was filled; skip
-                self._nuts_steps_since_mm_update[n_active] = 0
-                continue
-
-            logp_and_grad, _ = self._make_tempered_logp_grad(0, self.state)
-            rng = self.rngs[0]
-
-            logp_val, grad_val = logp_and_grad(active_params)
-            if np.isfinite(logp_val):
-                candidate_step = find_reasonable_step_size(
-                    active_params,
-                    logp_val,
-                    grad_val,
-                    logp_and_grad,
-                    candidate_mm,
-                    rng,
-                )
-                candidate_step = np.clip(candidate_step, self._step_size_min, self._step_size_max)
-            else:
-                candidate_step = 0.1
-
-            # FIX 3: Validate candidate with trial NUTS steps.
-            # Run a few short-tree NUTS steps; reject if majority diverge.
-            n_trial = 5
-            n_divergent = 0
-            trial_pos = active_params.copy()
-            trial_logp, trial_grad = logp_val, grad_val
-
-            for _ in range(n_trial):
-                if not np.isfinite(trial_logp):
-                    n_divergent += 1
-                    break
-                trial_state = NUTSState(
-                    position=trial_pos,
-                    logp=trial_logp,
-                    grad=trial_grad,
-                    step_size=candidate_step,
-                    mass_matrix=candidate_mm,
-                )
-                trial_result = nuts_step(trial_state, logp_and_grad, rng, max_tree_depth=3)
-                if trial_result.divergent:
-                    n_divergent += 1
-                trial_pos = trial_result.position
-                trial_logp = trial_result.logp
-                trial_grad = trial_result.grad
-
-            if n_divergent > n_trial // 2:
-                # Reject candidate — too many divergences. Reset counter, try later.
-                self._nuts_steps_since_mm_update[n_active] = 0
-                continue
-
-            # Commit the validated mass matrix
-            self._mass_matrices[n_active] = candidate_mm
-
-            # Reset step counter; keep recent half of sample buffer
-            self._nuts_steps_since_mm_update[n_active] = 0
-            half = n_samples // 2
-            self._nuts_sample_buffers[n_active] = samples[-half:]
-
-            # Reset DA with the step size calibrated to the new mass matrix
-            for key in list(self._dual_averagers.keys()):
-                if key[1] == n_active:
-                    self._step_sizes[key] = candidate_step
-                    self._dual_averagers[key] = DualAveraging(
-                        target_accept=self.target_accept,
-                        initial_step_size=candidate_step,
-                    )
+        self._nuts_adapter.maybe_adapt_mass_matrices(
+            self._mass_matrix_type,
+            self.target_accept,
+            self._cold_active_params,
+            self._cold_logp_and_grad,
+            self.rngs[0],
+        )
 
     # ------------------------------------------------------------------
     # sample
@@ -1025,244 +799,7 @@ class RJPTSampler:
         resumed to ``N`` total iterations produces chain files identical to
         a single uninterrupted ``N``-iteration run.
         """
-        if self.ptstate.ladder is None:
-            raise ValueError("PTState ladder is not initialized")
-
-        # Chain storage
-        self.short_chain = ShortChain(
-            self.ndim,
-            self.ntemps,
-            self.save_freq,
-            iteration=0,
-            outdir=self.outdir,
-            resume=self.resume,
-            thin=thin,
-        )
-        # iteration of the last covariance refresh; kept on the instance so
-        # it is pickled into checkpoints (a resume overwrites this fresh
-        # value with the checkpointed one via __dict__.update below)
-        self._last_cov_iter = self.short_chain.iteration
-
-        # Initial state
-        initial_position = setup_initial_position(initial_position, self.ntemps)
-        if self.wrap is not None:
-            initial_position = self.wrap.apply(initial_position)
-        lnlike0 = self.lnlike(initial_position)
-        lnprior0 = self.lnprior(initial_position)
-        lnprob0 = tempered_lnprobs(lnlike0, lnprior0, self.ptstate.ladder)
-        initial_state = SamplerState(
-            initial_position,
-            lnlike0,
-            lnprior0,
-            lnprob0,
-            accepted=np.ones(self.ntemps),
-            temps=self.ptstate.ladder,
-        )
-
-        if np.any(~np.isfinite(lnlike0)):
-            raise ValueError("Some likelihood values are not finite.")
-        if np.any(~np.isfinite(lnprior0)):
-            raise ValueError("An initial value falls outside the prior bounds.")
-
-        self.state = initial_state
-
-        # Checkpoint / resume
-        _resumed_from_checkpoint = False
-        self.checkpoint_path = check_for_checkpoint(self.outdir)
-        if self.resume and self.checkpoint_path is not None:
-            _resumed_from_checkpoint = True
-            logger.info("Resuming from checkpoint: %s", self.checkpoint_path)
-            loaded = load_rjpt_checkpoint(
-                self.checkpoint_path,
-                lnlike=self.lnlike,
-                lnprior=self.lnprior,
-                raw_lnlike=self._raw_lnlike,
-                raw_lnprior=self._raw_lnprior,
-                lnlike_grad=self.lnlike_grad,
-            )
-            # num_adapt resume semantics: an EXPLICITLY passed constructor
-            # value (including an explicit None) wins over the checkpointed
-            # value, with a warning when they differ; the default keeps the
-            # checkpointed value — silently un-freezing a checkpointed
-            # freeze would resume a half-frozen kernel (proposals whose
-            # frozen state is pickled, e.g. a frozen normalizing flow, stay
-            # frozen while everything else adapts again).  getattr guards
-            # the load_rjpt_checkpoint(...)->sample() path, where unpickling
-            # bypasses __init__ (pre-num_adapt checkpoints lack both
-            # attributes).
-            constructor_num_adapt = getattr(self, "num_adapt", None)
-            num_adapt_explicit = getattr(self, "_num_adapt_explicit", False)
-            constructor_resume = self.resume
-            constructor_checkpoint_path = self.checkpoint_path
-            self.__dict__.update(loaded.__dict__)
-            # the checkpoint carries the ORIGINAL run's resume flag (often
-            # False) and checkpoint path (None until its first checkpoint);
-            # keep this run's values or prepare_files below would truncate
-            # the NUTS diagnostics instead of appending
-            self.resume = constructor_resume
-            self.checkpoint_path = constructor_checkpoint_path
-            checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
-            if num_adapt_explicit:
-                if checkpoint_num_adapt != constructor_num_adapt:
-                    logger.warning(
-                        "Resume: overriding checkpointed num_adapt=%s with "
-                        "the resuming constructor's explicitly passed "
-                        "num_adapt=%s. Proposals whose frozen state is "
-                        "pickled (e.g. normalizing flows frozen by "
-                        "freeze_adaptation) remain frozen regardless: their "
-                        "freeze is irreversible and survives the "
-                        "checkpoint, so removing or extending the freeze "
-                        "only re-enables the other adaptive components.",
-                        checkpoint_num_adapt,
-                        constructor_num_adapt,
-                    )
-                self.num_adapt = constructor_num_adapt
-            else:
-                self.num_adapt = checkpoint_num_adapt
-            self._num_adapt_explicit = num_adapt_explicit
-            self._migrate_or_warn_legacy_birth_death()
-            # drop chain-file rows written after the checkpoint (e.g. by the
-            # final flush of a run that completed normally): the loop below
-            # re-generates those iterations bit-identically from the
-            # checkpointed RNG streams, so stale rows would be duplicates
-            self.short_chain.truncate_files_to_saved()
-
-        # Backward-compat: old checkpoints may lack new adaptation attributes
-        if not hasattr(self, "_dual_averagers"):
-            self._dual_averagers = {}
-        if not hasattr(self, "_nuts_sample_buffers"):
-            self._nuts_sample_buffers = {}
-        if not hasattr(self, "_mass_matrix_injected"):
-            self._mass_matrix_injected = set()
-        if not hasattr(self, "_nuts_steps_since_mm_update"):
-            self._nuts_steps_since_mm_update = {}
-        if not hasattr(self, "_mass_matrix_adapt_interval"):
-            self._mass_matrix_adapt_interval = 200
-        if not hasattr(self, "_mass_matrix_min_samples"):
-            self._mass_matrix_min_samples = 50
-        if not hasattr(self, "_step_size_min"):
-            self._step_size_min = 1e-4
-        if not hasattr(self, "_step_size_max"):
-            self._step_size_max = 5.0
-        if not hasattr(self, "num_adapt"):
-            self.num_adapt = None
-
-        # NUTS diagnostics file
-        if self.nuts_enabled:
-            self._nuts_diag_data = []
-            self._nuts_diag_path = os.path.join(self.outdir, "nuts_diagnostics.txt")
-            prepare_files([self._nuts_diag_path], resume=self.resume)
-            if _resumed_from_checkpoint:
-                # mirror the chain-file truncation: drop diagnostics rows
-                # written after the checkpoint (the resumed iterations
-                # re-generate them)
-                self._truncate_nuts_diagnostics()
-            else:
-                self._nuts_diag_rows_written = 0
-
-        # NUTS warmup: find initial step sizes
-        if self.nuts_enabled:
-            for k in range(self.ntemps):
-                logp_and_grad, active_idx = self._make_tempered_logp_grad(k, self.state)
-                active_params = self.state.positions[k][active_idx]
-                if len(active_params) > 0:
-                    self._get_or_find_step_size(k, active_params, logp_and_grad, self.rngs[k])
-
-        _proposals_frozen = False
-
-        for jj in tqdm(
-            range(self.short_chain.iteration, num_iterations),
-            initial=self.short_chain.iteration,
-            total=num_iterations,
-            desc="Sampling",
-        ):
-            adapting = self._adaptation_active(jj)
-            if not adapting and not _proposals_frozen:
-                self._freeze_adaptive_proposals()
-                # Freeze the smoothed dual-averaging step sizes, not the
-                # noisy primal iterates tracked during adaptation
-                self._finalize_step_sizes()
-                _proposals_frozen = True
-
-            # Step A: MH step (includes RJ proposals if registered)
-            self.state = vectorized_mh_step(
-                self.state,
-                self.proposal_bundle,
-                self.lnlike,
-                self.lnprior,
-                self.rngs[0],
-                wrap=self.wrap,
-            )
-            self.proposal_bundle.report_accepts(self.state.accepted)
-
-            # Step B: NUTS step on active continuous params
-            if self.nuts_enabled:
-                self.state, cold_diag = self._nuts_step_all_chains(self.state, adapt=adapting)
-                if cold_diag is not None:
-                    # initialized above whenever nuts_enabled
-                    assert self._nuts_diag_data is not None
-                    self._nuts_diag_data.append(cold_diag)
-                if adapting:
-                    self._maybe_adapt_mass_matrices()
-
-            # Step C: Save (chain files flush before add_state so the ring
-            # buffer never overwrites unsaved data)
-            if jj > 0 and jj % self.save_freq == 0:
-                self.short_chain.save_chain()
-                self.save_chain_acceptance_rates()
-                if self.nuts_enabled:
-                    self._flush_nuts_diagnostics()
-            self.short_chain.add_state(self.state)
-
-            # Step D: PT swap
-            if jj % self.swap_steps == 0 and self.ntemps > 1:
-                self.state = pt_step(
-                    self.state,
-                    self.ptstate,
-                    self.lnlike,
-                    self.lnprior,
-                    self.rngs[-1],
-                )
-                if adapting:
-                    self.ptstate.adapt_ladder()
-                    # adapt_ladder mutates the ladder (aliased by state.temps) in
-                    # place, so the tempered lnprobs must be recomputed for the
-                    # new temperatures
-                    self.state.lnprobs = tempered_lnprobs(
-                        self.state.lnlikes, self.state.lnpriors, self.ptstate.ladder
-                    )
-
-            # Step E: Covariance update. Past num_adapt neither the
-            # covariance/mean/SVD nor the DE buffer update, so the transition
-            # kernel is fixed (DE keeps proposing from the frozen buffer).
-            # _last_cov_iter is an instance attribute (not a loop local) so
-            # the covariance-refresh cadence itself is checkpointed state and
-            # survives a resume even when the checkpoint iteration is not a
-            # covariance-update boundary.
-            if adapting and jj % self.cov_update == 0:
-                new_count = self.short_chain.iteration - self._last_cov_iter
-                if new_count > 0:
-                    new_samples = self.short_chain.get_recent_samples(new_count)
-                    self.multi_chain_stats.recursive_update(new_samples)
-                self._last_cov_iter = self.short_chain.iteration
-
-            # Step F: checkpoint at the END of the iteration: the pickle
-            # then captures a fully completed iteration (post NUTS, post
-            # PT-swap, post adaptation) with every RNG stream at an
-            # iteration boundary, so a resumed run continues at jj + 1
-            # bit-identically
-            if jj > 0 and jj % self.save_freq == 0:
-                checkpoint_sampler(
-                    self,
-                    path=self.checkpoint_path,
-                    omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
-                )
-
-        # Final save
-        self.short_chain.save_chain()
-        self.save_chain_acceptance_rates()
-        if self.nuts_enabled:
-            self._flush_nuts_diagnostics()
+        return super().sample(initial_position, num_iterations, thin)
 
     # ------------------------------------------------------------------
     # NUTS diagnostics I/O
@@ -1350,7 +887,7 @@ class RJPTSampler:
         dict
             ``{name: {calls, accepts, rate, per_chain: [...]}}``
         """
-        return self.proposal_bundle.acceptance_report()
+        return super().proposal_acceptance_rates()
 
     def chain_acceptance_rates(self) -> dict:
         """Per-chain MH acceptance summary, plus PT swap rates.
@@ -1364,12 +901,7 @@ class RJPTSampler:
             accept rate for each neighbour-pair swap, or empty if
             ``ntemps == 1``).
         """
-        ladder = self.ptstate.ladder
-        return {
-            "temperatures": [] if ladder is None else ladder.tolist(),
-            "mh": self.proposal_bundle.chain_acceptance_rates(),
-            "pt_swap": self.ptstate.compute_accept_ratio() if self.ntemps > 1 else np.array([]),
-        }
+        return super().chain_acceptance_rates()
 
     def save_chain_acceptance_rates(self, path: Optional[str] = None) -> str:
         """Write a JSON snapshot of chain acceptance rates to disk.
@@ -1387,18 +919,7 @@ class RJPTSampler:
         str
             Resolved path written.
         """
-        import json
-
-        if path is None:
-            path = os.path.join(self.outdir, "chain_acceptance.json")
-        report = self.chain_acceptance_rates()
-        swap = report["pt_swap"]
-        report["pt_swap"] = swap.tolist() if hasattr(swap, "tolist") else list(swap)
-        report["per_proposal"] = self.proposal_acceptance_rates()
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as fp:
-            json.dump(report, fp, indent=2)
-        return path
+        return super().save_chain_acceptance_rates(path)
 
     # ------------------------------------------------------------------
     # load_chain
@@ -1415,27 +936,7 @@ class RJPTSampler:
             If NUTS was enabled, also includes cold-chain ``tree_depth``,
             ``divergent``, ``energy_error``, ``step_size``, ``mean_accept_prob``.
         """
-        samples, lnlike, lnprob, accepted, temperature = [], [], [], [], []
-        for ii in range(self.ntemps):
-            filepath = os.path.join(self.outdir, f"chain_{ii}.txt")
-            if not os.path.exists(filepath):
-                raise FileNotFoundError(f"Chain file not found: {filepath}")
-            data = np.loadtxt(filepath)
-            if data.ndim == 1:
-                data = data.reshape(1, -1)
-            samples.append(data[:, : self.ndim])
-            lnlike.append(data[:, self.ndim])
-            lnprob.append(data[:, self.ndim + 1])
-            accepted.append(data[:, self.ndim + 2])
-            temperature.append(data[:, self.ndim + 3])
-
-        result = {
-            "samples": np.array(samples),
-            "lnlike": np.array(lnlike),
-            "lnprob": np.array(lnprob),
-            "accepted": np.array(accepted),
-            "temperature": np.array(temperature),
-        }
+        result = super().load_chain()
 
         # NUTS extras
         nuts_path = os.path.join(self.outdir, "nuts_diagnostics.txt")

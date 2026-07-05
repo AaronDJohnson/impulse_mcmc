@@ -309,7 +309,9 @@ class TestPTSampler:
         for jp in sampler.proposal_bundle.jump_proposals:
             assert len(jp.proposal_list) == 4
 
-    @patch("impulse.samplers.tqdm")  # Mock tqdm to avoid progress bar output
+    # The sample() loop lives in the shared engine module impulse._pt_base,
+    # so tqdm must be patched where it is looked up
+    @patch("impulse._pt_base.tqdm")  # Mock tqdm to avoid progress bar output
     def test_pt_sampler_sample_basic(self, mock_tqdm, simple_likelihood, simple_prior, temp_dir):
         """Test basic sampling functionality"""
         # Make tqdm return an iterable that doesn't interfere
@@ -383,9 +385,12 @@ class TestPTSampler:
         assert sampler.lnlike.vectorized == True
         assert sampler.lnprior.vectorized == True
 
-    @patch("impulse.samplers.check_for_checkpoint")
+    # check_for_checkpoint and tqdm are looked up in the shared engine
+    # module impulse._pt_base; load_checkpoint is looked up in
+    # impulse.samplers (the PTSampler._load_checkpoint hook)
+    @patch("impulse._pt_base.check_for_checkpoint")
     @patch("impulse.samplers.load_checkpoint")
-    @patch("impulse.samplers.tqdm")
+    @patch("impulse._pt_base.tqdm")
     def test_pt_sampler_resume_functionality(
         self,
         mock_tqdm,
@@ -544,7 +549,7 @@ class TestPTSampler:
         assert sampler.lnlike.threads == 2
         assert sampler.lnprior.threads == 2
 
-    @patch("impulse.samplers.tqdm")
+    @patch("impulse._pt_base.tqdm")  # sample() loop lives in impulse._pt_base
     def test_proposal_acceptance_rates(self, mock_tqdm, simple_likelihood, simple_prior, temp_dir):
         """Total calls across all proposals equals num_iterations * ntemps."""
         n_iter = 50

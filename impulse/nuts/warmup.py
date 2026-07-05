@@ -100,6 +100,58 @@ class DualAveraging:
         self.count = 0
 
 
+def regularized_mass_matrix(
+    samples: ArrayLike, ndim: int, mass_matrix_type: MassMatrixType
+) -> MassMatrix:
+    """Estimate a mass matrix from samples with Stan-style regularization.
+
+    Shared by :meth:`WarmupSchedule._adapt_mass_matrix` and the online
+    per-model adaptation in :class:`impulse.nuts.adapter.PerModelNUTSAdapter`
+    (internal helper — not exported publicly).
+
+    Parameters
+    ----------
+    samples : list of np.ndarray
+        Position samples, each of shape ``(ndim,)``.
+    ndim : int
+        Dimensionality.
+    mass_matrix_type : MassMatrixType
+        Desired mass matrix type.
+
+    Returns
+    -------
+    MassMatrix
+        New mass matrix M = (regularized covariance)^{-1}.
+    """
+    samples = np.array(samples)
+    n = len(samples)
+    if n < 2:
+        return MassMatrix(ndim, MassMatrixType.UNIT)
+
+    sample_cov = np.cov(samples, rowvar=False)
+    if sample_cov.ndim == 0:
+        sample_cov = sample_cov.reshape(1, 1)
+
+    # Regularization: shrink toward diagonal (Stan's approach)
+    shrinkage = 5.0 / (n + 5.0)
+    reg_cov = (1 - shrinkage) * sample_cov + shrinkage * np.diag(np.diag(sample_cov) + 1e-3)
+
+    # from_covariance inverts: mass matrix M = reg_cov^{-1} (Stan's
+    # inverse metric equals the posterior covariance)
+    if mass_matrix_type == MassMatrixType.DIAGONAL:
+        return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
+    elif mass_matrix_type == MassMatrixType.DENSE:
+        # Add small diagonal for numerical stability
+        reg_cov += 1e-8 * np.eye(ndim)
+        try:
+            return MassMatrix.from_covariance(reg_cov, MassMatrixType.DENSE)
+        except np.linalg.LinAlgError:
+            # Fall back to diagonal
+            return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
+    else:
+        return MassMatrix(ndim, MassMatrixType.UNIT)
+
+
 class WarmupSchedule:
     """Stan-style three-phase warmup with mass matrix adaptation.
 
@@ -191,33 +243,7 @@ class WarmupSchedule:
         MassMatrix
             Updated mass matrix.
         """
-        samples = np.array(samples)
-        n = len(samples)
-        if n < 2:
-            return MassMatrix(self.ndim, MassMatrixType.UNIT)
-
-        sample_cov = np.cov(samples, rowvar=False)
-        if sample_cov.ndim == 0:
-            sample_cov = sample_cov.reshape(1, 1)
-
-        # Regularization: shrink toward identity (Stan's approach)
-        shrinkage = 5.0 / (n + 5.0)
-        reg_cov = (1 - shrinkage) * sample_cov + shrinkage * np.diag(np.diag(sample_cov) + 1e-3)
-
-        # from_covariance inverts: mass matrix M = reg_cov^{-1} (Stan's
-        # inverse metric equals the posterior covariance)
-        if self.mass_matrix_type == MassMatrixType.DIAGONAL:
-            return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
-        elif self.mass_matrix_type == MassMatrixType.DENSE:
-            # Add small diagonal for numerical stability
-            reg_cov += 1e-8 * np.eye(self.ndim)
-            try:
-                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DENSE)
-            except np.linalg.LinAlgError:
-                # Fall back to diagonal
-                return MassMatrix.from_covariance(reg_cov, MassMatrixType.DIAGONAL)
-        else:
-            return MassMatrix(self.ndim, MassMatrixType.UNIT)
+        return regularized_mass_matrix(samples, self.ndim, self.mass_matrix_type)
 
     def _in_window(self, iteration: int) -> Optional[int]:
         """Check if iteration falls within any adaptation window."""

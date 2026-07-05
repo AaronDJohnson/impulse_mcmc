@@ -24,6 +24,12 @@ def _gauss_lnlike(x):
     return -0.5 * np.sum(x**2, axis=1)
 
 
+def _gauss_lnlike_grad(x):
+    """``(active_params) -> (loglike, grad)`` for a standard Gaussian."""
+    x = np.asarray(x, dtype=np.float64)
+    return -0.5 * np.sum(x**2), -x
+
+
 def _flat_lnprior(x):
     x = np.asarray(x)
     if x.ndim == 1:
@@ -1022,3 +1028,179 @@ class TestResumeLegacyBirthDeathMigration:
             assert names.count("birth_death") == 1
             assert "birth_proposal" not in names
             assert "death_proposal" not in names
+
+
+class TestResumeLegacyNUTSAdapterMigration:
+    """impulse 2.0 checkpoints pickled the per-model NUTS adaptation caches
+    as raw dict/set attributes directly on the RJPTSampler instance; the
+    current sampler keeps them inside a ``PerModelNUTSAdapter`` component.
+    Resuming a 2.0-shaped checkpoint must rebuild the adapter from the raw
+    attributes SILENTLY (internal representation change, identical
+    behavior) and continue sampling bit-identically."""
+
+    # (legacy raw attribute name, adapter field name)
+    LEGACY_TO_ADAPTER = [
+        ("_step_sizes", "step_sizes"),
+        ("_mass_matrices", "mass_matrices"),
+        ("_dual_averagers", "dual_averagers"),
+        ("_nuts_sample_buffers", "sample_buffers"),
+        ("_mass_matrix_injected", "mass_matrix_injected"),
+        ("_nuts_steps_since_mm_update", "steps_since_mm_update"),
+        ("_mass_matrix_adapt_interval", "mass_matrix_adapt_interval"),
+        ("_mass_matrix_min_samples", "mass_matrix_min_samples"),
+        ("_step_size_min", "step_size_min"),
+        ("_step_size_max", "step_size_max"),
+    ]
+
+    @staticmethod
+    def _make_nuts_rjpt(outdir, resume=False):
+        from impulse.rjpt_sampler import RJPTSampler
+
+        return RJPTSampler(
+            ndim=2,
+            lnlike=_gauss_lnlike,
+            lnprior=_flat_lnprior,
+            lnlike_grad=_gauss_lnlike_grad,
+            ntemps=2,
+            seed=1,
+            outdir=outdir,
+            save_freq=10,
+            max_tree_depth=4,
+            hot_chain_max_depth=3,
+            # small thresholds so a mass-matrix commit lands before the
+            # checkpoint and its state must survive the migration
+            mass_matrix_adapt_interval=15,
+            mass_matrix_min_samples=5,
+            resume=resume,
+        )
+
+    @classmethod
+    def _downgrade_checkpoint_to_legacy_shape(cls, path):
+        """Rewrite a checkpoint into the 2.0 on-disk shape: the adapter's
+        fields become raw instance attributes and ``_nuts_adapter``
+        disappears.  Operates on ``__dict__`` directly — attribute access
+        would hit the compat properties and re-trigger migration."""
+        with open(path, "rb") as fp:
+            loaded = pickle.load(fp)
+        adapter = loaded.__dict__.pop("_nuts_adapter")
+        for legacy_name, field in cls.LEGACY_TO_ADAPTER:
+            loaded.__dict__[legacy_name] = getattr(adapter, field)
+        with open(path, "wb") as fp:
+            pickle.dump(loaded, fp)
+
+    def test_rjpt_legacy_raw_nuts_state_resumes_bit_identically(self, temp_dir):
+        """End-to-end: interrupted run -> checkpoint downgraded to the 2.0
+        raw-attribute shape -> resume to N; chains (including NUTS
+        diagnostics) must be bit-identical to an uninterrupted N-iteration
+        run, the adapter must be reconstructed, and the raw attributes
+        consumed."""
+        from impulse.nuts.adapter import PerModelNUTSAdapter
+
+        ref_dir = os.path.join(temp_dir, "reference")
+        res_dir = os.path.join(temp_dir, "resumed")
+        x0 = np.array([0.1, 0.1])
+
+        # Uninterrupted reference run
+        reference = self._make_nuts_rjpt(ref_dir)
+        reference.sample(x0, num_iterations=40)
+
+        # Interrupted run: checkpoint at iteration 20, then downgraded
+        interrupted = self._make_nuts_rjpt(res_dir)
+        interrupted.sample(x0, num_iterations=25)
+        ckpt = check_for_checkpoint(res_dir)
+        assert ckpt is not None
+        self._downgrade_checkpoint_to_legacy_shape(ckpt)
+
+        # Resume from the 2.0-shaped checkpoint, silently (migration is an
+        # internal representation change: no UserWarning, unlike the legacy
+        # birth/death migration which changes the kernel)
+        resumed = self._make_nuts_rjpt(res_dir, resume=True)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            resumed.sample(x0, num_iterations=40)
+        user_warnings = [w for w in caught if issubclass(w.category, UserWarning)]
+        assert not user_warnings, [str(w.message) for w in user_warnings]
+
+        # Adapter reconstructed; raw attributes consumed from __dict__
+        assert isinstance(resumed.__dict__.get("_nuts_adapter"), PerModelNUTSAdapter)
+        for legacy_name, _ in self.LEGACY_TO_ADAPTER:
+            assert legacy_name not in resumed.__dict__
+
+        # The checkpoint written by the resumed run is in the NEW format
+        with open(ckpt, "rb") as fp:
+            rewritten = pickle.load(fp)
+        assert isinstance(rewritten.__dict__.get("_nuts_adapter"), PerModelNUTSAdapter)
+        assert not PerModelNUTSAdapter.has_legacy_state(rewritten.__dict__)
+
+        # Bit-identical continuation: chain files and NUTS diagnostics
+        ref_chain = reference.load_chain()
+        res_chain = resumed.load_chain()
+        for key in ("samples", "lnlike", "lnprob", "tree_depth", "step_size", "divergent"):
+            assert np.array_equal(ref_chain[key], res_chain[key]), key
+
+    def test_migration_adopts_legacy_objects_and_defaults(self, temp_dir):
+        """Unit-level: _ensure_nuts_adapter adopts the raw objects by
+        IDENTITY (dual averagers, mass matrices, buffers continue exactly
+        where the checkpoint left them, and the injected-matrix
+        never-overwrite bookkeeping survives), consumes the raw entries,
+        and back-fills absent config scalars from the resuming
+        constructor's values (matching the pre-adapter
+        __dict__.update-then-backfill semantics, where a scalar missing
+        from the checkpoint kept the constructor's value)."""
+        from impulse.nuts.adapter import PerModelNUTSAdapter
+        from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
+        from impulse.nuts.warmup import DualAveraging
+
+        sampler = self._make_nuts_rjpt(temp_dir)
+        # Constructor-fresh adapter config, captured before the legacy
+        # state shadows it — the migration must preserve these for keys
+        # the checkpoint lacks.
+        fresh = sampler.__dict__["_nuts_adapter"]
+        fresh_min_samples = fresh.mass_matrix_min_samples
+        fresh_step_min = fresh.step_size_min
+        fresh_step_max = fresh.step_size_max
+        legacy = {
+            "_step_sizes": {(0, 2): 0.25, (1, 2): 0.5},
+            "_mass_matrices": {2: MassMatrix(2, MassMatrixType.UNIT)},
+            "_dual_averagers": {(0, 2): DualAveraging(target_accept=0.8, initial_step_size=0.25)},
+            "_nuts_sample_buffers": {2: [np.zeros(2), np.ones(2)]},
+            "_mass_matrix_injected": {2},
+            "_nuts_steps_since_mm_update": {2: 7},
+            "_mass_matrix_adapt_interval": 33,
+        }
+        # Emulate the post-__dict__.update state of a 2.0 resume: raw
+        # attributes present (shadowed by the compat properties), plus a
+        # constructor-fresh adapter that must LOSE to the checkpointed
+        # state for keys the checkpoint CARRIES, but must SUPPLY the
+        # values for keys it lacks (_mass_matrix_min_samples /
+        # _step_size_min/_step_size_max deliberately absent here):
+        # pre-online-adaptation checkpoints lack them, and the old
+        # __dict__.update path kept the resuming constructor's values.
+        sampler.__dict__.update(legacy)
+
+        adapter = sampler._ensure_nuts_adapter()
+
+        assert sampler.__dict__["_nuts_adapter"] is adapter
+        for name in ("_step_sizes", "_mass_matrices", "_dual_averagers"):
+            assert name not in sampler.__dict__
+        assert not PerModelNUTSAdapter.has_legacy_state(sampler.__dict__)
+
+        assert adapter.step_sizes is legacy["_step_sizes"]
+        assert adapter.mass_matrices is legacy["_mass_matrices"]
+        assert adapter.dual_averagers is legacy["_dual_averagers"]
+        assert adapter.sample_buffers is legacy["_nuts_sample_buffers"]
+        assert adapter.mass_matrix_injected is legacy["_mass_matrix_injected"]
+        assert adapter.steps_since_mm_update is legacy["_nuts_steps_since_mm_update"]
+        assert adapter.mass_matrix_adapt_interval == 33  # checkpointed value wins
+        # Keys absent from the checkpoint fall back to the resuming
+        # constructor's configuration (captured from the fresh adapter
+        # before migration), not hardcoded defaults:
+        assert adapter.mass_matrix_min_samples == fresh_min_samples
+        assert adapter.step_size_min == fresh_step_min
+        assert adapter.step_size_max == fresh_step_max
+
+        # The compat property views serve the adopted state
+        assert sampler._step_sizes is legacy["_step_sizes"]
+        assert sampler._mass_matrix_injected == {2}
+        # Idempotent: a second call returns the same adapter
+        assert sampler._ensure_nuts_adapter() is adapter
