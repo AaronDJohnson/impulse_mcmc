@@ -81,7 +81,7 @@ def outdir():
     shutil.rmtree(d)
 
 
-class TestFromRJMCMC:
+class TestFromProductSpace:
     def test_construction(self, product_space, outdir):
         sampler = PTSampler.from_product_space(
             product_space,
@@ -583,7 +583,7 @@ class TestPerModelStats:
         ), "proposal_L should diverge after model-specific updates"
 
     def test_short_run_with_per_model(self, product_space, outdir):
-        """Smoke test: RJMCMC sampling runs correctly with per-model stats."""
+        """Smoke test: product-space model-selection sampling runs correctly with per-model stats."""
         sampler = PTSampler.from_product_space(
             product_space,
             ntemps=3,

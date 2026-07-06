@@ -9,8 +9,7 @@ ordinary Metropolis-Hastings birth/death (plus a direct model-index jump
 and a source swap) on the fixed-dimension state — not dimension-changing
 reversible jump in the Green (1995) sense, and no trans-dimensional
 Jacobian appears. It is the product-space member of the trans-model MCMC
-family (Carlin & Chib 1995; Godsill 2001). ``RJMCMCProductSpace`` is kept
-as a deprecated alias.
+family (Carlin & Chib 1995; Godsill 2001).
 """
 
 from typing import Callable, Optional
@@ -376,11 +375,3 @@ class BirthDeathProductSpace(NestedProductSpace):
             x0[layout.source_slice(i)] = self.source_prior_draw(rng)
         layout.set_model_index(x0, nmodel)
         return x0
-
-
-# Deprecated alias. This class was named ``RJMCMCProductSpace`` through
-# 2.0.0-dev, but it is a product-space (composite-model-space) sampler, not
-# dimension-changing reversible jump; the accurate name is
-# ``BirthDeathProductSpace``. The alias is retained for backward
-# compatibility and may be removed in a future release.
-RJMCMCProductSpace = BirthDeathProductSpace

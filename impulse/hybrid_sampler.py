@@ -241,7 +241,7 @@ class HybridPTSampler(_PTSamplerBase):
         )
 
         # product-space model selection (set by from_product_space)
-        self._rjmcmc_space = None
+        self._product_space = None
 
         # NUTS diagnostics buffer (populated during sampling)
         self._nuts_diag_data: Optional[list] = None
@@ -504,7 +504,7 @@ class HybridPTSampler(_PTSamplerBase):
             de_min_fill=de_min_fill,
             **kwargs,
         )
-        sampler._rjmcmc_space = product_space
+        sampler._product_space = product_space
         _register_model_selection_jumps(
             sampler,
             product_space,
@@ -514,16 +514,6 @@ class HybridPTSampler(_PTSamplerBase):
             swap_weight=swap_weight,
         )
         return sampler
-
-    @classmethod
-    def from_rjmcmc(cls, *args, **kwargs) -> "HybridPTSampler":
-        """Deprecated alias for :meth:`from_product_space`.
-
-        The name ``from_rjmcmc`` is a misnomer — this builds a product-space
-        (birth-death) sampler, not a dimension-changing reversible-jump one.
-        Kept for backward compatibility; prefer ``from_product_space``.
-        """
-        return cls.from_product_space(*args, **kwargs)
 
     # ------------------------------------------------------------------
     # add_custom_jump
@@ -602,8 +592,8 @@ class HybridPTSampler(_PTSamplerBase):
         For product-space models, active params = first
         ``(nmodel+1)*num_params``.  For fixed-dim models, active = all params.
         """
-        if self._rjmcmc_space is not None:
-            layout = self._rjmcmc_space.layout
+        if self._product_space is not None:
+            layout = self._product_space.layout
             return layout.active_indices(layout.model_index_of(params))
         return np.arange(self.ndim)
 
@@ -627,9 +617,9 @@ class HybridPTSampler(_PTSamplerBase):
 
             # Check prior FIRST — cheap and catches out-of-bounds before
             # potentially expensive/unstable gradient computation.
-            if self._rjmcmc_space is not None:
+            if self._product_space is not None:
                 # All source blocks (active and inactive), model index excluded.
-                lp = raw_lnprior(trial[: self._rjmcmc_space.layout.nmodel_index])
+                lp = raw_lnprior(trial[: self._product_space.layout.nmodel_index])
             else:
                 lp = raw_lnprior(trial)
 
@@ -714,12 +704,12 @@ class HybridPTSampler(_PTSamplerBase):
             # Recompute untempered lnlike and lnprior
             new_lnlikes[k] = (
                 self._raw_lnlike(nuts_state.position)
-                if self._rjmcmc_space is None
+                if self._product_space is None
                 else self.lnlike(new_positions[k : k + 1])[0]
             )
             new_lnpriors[k] = (
                 self._raw_lnprior(new_params)
-                if self._rjmcmc_space is None
+                if self._product_space is None
                 else self.lnprior(new_positions[k : k + 1])[0]
             )
 
@@ -1023,7 +1013,3 @@ class HybridPTSampler(_PTSamplerBase):
         diag["proposal_acceptance"] = self.proposal_acceptance_rates()
 
         return diag
-
-
-# Deprecated alias (pre-rename name; kept so existing code keeps importing).
-RJPTSampler = HybridPTSampler

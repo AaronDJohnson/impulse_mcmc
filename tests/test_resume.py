@@ -450,7 +450,7 @@ class TestResumeNumAdaptOverride:
         return sampler
 
     @staticmethod
-    def _run_rjpt(outdir, num_adapt=_OMIT, resume=False, num_iterations=25):
+    def _run_hybrid(outdir, num_adapt=_OMIT, resume=False, num_iterations=25):
         from impulse.hybrid_sampler import HybridPTSampler
 
         kwargs = {} if num_adapt is _OMIT else {"num_adapt": num_adapt}
@@ -507,28 +507,28 @@ class TestResumeNumAdaptOverride:
         assert resumed.num_adapt is None
         assert any("overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records)
 
-    def test_rjpt_explicit_num_adapt_wins_on_resume(self, temp_dir, caplog):
-        self._run_rjpt(temp_dir, num_adapt=None)
+    def test_hybrid_explicit_num_adapt_wins_on_resume(self, temp_dir, caplog):
+        self._run_hybrid(temp_dir, num_adapt=None)
         assert check_for_checkpoint(temp_dir) is not None
 
         with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
-            resumed = self._run_rjpt(temp_dir, num_adapt=77, resume=True, num_iterations=30)
+            resumed = self._run_hybrid(temp_dir, num_adapt=77, resume=True, num_iterations=30)
         assert resumed.num_adapt == 77
         assert any("overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records)
 
-    def test_rjpt_default_resume_keeps_checkpointed_freeze(self, temp_dir, caplog):
-        self._run_rjpt(temp_dir, num_adapt=15)
+    def test_hybrid_default_resume_keeps_checkpointed_freeze(self, temp_dir, caplog):
+        self._run_hybrid(temp_dir, num_adapt=15)
         with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
-            resumed = self._run_rjpt(temp_dir, resume=True, num_iterations=30)
+            resumed = self._run_hybrid(temp_dir, resume=True, num_iterations=30)
         assert resumed.num_adapt == 15
         assert not any(
             "overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records
         )
 
-    def test_rjpt_explicit_none_unfreezes_with_warning(self, temp_dir, caplog):
-        self._run_rjpt(temp_dir, num_adapt=15)
+    def test_hybrid_explicit_none_unfreezes_with_warning(self, temp_dir, caplog):
+        self._run_hybrid(temp_dir, num_adapt=15)
         with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
-            resumed = self._run_rjpt(temp_dir, num_adapt=None, resume=True, num_iterations=30)
+            resumed = self._run_hybrid(temp_dir, num_adapt=None, resume=True, num_iterations=30)
         assert resumed.num_adapt is None
         assert any("overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records)
 
@@ -558,10 +558,10 @@ class TestResumeNumAdaptOverride:
         # attributes missing == not explicitly passed -> checkpoint kept
         assert sampler.num_adapt == 15
 
-    def test_rjpt_pre_num_adapt_sampler_resumes_without_attribute_error(self, temp_dir):
+    def test_hybrid_pre_num_adapt_sampler_resumes_without_attribute_error(self, temp_dir):
         from impulse.hybrid_sampler import HybridPTSampler
 
-        self._run_rjpt(temp_dir, num_adapt=15)
+        self._run_hybrid(temp_dir, num_adapt=15)
         sampler = HybridPTSampler(
             ndim=2,
             lnlike=_gauss_lnlike,
@@ -604,7 +604,7 @@ class TestResumeLegacyBirthDeathWarning:
         )
 
     @staticmethod
-    def _make_rjpt(outdir, resume=False):
+    def _make_hybrid(outdir, resume=False):
         from impulse.hybrid_sampler import HybridPTSampler
 
         return HybridPTSampler(
@@ -639,21 +639,21 @@ class TestResumeLegacyBirthDeathWarning:
             resuming.sample(np.array([0.1, 0.1]), num_iterations=30)
         assert not any(self.LEGACY_MATCH in str(w.message) for w in caught)
 
-    def test_rjpt_resume_warns_on_legacy_birth_death(self, temp_dir):
-        legacy = self._make_rjpt(temp_dir)
+    def test_hybrid_resume_warns_on_legacy_birth_death(self, temp_dir):
+        legacy = self._make_hybrid(temp_dir)
         legacy.add_custom_jump(_LegacyNamedProposal("birth_proposal"), weight=5)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
         _force_legacy_pickle_checkpoint(legacy, temp_dir)
 
-        resuming = self._make_rjpt(temp_dir, resume=True)
+        resuming = self._make_hybrid(temp_dir, resume=True)
         with pytest.warns(UserWarning, match=self.LEGACY_MATCH):
             resuming.sample(np.array([0.1, 0.1]), num_iterations=30)
 
-    def test_rjpt_resume_no_warning_without_legacy_proposals(self, temp_dir):
-        clean = self._make_rjpt(temp_dir)
+    def test_hybrid_resume_no_warning_without_legacy_proposals(self, temp_dir):
+        clean = self._make_hybrid(temp_dir)
         clean.sample(np.array([0.1, 0.1]), num_iterations=25)
 
-        resuming = self._make_rjpt(temp_dir, resume=True)
+        resuming = self._make_hybrid(temp_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resuming.sample(np.array([0.1, 0.1]), num_iterations=30)
@@ -664,7 +664,7 @@ class TestResumeLegacyBirthDeathMigration:
     """Automatic migration of resumed pre-fix separate birth/death wiring.
 
     The legacy fixtures are FAITHFUL to the attribute layout at git HEAD
-    (``git show HEAD:impulse/rjmcmc_proposals.py``): the legacy
+    (``git show HEAD:impulse/birth_death_proposals.py``): the legacy
     ``BirthProposal`` stored ``num_params``, ``max_sources``,
     ``draw_from_prior``, ``log_proposal_density``, ``log_prior_density``
     and ``prob_schedule`` — identical names to today's class — while the
@@ -684,7 +684,7 @@ class TestResumeLegacyBirthDeathMigration:
     STANDALONE_MATCH = "current-code standalone registrations"
 
     # Attribute layouts at git HEAD (verified against
-    # ``git show HEAD:impulse/rjmcmc_proposals.py``).
+    # ``git show HEAD:impulse/birth_death_proposals.py``).
     HEAD_BIRTH_ATTRS = {
         "num_params",
         "max_sources",
@@ -714,7 +714,7 @@ class TestResumeLegacyBirthDeathMigration:
         )
 
     @staticmethod
-    def _make_rjpt(outdir, resume=False):
+    def _make_hybrid(outdir, resume=False):
         from impulse.hybrid_sampler import HybridPTSampler
 
         return HybridPTSampler(
@@ -875,10 +875,10 @@ class TestResumeLegacyBirthDeathMigration:
         assert not any(self.FALLBACK_MATCH in m for m in messages)
         self._assert_migrated(resumed, pre_weights)
 
-    def test_rjpt_resume_migrates_legacy_pair(self, temp_dir):
-        pre_weights = self._write_legacy_checkpoint(self._make_rjpt, temp_dir)
+    def test_hybrid_resume_migrates_legacy_pair(self, temp_dir):
+        pre_weights = self._write_legacy_checkpoint(self._make_hybrid, temp_dir)
 
-        resumed = self._make_rjpt(temp_dir, resume=True)
+        resumed = self._make_hybrid(temp_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resumed.sample(np.array([0.1, 0.1]), num_iterations=30)
@@ -913,14 +913,14 @@ class TestResumeLegacyBirthDeathMigration:
             assert names.count("death_proposal") == 1
             assert jp.proposal_weights == pytest.approx(old_weights)
 
-    def test_rjpt_corrupted_legacy_pair_falls_back_to_warning(self, temp_dir):
-        legacy = self._make_rjpt(temp_dir)
+    def test_hybrid_corrupted_legacy_pair_falls_back_to_warning(self, temp_dir):
+        legacy = self._make_hybrid(temp_dir)
         legacy.add_custom_jump(_LegacyNamedProposal("birth_proposal"), weight=self.BIRTH_WEIGHT)
         legacy.add_custom_jump(_LegacyNamedProposal("death_proposal"), weight=self.DEATH_WEIGHT)
         legacy.sample(np.array([0.1, 0.1]), num_iterations=25)
         _force_legacy_pickle_checkpoint(legacy, temp_dir)
 
-        resumed = self._make_rjpt(temp_dir, resume=True)
+        resumed = self._make_hybrid(temp_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resumed.sample(np.array([0.1, 0.1]), num_iterations=30)
@@ -972,11 +972,11 @@ class TestResumeLegacyBirthDeathMigration:
         assert not any(self.STANDALONE_MATCH in m for m in messages)
         self._assert_pair_untouched(resumed, pre_weights)
 
-    def test_rjpt_legacy_pair_without_densities_falls_back_to_warning(self, temp_dir):
+    def test_hybrid_legacy_pair_without_densities_falls_back_to_warning(self, temp_dir):
         birth, death = self._legacy_pair_no_densities()
-        pre_weights = self._write_pair_checkpoint(self._make_rjpt, temp_dir, birth, death)
+        pre_weights = self._write_pair_checkpoint(self._make_hybrid, temp_dir, birth, death)
 
-        resumed, messages = self._resume_and_collect(self._make_rjpt, temp_dir)
+        resumed, messages = self._resume_and_collect(self._make_hybrid, temp_dir)
         assert any(self.FALLBACK_MATCH in m for m in messages)
         assert not any(self.MIGRATED_MATCH in m for m in messages)
         assert not any(self.STANDALONE_MATCH in m for m in messages)
@@ -998,11 +998,11 @@ class TestResumeLegacyBirthDeathMigration:
         assert not any(self.FALLBACK_MATCH in m for m in messages)
         self._assert_pair_untouched(resumed, pre_weights)
 
-    def test_rjpt_current_standalone_pair_not_migrated_accurate_warning(self, temp_dir):
+    def test_hybrid_current_standalone_pair_not_migrated_accurate_warning(self, temp_dir):
         birth, death = self._current_standalone_pair()
-        pre_weights = self._write_pair_checkpoint(self._make_rjpt, temp_dir, birth, death)
+        pre_weights = self._write_pair_checkpoint(self._make_hybrid, temp_dir, birth, death)
 
-        resumed, messages = self._resume_and_collect(self._make_rjpt, temp_dir)
+        resumed, messages = self._resume_and_collect(self._make_hybrid, temp_dir)
         assert any(self.STANDALONE_MATCH in m for m in messages)
         assert not any(self.MIGRATED_MATCH in m for m in messages)
         assert not any(self.FALLBACK_MATCH in m for m in messages)
@@ -1038,10 +1038,10 @@ class TestResumeLegacyBirthDeathMigration:
             assert "death_proposal" not in names
             assert jp.proposal_weights[names.index("birth_death")] == (pytest.approx(12.0))
 
-    def test_rjpt_post_fix_checkpoint_round_trip_untouched(self, temp_dir):
+    def test_hybrid_post_fix_checkpoint_round_trip_untouched(self, temp_dir):
         from impulse.birth_death_proposals import make_birth_death_proposal
 
-        clean = self._make_rjpt(temp_dir)
+        clean = self._make_hybrid(temp_dir)
         kernel = make_birth_death_proposal(
             1,
             2,
@@ -1052,7 +1052,7 @@ class TestResumeLegacyBirthDeathMigration:
         clean.sample(np.array([0.1, 0.1]), num_iterations=25)
         _force_legacy_pickle_checkpoint(clean, temp_dir)
 
-        resumed = self._make_rjpt(temp_dir, resume=True)
+        resumed = self._make_hybrid(temp_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resumed.sample(np.array([0.1, 0.1]), num_iterations=30)
@@ -1089,7 +1089,7 @@ class TestResumeLegacyNUTSAdapterMigration:
     ]
 
     @staticmethod
-    def _make_nuts_rjpt(outdir, resume=False):
+    def _make_nuts_hybrid(outdir, resume=False):
         from impulse.hybrid_sampler import HybridPTSampler
 
         return HybridPTSampler(
@@ -1124,7 +1124,7 @@ class TestResumeLegacyNUTSAdapterMigration:
         with open(path, "wb") as fp:
             pickle.dump(loaded, fp)
 
-    def test_rjpt_legacy_raw_nuts_state_resumes_bit_identically(self, temp_dir):
+    def test_hybrid_legacy_raw_nuts_state_resumes_bit_identically(self, temp_dir):
         """End-to-end: interrupted run -> checkpoint downgraded to the 2.0
         raw-attribute shape -> resume to N; chains (including NUTS
         diagnostics) must be bit-identical to an uninterrupted N-iteration
@@ -1137,12 +1137,12 @@ class TestResumeLegacyNUTSAdapterMigration:
         x0 = np.array([0.1, 0.1])
 
         # Uninterrupted reference run
-        reference = self._make_nuts_rjpt(ref_dir)
+        reference = self._make_nuts_hybrid(ref_dir)
         reference.sample(x0, num_iterations=40)
 
         # Interrupted run, then written as a LEGACY pickle checkpoint (2.0
         # checkpoints were pickles) and downgraded to the raw-attribute shape.
-        interrupted = self._make_nuts_rjpt(res_dir)
+        interrupted = self._make_nuts_hybrid(res_dir)
         interrupted.sample(x0, num_iterations=25)
         ckpt = _force_legacy_pickle_checkpoint(interrupted, res_dir)
         assert check_for_checkpoint(res_dir) == ckpt
@@ -1152,7 +1152,7 @@ class TestResumeLegacyNUTSAdapterMigration:
         # is silent (an internal representation change, unlike the legacy
         # birth/death migration which changes the kernel); the only expected
         # warning is the loud legacy-pickle security/deprecation notice.
-        resumed = self._make_nuts_rjpt(res_dir, resume=True)
+        resumed = self._make_nuts_hybrid(res_dir, resume=True)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             resumed.sample(x0, num_iterations=40)
@@ -1195,7 +1195,7 @@ class TestResumeLegacyNUTSAdapterMigration:
         from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
         from impulse.nuts.warmup import DualAveraging
 
-        sampler = self._make_nuts_rjpt(temp_dir)
+        sampler = self._make_nuts_hybrid(temp_dir)
         # Constructor-fresh adapter config, captured before the legacy
         # state shadows it — the migration must preserve these for keys
         # the checkpoint lacks.

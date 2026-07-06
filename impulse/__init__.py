@@ -58,7 +58,6 @@ See the examples/ directory for complete usage examples including:
 __version__ = "2.0.0"
 
 # Product-space model selection (birth/death moves)
-from .birth_death import RJMCMCProductSpace  # deprecated alias
 from .birth_death import BirthDeathProductSpace
 
 # Diagnostics
@@ -69,7 +68,6 @@ from .diagnostics import (
     grubin,
     model_visitation_stats,
 )
-from .hybrid_sampler import RJPTSampler  # deprecated alias for HybridPTSampler
 from .hybrid_sampler import HybridPTSampler
 
 # NUTS utilities
@@ -83,7 +81,6 @@ from .nuts import (
 from .product_space import NestedProductSpace
 
 # Checkpoint / resume
-from .resume import load_rjpt_checkpoint  # deprecated alias for load_hybrid_checkpoint
 from .resume import (
     check_for_checkpoint,
     checkpoint_sampler,
@@ -112,11 +109,9 @@ __all__ = [
     # Samplers
     "PTSampler",
     "HybridPTSampler",
-    "RJPTSampler",  # deprecated alias for HybridPTSampler
     "NUTSSampler",
     # Model spaces
     "BirthDeathProductSpace",
-    "RJMCMCProductSpace",  # deprecated alias for BirthDeathProductSpace
     "NestedProductSpace",
     # Diagnostics
     "model_visitation_stats",
@@ -129,7 +124,6 @@ __all__ = [
     "load_checkpoint",
     "load_nuts_checkpoint",
     "load_hybrid_checkpoint",
-    "load_rjpt_checkpoint",  # deprecated alias for load_hybrid_checkpoint
     "check_for_checkpoint",
     # NUTS utilities
     "compose_logp_and_grad",

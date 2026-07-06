@@ -48,7 +48,7 @@ def _simple_lnlike_grad(x):
     return ll, grad
 
 
-# RJMCMC fixtures
+# Product-space model-selection fixtures
 NUM_PARAMS = 2
 MAX_SOURCES = 3
 LO = np.array([0.0, 0.0])
@@ -118,7 +118,7 @@ class TestHybridPTSamplerBasic:
         assert sampler.ndim == 2
         assert sampler.ntemps == 3
         assert sampler.nuts_enabled is False
-        assert sampler._rjmcmc_space is None
+        assert sampler._product_space is None
 
     def test_init_with_nuts(self, temp_dir):
         """lnlike_grad provided enables NUTS."""
@@ -144,7 +144,7 @@ class TestHybridPTSamplerBasic:
             outdir=temp_dir,
         )
         assert sampler.ndim == product_space.ndim
-        assert sampler._rjmcmc_space is product_space
+        assert sampler._product_space is product_space
         # 3 standard + combined birth-death + nmodel + swap = 6 (the
         # unified min-fill-gated de carries de_weight directly; no
         # early_de registration, no weight-0 stock-de placeholder)
@@ -223,7 +223,7 @@ class TestHybridPTSamplerBasic:
             outdir=temp_dir,
         )
         assert sampler.nuts_enabled is True
-        assert sampler._rjmcmc_space is product_space
+        assert sampler._product_space is product_space
 
     def test_threads_param(self, temp_dir):
         """HybridPTSampler(threads=2) initializes and forwards to wrappers."""
@@ -540,13 +540,13 @@ class TestHybridPTSamplerNUTS:
 
 
 # ---------------------------------------------------------------------------
-# TestHybridPTSamplerRJMCMC
+# TestHybridPTSamplerModelSelection
 # ---------------------------------------------------------------------------
 
 
-class TestHybridPTSamplerRJMCMC:
+class TestHybridPTSamplerModelSelection:
 
-    def test_rjmcmc_short_run(self, product_space, temp_dir):
+    def test_model_selection_short_run(self, product_space, temp_dir):
         """Smoke test: RJ sampler runs without error."""
         sampler = HybridPTSampler.from_product_space(
             product_space,
@@ -563,7 +563,7 @@ class TestHybridPTSamplerRJMCMC:
         assert chain["samples"].shape == (3, 500, product_space.ndim)
 
     @pytest.mark.slow
-    def test_rjmcmc_model_selection(self, product_space, temp_dir):
+    def test_model_selection(self, product_space, temp_dir):
         """Recover correct model count.
 
         This was xfailed after the birth/death constant-weight-selection fix,
@@ -592,7 +592,7 @@ class TestHybridPTSamplerRJMCMC:
         assert np.argmax(probs) == 0
         assert probs[0] > 0.5
 
-    def test_rjmcmc_with_nuts_smoke(self, product_space, temp_dir):
+    def test_model_selection_with_nuts_smoke(self, product_space, temp_dir):
         """RJ+NUTS+PT smoke test."""
 
         def rj_lnlike_grad(active_params):
@@ -676,7 +676,7 @@ class TestPerModelStats:
             assert len(cs._per_model[0].groups) == 1
             assert len(cs._per_model[2].groups) == 3
 
-    def test_rjmcmc_smoke_with_per_model(self, product_space, temp_dir):
+    def test_model_selection_smoke_with_per_model(self, product_space, temp_dir):
         """Smoke test: HybridPTSampler runs with per-model stats."""
         sampler = HybridPTSampler.from_product_space(
             product_space,
@@ -691,7 +691,7 @@ class TestPerModelStats:
         chain = sampler.load_chain()
         assert chain["samples"].shape == (3, 500, product_space.ndim)
 
-    def test_pickle_roundtrip_rjpt(self, product_space, temp_dir):
+    def test_pickle_roundtrip_hybrid(self, product_space, temp_dir):
         """Pickle round-trip preserves per-model state."""
         sampler = HybridPTSampler.from_product_space(
             product_space,
@@ -811,11 +811,11 @@ class TestNUTSAdapterComponent:
 
 
 # ---------------------------------------------------------------------------
-# TestRJPTNumAdapt
+# TestHybridNumAdapt
 # ---------------------------------------------------------------------------
 
 
-class TestRJPTNumAdapt:
+class TestHybridNumAdapt:
     """Adaptation-freeze semantics of HybridPTSampler(num_adapt=...)."""
 
     def _make(self, temp_dir, num_adapt):
@@ -1090,40 +1090,3 @@ class TestStepSizeFreezeFinalization:
             if da.count > 0
         }
         assert any(not np.isclose(primals[key], sampler._step_sizes[key]) for key in primals)
-
-
-# ---------------------------------------------------------------------------
-# TestDeprecatedAliases — pre-rename names remain importable and functional
-# ---------------------------------------------------------------------------
-
-
-class TestDeprecatedAliases:
-    def test_object_aliases_resolve(self):
-        import impulse
-        from impulse.hybrid_sampler import RJPTSampler
-        from impulse.resume import load_rjpt_checkpoint
-
-        assert RJPTSampler is HybridPTSampler
-        assert impulse.RJPTSampler is impulse.HybridPTSampler
-        assert load_rjpt_checkpoint is load_hybrid_checkpoint
-        assert impulse.load_rjpt_checkpoint is impulse.load_hybrid_checkpoint
-        assert impulse.RJMCMCProductSpace is impulse.BirthDeathProductSpace
-
-    def test_from_rjmcmc_delegates_to_from_product_space(self, product_space, temp_dir):
-        from impulse import PTSampler
-
-        new = HybridPTSampler.from_product_space(
-            product_space, ntemps=3, seed=42, outdir=os.path.join(temp_dir, "new")
-        )
-        deprecated = HybridPTSampler.from_rjmcmc(
-            product_space, ntemps=3, seed=42, outdir=os.path.join(temp_dir, "dep")
-        )
-        assert isinstance(deprecated, HybridPTSampler)
-        new_names = [p.__name__ for p in new.proposal_bundle.jump_proposals[0].proposal_list]
-        dep_names = [p.__name__ for p in deprecated.proposal_bundle.jump_proposals[0].proposal_list]
-        assert dep_names == new_names
-        # PTSampler.from_rjmcmc delegates too.
-        pt = PTSampler.from_rjmcmc(
-            product_space, ntemps=3, seed=42, outdir=os.path.join(temp_dir, "pt")
-        )
-        assert isinstance(pt, PTSampler)

@@ -147,7 +147,7 @@ def _pt(outdir, resume=False, **kw):
     )
 
 
-def _rjpt_nuts(outdir, resume=False):
+def _hybrid_nuts(outdir, resume=False):
     return HybridPTSampler.from_product_space(
         _make_rj_space(),
         lnlike_grad=_rj_lnlike_grad,
@@ -200,7 +200,7 @@ class TestFormatLayout:
         assert "impulse_version" in meta
 
     def test_compressed_smaller_than_pickle(self, tmp_path):
-        s = _rjpt_nuts(str(tmp_path))
+        s = _hybrid_nuts(str(tmp_path))
         s.sample(_rj_x0(), num_iterations=120)
         npz = os.path.getsize(tmp_path / "sampler_checkpoint.npz")
         pkl = os.path.join(str(tmp_path), "sampler_checkpoint.pkl")
@@ -292,12 +292,12 @@ class TestStateRoundTrip:
             for gi in range(len(oc.groups)):
                 np.testing.assert_array_equal(rc.proposal_L[gi], oc.proposal_L[gi])
 
-    def test_rjpt_per_model_de_buffers(self, tmp_path):
-        original = _rjpt_nuts(str(tmp_path))
+    def test_hybrid_per_model_de_buffers(self, tmp_path):
+        original = _hybrid_nuts(str(tmp_path))
         original.sample(_rj_x0(), num_iterations=120)
         save_state_checkpoint(original)
 
-        restored = _rjpt_nuts(str(tmp_path))
+        restored = _hybrid_nuts(str(tmp_path))
         restore_state_checkpoint(restored, str(tmp_path / "sampler_checkpoint.json"))
 
         for i in range(original.ntemps):
@@ -333,7 +333,7 @@ class TestStateRoundTrip:
         assert restored.state.temps is restored.ptstate.ladder
 
     def test_nuts_adapter_round_trip(self, tmp_path):
-        original = _rjpt_nuts(str(tmp_path))
+        original = _hybrid_nuts(str(tmp_path))
         original.sample(_rj_x0(), num_iterations=120)
         save_state_checkpoint(original)
         ad = original._nuts_adapter
@@ -342,7 +342,7 @@ class TestStateRoundTrip:
         assert any(mm.matrix_type != MassMatrixType.UNIT for mm in ad.mass_matrices.values())
         assert any(da.count > 0 for da in ad.dual_averagers.values())
 
-        restored = _rjpt_nuts(str(tmp_path))
+        restored = _hybrid_nuts(str(tmp_path))
         restore_state_checkpoint(restored, str(tmp_path / "sampler_checkpoint.json"))
         rad = restored._nuts_adapter
 
@@ -363,7 +363,7 @@ class TestStateRoundTrip:
             assert rda.h_bar == da.h_bar
 
     def test_injected_mass_matrix_round_trip(self, tmp_path):
-        original = _rjpt_nuts(str(tmp_path))
+        original = _hybrid_nuts(str(tmp_path))
         original.sample(_rj_x0(), num_iterations=40)
         # Inject a Fisher/precision mass matrix for n_active=2 and checkpoint.
         precision = np.array([[4.0, 0.5], [0.5, 2.0]])
@@ -371,7 +371,7 @@ class TestStateRoundTrip:
         assert 2 in original._nuts_adapter.mass_matrix_injected
         save_state_checkpoint(original)
 
-        restored = _rjpt_nuts(str(tmp_path))
+        restored = _hybrid_nuts(str(tmp_path))
         restore_state_checkpoint(restored, str(tmp_path / "sampler_checkpoint.json"))
         assert 2 in restored._nuts_adapter.mass_matrix_injected
         omm = original._nuts_adapter.mass_matrices[2]
@@ -477,26 +477,6 @@ class TestMetadataMismatch:
         meta = restore_state_checkpoint(good, str(tmp_path / "sampler_checkpoint.json"))
         assert good.short_chain.iteration == original.short_chain.iteration
         assert meta["ndim"] == 2
-
-    def test_deprecated_sampler_class_name_resumes(self, tmp_path):
-        # A checkpoint written before the RJPTSampler -> HybridPTSampler rename
-        # stores sampler_class="RJPTSampler". It must still resume into a
-        # HybridPTSampler through the deprecated-alias-aware class check.
-        original = _rjpt_nuts(str(tmp_path))
-        original.sample(_rj_x0(), num_iterations=60)
-        save_state_checkpoint(original)
-        json_path = tmp_path / "sampler_checkpoint.json"
-        with open(json_path) as fp:
-            meta = json.load(fp)
-        assert meta["sampler_class"] == "HybridPTSampler"
-        meta["sampler_class"] = "RJPTSampler"  # simulate a pre-rename checkpoint
-        with open(json_path, "w") as fp:
-            json.dump(meta, fp)
-        restored = _rjpt_nuts(str(tmp_path))
-        # No CheckpointMismatchError despite the deprecated class name.
-        out = restore_state_checkpoint(restored, str(json_path))
-        assert out["sampler_class"] == "RJPTSampler"
-        assert restored.short_chain.iteration == original.short_chain.iteration
 
 
 # ---------------------------------------------------------------------------

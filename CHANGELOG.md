@@ -27,6 +27,19 @@ rewrite and shares no API with it.
   `birth_death` jump instead of separate birth and death jumps; the
   `birth_proposal` / `death_proposal` keys in acceptance-rate reports are
   replaced by a single `birth_death` key.
+- The "RJMCMC"/"reversible-jump" misnomer is gone from the public API: this
+  package does product-space (composite-model-space) model selection with
+  birth/death moves, not dimension-changing reversible jump in the Green
+  (1995) sense. The 2.0.0-dev names are renamed and **removed with no
+  aliases** (nothing has shipped — 1.0.0 on PyPI is the unrelated pre-rewrite
+  package): `RJMCMCProductSpace` → `BirthDeathProductSpace`, `RJPTSampler` →
+  `HybridPTSampler`, `PTSampler.from_rjmcmc` / `HybridPTSampler.from_rjmcmc` →
+  `from_product_space`, and `load_rjpt_checkpoint` → `load_hybrid_checkpoint`.
+- The internal module files were renamed to match: `impulse.rjmcmc` →
+  `impulse.birth_death`, `impulse.rjmcmc_proposals` →
+  `impulse.birth_death_proposals`, and `impulse.rjpt_sampler` →
+  `impulse.hybrid_sampler`. There are no import-path shims; import the public
+  classes and functions from the top-level `impulse` package.
 - Chains are bit-different from 1.x runs at the same seed (RNG stream
   changes from the combined birth/death kernel and the min-fill-gated
   `de` move). Default-configuration chains also differ from earlier
@@ -56,27 +69,6 @@ rewrite and shares no API with it.
 
 ### Deprecated
 
-- `RJMCMCProductSpace` is renamed to `BirthDeathProductSpace`, which
-  accurately describes what it is: a product-space (composite-model-space)
-  sampler with birth/death model moves, not dimension-changing reversible
-  jump in the Green (1995) sense. `RJMCMCProductSpace` remains importable as
-  a deprecated alias and may be removed in a future release.
-- The rest of the "RJMCMC"/"reversible-jump" misnomer is retired for the same
-  reason. `RJPTSampler` is renamed to `HybridPTSampler` (it interleaves MH,
-  NUTS, and product-space model moves); `PTSampler.from_rjmcmc` /
-  `HybridPTSampler.from_rjmcmc` are renamed to `from_product_space`; and
-  `load_rjpt_checkpoint` is renamed to `load_hybrid_checkpoint`. The old
-  names remain as deprecated aliases (importable from the top-level `impulse`
-  namespace; the `from_rjmcmc` classmethods are thin wrappers around
-  `from_product_space`) and may be removed in a future release.
-- The internal module files were renamed to match: `impulse.rjmcmc` →
-  `impulse.birth_death`, `impulse.rjmcmc_proposals` →
-  `impulse.birth_death_proposals`, and `impulse.rjpt_sampler` →
-  `impulse.hybrid_sampler`. There are **no import-path shims** for the old
-  module names (this is pre-release); import the public classes and functions
-  from the top-level `impulse` package, where the deprecated aliases above
-  keep working. A checkpoint written by the pre-rename `RJPTSampler` still
-  resumes into a `HybridPTSampler` (the class-name check is alias-aware).
 - The pickle checkpoint format (`sampler_checkpoint.pkl`) is deprecated in
   favor of the no-code-execution `.npz` + `.json` format and is slated for
   removal in a future 2.x release. `load_checkpoint`, `load_hybrid_checkpoint`,

@@ -187,7 +187,7 @@ def _pt_resume_sampler(outdir, resume=False):
     )
 
 
-def _rjpt_nuts_sampler(outdir, resume=False):
+def _hybrid_nuts_sampler(outdir, resume=False):
     return HybridPTSampler(
         ndim=2,
         lnlike=_gauss_lnlike,
@@ -207,7 +207,7 @@ def _rjpt_nuts_sampler(outdir, resume=False):
     )
 
 
-def _rjpt_rj_sampler(outdir, resume=False, save_freq=200, cov_update=100):
+def _hybrid_model_selection_sampler(outdir, resume=False, save_freq=200, cov_update=100):
     return HybridPTSampler.from_product_space(
         _make_rj_space(),
         ntemps=3,
@@ -260,7 +260,7 @@ class TestSeedDeterminism:
             keys=("samples", "lnlike", "lnprob", "accepted", "temperature"),
         )
 
-    def test_rjpt_rj_seed_determinism(self, tmp_path):
+    def test_hybrid_model_selection_seed_determinism(self, tmp_path):
         """HybridPTSampler on a small RJ problem: 600 iterations with the
         combined birth/death kernel, model-index jumps, and source swaps
         registered.  Requires genuine trans-dimensional activity (accepted
@@ -270,7 +270,7 @@ class TestSeedDeterminism:
         chains = []
         for sub in ("run_a", "run_b"):
             outdir = str(tmp_path / sub)
-            sampler = _rjpt_rj_sampler(outdir)
+            sampler = _hybrid_model_selection_sampler(outdir)
             sampler.sample(x0, num_iterations=600)
             chains.append(sampler.load_chain())
             report = sampler.proposal_acceptance_rates()
@@ -365,21 +365,23 @@ class TestResumeEquivalence:
         growth, and per-iteration ladder adaptation across the boundary."""
         self._run_pair(tmp_path, _pt_resume_sampler, np.array([0.5, -0.3]))
 
-    def test_rjpt_nuts_resume_equivalence(self, tmp_path):
+    def test_hybrid_nuts_resume_equivalence(self, tmp_path):
         """HybridPTSampler with NUTS enabled: dual-averaging step-size state,
         mass-matrix adaptation buffers/counters, and the per-chain NUTS RNG
         streams must all be restored so the resumed trajectory is
         bit-identical (mass_matrix_adapt_interval=60 forces mass-matrix
         commits on both sides of the resume boundary)."""
-        self._run_pair(tmp_path, _rjpt_nuts_sampler, np.array([0.5, -0.3]))
+        self._run_pair(tmp_path, _hybrid_nuts_sampler, np.array([0.5, -0.3]))
 
-    def test_rjpt_rj_resume_equivalence(self, tmp_path):
+    def test_hybrid_model_selection_resume_equivalence(self, tmp_path):
         """HybridPTSampler on the RJ problem (MH-only): birth/death kernel state
         and per-model adaptive statistics must survive the checkpoint;
         trans-dimensional moves must be active across the boundary."""
 
         def make(outdir, resume=False):
-            return _rjpt_rj_sampler(outdir, resume=resume, save_freq=40, cov_update=25)
+            return _hybrid_model_selection_sampler(
+                outdir, resume=resume, save_freq=40, cov_update=25
+            )
 
         full_chain, _ = self._run_pair(tmp_path, make, _rj_x0())
         nmodel_cold = np.rint(full_chain["samples"][0, :, -1]).astype(int)

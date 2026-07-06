@@ -213,25 +213,6 @@ def _check_schema(meta: dict) -> None:
         )
 
 
-# Groups of sampler-class names that are the same class under different
-# (current / deprecated) names, so a checkpoint written under one resumes
-# into the other. ``HybridPTSampler`` was called ``RJPTSampler`` before the
-# birth-death/product-space rename.
-_SAMPLER_CLASS_ALIASES = (frozenset({"HybridPTSampler", "RJPTSampler"}),)
-
-
-def _sampler_class_matches(ck_name: Any, cls_name: str) -> bool:
-    """Return True if a checkpoint's sampler-class name matches the class name.
-
-    An exact match, or a match through a known deprecated-alias group (e.g. a
-    checkpoint written by the pre-rename ``RJPTSampler`` resuming into
-    ``HybridPTSampler``).
-    """
-    if ck_name == cls_name:
-        return True
-    return any(ck_name in group and cls_name in group for group in _SAMPLER_CLASS_ALIASES)
-
-
 def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
     """Verify the reconstructed sampler matches the checkpoint; raise on mismatch.
 
@@ -242,7 +223,7 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
     original run did.
     """
     cls_name = type(sampler).__name__
-    if not _sampler_class_matches(meta.get("sampler_class"), cls_name):
+    if meta.get("sampler_class") != cls_name:
         raise CheckpointMismatchError(
             f"checkpoint was written by {meta.get('sampler_class')!r} but is "
             f"being resumed into a {cls_name!r}; reconstruct the same sampler class."
@@ -522,10 +503,6 @@ def load_hybrid_checkpoint(
     if lnlike_grad is not None:
         sampler.lnlike_grad = lnlike_grad
     return sampler
-
-
-# Deprecated alias (pre-rename name; kept so existing code keeps importing).
-load_rjpt_checkpoint = load_hybrid_checkpoint
 
 
 # ---------------------------------------------------------------------------

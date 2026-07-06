@@ -312,16 +312,6 @@ class PTSampler(_PTSamplerBase):
         )
         return sampler
 
-    @classmethod
-    def from_rjmcmc(cls, *args, **kwargs):
-        """Deprecated alias for :meth:`from_product_space`.
-
-        The name ``from_rjmcmc`` is a misnomer — this builds a product-space
-        (birth-death) sampler, not a dimension-changing reversible-jump one.
-        Kept for backward compatibility; prefer ``from_product_space``.
-        """
-        return cls.from_product_space(*args, **kwargs)
-
     def add_custom_jump(self, proposal, weight):
         """
         Add a custom proposal distribution to all temperature chains.
