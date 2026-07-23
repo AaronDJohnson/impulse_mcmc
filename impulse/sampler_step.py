@@ -75,7 +75,16 @@ def vectorized_mh_step(state: SamplerState,
         if np.any(finite):
             lnlike_stars[finite] = lnlike_fn(x_stars[finite])
 
-    lnprob_stars = 1 / state.temps * lnlike_stars + lnprior_stars
+    # On the infinite-temperature chain beta = 1/T = 0: it samples the prior only.
+    # Writing 0 * lnlike gives 0 * -inf = NaN for out-of-bounds proposals (whose
+    # lnlike is -inf), spamming "invalid value" RuntimeWarnings. Drop the
+    # likelihood term explicitly where beta == 0 (mathematically it is already
+    # weightless there, so this changes nothing but the NaN).
+    # np.where evaluates both branches, so masking the *result* still runs the
+    # 0 * -inf multiply and warns. Mask the likelihood INSIDE the product instead:
+    # on the beta == 0 rung the likelihood term is forced to 0 * 0 = 0.
+    beta = 1 / state.temps
+    lnprob_stars = beta * np.where(beta == 0.0, 0.0, lnlike_stars) + lnprior_stars
 
     probability_ratios = lnprob_stars - (state.lnprobs) + qxys
     rand_num = rng.uniform(size=len(state.temps))
@@ -162,6 +171,9 @@ def pt_step(state: SamplerState,
     new_positions = positions[swap_map]
     new_loglikes = log_likes[swap_map]
     new_logpriors = log_priors[swap_map]
-    new_lnprobs = 1 / ladder * new_loglikes + new_logpriors
+    # Same beta == 0 guard as vectorized_mh_step: avoid 0 * -inf = NaN on the
+    # infinite-temperature (prior-only) rung.
+    beta = 1 / ladder
+    new_lnprobs = beta * np.where(beta == 0.0, 0.0, new_loglikes) + new_logpriors
     new_accepted = np.ones(len(ladder), dtype=int)  # all ones for this one (PT swaps are handled separately)
     return SamplerState(new_positions, new_loglikes, new_logpriors, new_lnprobs, new_accepted, ladder)
