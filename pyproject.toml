@@ -4,7 +4,7 @@ dynamic = ["version"]
 authors = [
   { name="Aaron D. Johnson", email="aaron9035@gmail.com" },
 ]
-description = "Parallel tempering MCMC with adaptive proposals, NUTS, and reversible-jump model selection"
+description = "Parallel tempering MCMC with adaptive proposals, NUTS, and product-space model selection"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

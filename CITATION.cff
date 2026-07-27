@@ -12,10 +12,10 @@ repository-code: "https://github.com/AaronDJohnson/impulse_mcmc"
 license: MIT
 abstract: >-
   Parallel-tempering MCMC with adaptive proposals, NUTS, and
-  reversible-jump model selection.
+  product-space (birth-death) model selection.
 keywords:
   - MCMC
   - parallel tempering
-  - reversible-jump
+  - product-space model selection
   - Bayesian inference
   - NUTS
