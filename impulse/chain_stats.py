@@ -117,8 +117,16 @@ class ChainStats:
         self.temp = self.pt_state.ladder[self.chain_index]
         if self.sample_cov is None:
             self.sample_cov = np.identity(self.ndim)
+        else:
+            # A user-supplied sample_cov is normalized here rather than trusted.
+            # The obvious way to produce one for a 1-parameter model,
+            # np.cov(pilot, rowvar=False), returns a 0-d scalar, which breaks
+            # the (ndim, ndim) contract svd_groups relies on.
+            self.sample_cov = np.atleast_2d(np.asarray(self.sample_cov, dtype=float))
         if self.sample_mean is None:
             self.sample_mean = np.zeros(self.ndim)
+        else:
+            self.sample_mean = np.atleast_1d(np.asarray(self.sample_mean, dtype=float))
         if self.groups is None:
             self.groups = [np.arange(0, self.ndim)]
         if self.svd_U is None:

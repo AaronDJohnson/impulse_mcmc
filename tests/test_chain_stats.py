@@ -184,6 +184,34 @@ class TestChainStats:
         assert stats.proposal_L is not None
         assert stats.proposal_L[0].shape == (1, 1)
 
+    def test_user_supplied_1d_sample_cov_is_promoted(self):
+        """A caller-supplied sample_cov for ndim=1 must be accepted.
+
+        Regression test: the obvious way to seed a 1-parameter run,
+        np.cov(pilot, rowvar=False), returns a 0-d scalar. Passing it raised
+        "IndexError: too many indices for array: array is 0-dimensional" from
+        svd_groups during construction -- the same failure as the recursive
+        update path, reachable through a documented public argument.
+        """
+        ptstate = PTState(ndim=1, ntemps=1, min_temp=1.0, max_temp=1.0)
+        rng = np.random.default_rng(0)
+        pilot = rng.standard_normal((50, 1))
+        scalar_cov = np.cov(pilot, rowvar=False)
+        assert np.asarray(scalar_cov).ndim == 0  # precondition
+
+        stats = ChainStats(
+            ndim=1,
+            pt_state=ptstate,
+            chain_index=0,
+            rng=rng,
+            buffer_size=10,
+            sample_cov=scalar_cov,
+            sample_mean=np.mean(pilot, axis=0),
+        )
+
+        assert stats.sample_cov.shape == (1, 1)
+        assert stats.proposal_L[0].shape == (1, 1)
+
     def test_recursive_update_none_checks(self, ptstate_2d):
         """Test recursive_update error handling for None values"""
         rng = np.random.default_rng(42)

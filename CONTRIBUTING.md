@@ -20,16 +20,17 @@ isort, and flake8. Plotting helpers need matplotlib (`pip install -e ".[plots]"`
 ## Running the tests
 
 ```bash
-pytest tests/ -m "not slow" --ignore=tests/test_parallel.py
+pytest tests/ -m "not slow"
 ```
 
 - The `slow` marker (declared in `pyproject.toml`) gates long statistical
   runs; CI runs the fast suite on every push and the slow suite in a separate
   job. Run `pytest tests/ -m slow` before submitting changes to sampler kernels.
-- `tests/test_parallel.py` exercises multiprocessing and is known to hang on
-  some platforms. It is excluded from CI and carries a 120 s per-test timeout
-  locally (via `pytest-timeout`, included in the `dev` extra) — run it
-  deliberately, not as part of the default sweep.
+- There are no excluded test modules: CI runs the whole `tests/` directory.
+  (The multiprocessing module that used to hang, `tests/test_parallel.py`, was
+  removed in 2.0.0 along with the dead `impulse/parallel.py` it covered.)
+  `pytest-timeout` is still in the `dev` extra if you want to bound a run with
+  `--timeout=N` while debugging.
 - If matplotlib is installed and your home directory is read-only (e.g. on a
   cluster), point its cache somewhere writable before running the plot tests:
   `export MPLCONFIGDIR=$TMPDIR/mpl`.

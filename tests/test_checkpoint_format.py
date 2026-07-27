@@ -504,11 +504,11 @@ class TestMetadataMismatch:
             restore_state_checkpoint(wrong, str(tmp_path / "sampler_checkpoint.json"))
 
     def test_resume_preserves_every_chain_row(self, tmp_path):
-        """Resuming to N total iterations must leave exactly N rows on disk.
+        """Resuming to N total iterations leaves exactly N rows on disk.
 
-        Regression test for silent data loss: with save_freq unverified, resuming
-        a 100-iteration run with a different save_freq truncated the chain file to
-        the last checkpointed row and discarded the remainder without warning.
+        An invariant check on the happy path (matching parameters). The
+        save_freq mismatch that used to discard rows is guarded separately by
+        test_run_shaping_scalar_mismatch_raises, which now rejects it outright.
         """
         _pt(str(tmp_path)).sample(np.array([0.3, -0.2]), num_iterations=100)
         _pt(str(tmp_path), resume=True).sample(np.array([0.3, -0.2]), num_iterations=260)
@@ -516,20 +516,35 @@ class TestMetadataMismatch:
         with open(tmp_path / "chain_0.txt") as fh:
             assert sum(1 for _ in fh) == 260
 
-    def test_restore_keeps_buffer_size_invariant(self, tmp_path):
+    def test_set_checkpoint_state_restores_buffer_size(self):
         """set_checkpoint_state must restore buffer_size alongside the buffer.
 
         Regression test: restoring _buffer without buffer_size left the DE
         proposal drawing indices from a range that did not match the array it
         indexes -- IndexError at proposals.py when the buffer grew.
-        """
-        original = _pt(str(tmp_path))
-        original.sample(np.array([0.3, -0.2]), num_iterations=60)
-        good = _pt(str(tmp_path))
-        restore_state_checkpoint(good, str(tmp_path / "sampler_checkpoint.json"))
 
-        for cs in good.multi_chain_stats.chain_stats:
-            assert len(cs._buffer) == cs.buffer_size
+        This deliberately restores into a ChainStats built with a DIFFERENT
+        buffer_size. Going through restore_state_checkpoint could not exercise
+        this: _verify_checkpoint_metadata now rejects a buffer_size mismatch
+        before any state is restored, so the assertion would hold trivially.
+        Driving set_checkpoint_state directly is what makes this falsifying --
+        it fails on the pre-fix tree.
+        """
+        from impulse.chain_stats import ChainStats
+        from impulse.sampler_state import PTState
+
+        ptstate = PTState(ndim=2, ntemps=1, min_temp=1.0, max_temp=1.0)
+        rng = np.random.default_rng(0)
+
+        source = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=200)
+        source.recursive_update(0, rng.standard_normal((10, 2)))
+        arrays, meta = source.get_checkpoint_state()
+
+        target = ChainStats(ndim=2, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=25)
+        target.set_checkpoint_state(arrays, meta)
+
+        assert len(target._buffer) == 200
+        assert target.buffer_size == len(target._buffer)
 
     def test_matching_custom_jump_restores(self, tmp_path):
         original = _pt(str(tmp_path))

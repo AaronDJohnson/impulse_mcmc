@@ -17,13 +17,18 @@ include CONTRIBUTING.md
 include SECURITY.md
 
 # Documentation sources, so the docs are reproducible from an sdist.
-# Notebooks are staged into docs/examples at build time by docs/conf.py and are
-# not tracked, so they are deliberately not listed here.
 include docs/conf.py
 include docs/index.md
 recursive-include docs/user_guide *.md
 recursive-include docs/api *.rst
 recursive-include docs/examples *.md
+
+# The example notebooks. docs/conf.py stages a subset of these into
+# docs/examples/ at build time (docs/examples/*.ipynb is gitignored, which is
+# why only *.md is listed above), so without the sources here the shipped
+# docs/examples/index.md toctree would reference pages the tarball does not
+# contain and a docs build from the sdist would fail.
+recursive-include examples *.ipynb *.py
 
 # Typing marker (also declared as package-data in pyproject.toml).
 include impulse/py.typed
