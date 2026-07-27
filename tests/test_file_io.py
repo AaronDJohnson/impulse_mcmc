@@ -190,6 +190,44 @@ class TestShortChain:
         # Check that we got the right thinned values (0, 2, 4)
         np.testing.assert_array_equal(data[:, 0], [0.0, 2.0, 4.0])
 
+    @pytest.mark.parametrize(
+        "thin,save_freq,n_iter",
+        [(3, 10, 30), (5, 10, 40), (2, 7, 21), (4, 4, 24), (1, 10, 20)],
+    )
+    def test_thinning_phase_is_global_not_per_flush(self, temp_dir, thin, save_freq, n_iter):
+        """Thinning must keep every thin-th ITERATION, across flush boundaries.
+
+        Regression test: save_chain sliced each flush block with [::thin], which
+        restarted the thinning phase at every save_freq boundary. With thin=3 and
+        save_freq=10 the file held iterations 0,3,6,9,10,13,16,19,20,... -- gaps
+        of 3,3,3,1,3,3,3,1,... instead of a uniform 3. That silently breaks the
+        documented "only every thin-th sample is saved" contract and injects a
+        periodic artifact with period save_freq into any autocorrelation or ESS
+        estimate computed from the saved chain.
+
+        Parametrized so thin divides save_freq (4/4), does not divide it (3/10,
+        2/7), exceeds a block boundary (5/10), and the thin=1 default.
+        """
+        chain = ShortChain(
+            ndim=1, ntemps=1, short_iters=save_freq, thin=thin, outdir=temp_dir
+        )
+        for i in range(n_iter):
+            state = SamplerState(
+                np.array([[float(i)]]),
+                np.array([0.0]),
+                np.array([0.0]),
+                np.array([0.0]),
+                np.array([1]),
+                np.array([1.0]),
+            )
+            chain.add_state(state)
+            if (i + 1) % save_freq == 0:
+                chain.save_chain()
+        chain.save_chain()
+
+        kept = np.atleast_1d(np.loadtxt(chain.filepaths[0])[..., 0]).astype(int)
+        assert kept.tolist() == list(range(0, n_iter, thin))
+
     def test_save_chain_empty_buffer(self, temp_dir):
         """Test saving with empty buffer writes nothing"""
         chain = ShortChain(ndim=1, ntemps=1, short_iters=3, outdir=temp_dir)

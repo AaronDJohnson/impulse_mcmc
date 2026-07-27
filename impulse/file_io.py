@@ -233,6 +233,23 @@ class ShortChain:
             # Wraps around (or full buffer when start == end)
             idx = np.r_[start : self.short_iters, 0:end]
 
+        # Thin on the GLOBAL iteration index, not per flush block.
+        #
+        # Slicing each block with [::thin] restarts the thinning phase at every
+        # save_freq boundary, so the saved chain has non-uniform spacing that
+        # depends on save_freq: with thin=3, save_freq=10 the kept iterations
+        # were 0,3,6,9,10,13,16,19,20,... (gaps 3,3,3,1,3,3,3,1,...) instead of
+        # 0,3,6,9,12,... That silently violates the documented "only every
+        # thin-th sample is saved" contract and puts a periodic artifact into
+        # any autocorrelation or ESS estimate computed from the file.
+        #
+        # first_global is the first iteration in this block that survives
+        # thinning; offset positions it within the block. thin == 1 (the
+        # default) always gives offset 0, so behavior -- and bit-exact
+        # reproducibility -- is unchanged for every existing run.
+        first_global = self.iteration - count
+        offset = (-first_global) % self.thin
+
         nrows = 0
         for temp_idx, filepath in enumerate(self.filepaths):
             to_save = np.column_stack(
@@ -243,7 +260,7 @@ class ShortChain:
                     self.accept[temp_idx, idx],
                     self.var_temp[temp_idx, idx],
                 ]
-            )[:: self.thin]
+            )[offset :: self.thin]
             nrows = len(to_save)
             with open(filepath, "a") as fp:
                 np.savetxt(fp, to_save, fmt="%.18e", delimiter=" ")
