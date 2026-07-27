@@ -208,9 +208,7 @@ class TestShortChain:
         Parametrized so thin divides save_freq (4/4), does not divide it (3/10,
         2/7), exceeds a block boundary (5/10), and the thin=1 default.
         """
-        chain = ShortChain(
-            ndim=1, ntemps=1, short_iters=save_freq, thin=thin, outdir=temp_dir
-        )
+        chain = ShortChain(ndim=1, ntemps=1, short_iters=save_freq, thin=thin, outdir=temp_dir)
         for i in range(n_iter):
             state = SamplerState(
                 np.array([[float(i)]]),
