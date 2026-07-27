@@ -23,6 +23,15 @@ rewrite and shares no API with it.
 - `MassMatrix.from_covariance` now inverts its argument (builds
   `M = cov^-1`, matching Stan's convention). Use `MassMatrix.from_precision`
   when supplying Fisher/precision matrices directly.
+- `grubin` now takes parameters **only**, shape `(T, D)` — the same contract as
+  `effective_sample_size`, and exactly what `load_chain()` returns in
+  `chain["samples"][k]`. It previously dropped the last two columns of its
+  input, a convention that matched no format this library produces: chain files
+  carry four trailing columns (lnlike, lnprob, accepted, temperature) and
+  `load_chain` returns none, so R-hat was computed either on two too few
+  parameters or on lnlike/lnprob promoted to parameters — silently, with no
+  warning. Passing a non-2-D array now raises `ValueError`. If you read a raw
+  `chain_*.txt`, slice it yourself: `grubin(data[:, :ndim])`.
 - `PTSampler.from_product_space` / `HybridPTSampler.from_product_space` register one combined
   `birth_death` jump instead of separate birth and death jumps; the
   `birth_proposal` / `death_proposal` keys in acceptance-rate reports are

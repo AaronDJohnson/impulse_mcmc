@@ -330,7 +330,19 @@ class TestEffectiveSampleSize:
 
 
 class TestGrubin:
-    """Test suite for grubin function (Gelman-Rubin diagnostic)"""
+    """Test suite for grubin function (Gelman-Rubin diagnostic).
+
+    grubin takes parameters ONLY, shape (T, D) -- the same contract as
+    effective_sample_size, and exactly what load_chain returns in
+    chain["samples"][k].
+
+    These tests previously padded every input with two constant columns
+    (np.ones((n, 2))) to feed the old "drop the last two columns" behavior.
+    Because the padding was constant, the tests passed whether or not the
+    slicing was correct, which is how a wrong column convention survived a
+    suite at 84% coverage. Inputs here are parameters only, so the returned
+    R-hat length is now a real assertion about the contract.
+    """
 
     def test_grubin_converged_chains(self):
         """Test R-hat for converged chains"""
@@ -342,10 +354,7 @@ class TestGrubin:
         chains = []
         for _ in range(4):
             chain = np.random.multivariate_normal([0, 0], [[1, 0.5], [0.5, 1]], n_samples)
-            # Add temperature and acceptance columns
-            temp_accept = np.ones((n_samples, 2))
-            full_chain = np.column_stack([chain, temp_accept])
-            chains.append(full_chain)
+            chains.append(chain)
 
         # Test with concatenated chains
         combined_chain = np.vstack(chains)
@@ -365,17 +374,10 @@ class TestGrubin:
         chain1 = np.random.randn(n_samples, 1) + 0  # mean 0
         chain2 = np.random.randn(n_samples, 1) + 5  # mean 5
 
-        # Add temperature and acceptance columns
-        temp_accept1 = np.ones((n_samples, 2))
-        temp_accept2 = np.ones((n_samples, 2))
-
-        full_chain1 = np.column_stack([chain1, temp_accept1])
-        full_chain2 = np.column_stack([chain2, temp_accept2])
-
-        chains = [full_chain1, full_chain2]
-        rhat, idx = grubin(chains, M=2)
+        rhat, idx = grubin([chain1, chain2], M=2)
 
         # R-hat should be much greater than 1
+        assert len(rhat) == 1
         assert rhat[0] > 1.5  # Poor convergence
 
     def test_grubin_threshold_detection(self):
@@ -390,34 +392,26 @@ class TestGrubin:
         bad_param = np.vstack([bad_param1, bad_param2])
 
         chain_data = np.column_stack([good_param, bad_param])
-        # Add temperature and acceptance columns
-        temp_accept = np.ones((n_samples, 2))
-        full_chain = np.column_stack([chain_data, temp_accept])
 
-        rhat, idx = grubin(full_chain, M=2, threshold=1.1)
+        rhat, idx = grubin(chain_data, M=2, threshold=1.1)
 
         # Should identify the second parameter as problematic
+        assert len(rhat) == 2
         assert len(idx) >= 1  # At least one parameter above threshold
-        if len(idx) > 0:
-            assert 1 in idx  # Second parameter should be flagged
+        assert 1 in idx  # Second parameter should be flagged
 
     def test_grubin_custom_burn(self):
         """Test grubin with custom burn-in"""
         np.random.seed(42)
-        n_samples = 1000
 
         # Create chain with burn-in period
         burn_in = np.random.randn(200, 1) + 10  # High initial values
         converged = np.random.randn(800, 1) + 0  # Converged values
         chain_data = np.vstack([burn_in, converged])
 
-        # Add temperature and acceptance columns
-        temp_accept = np.ones((n_samples, 2))
-        full_chain = np.column_stack([chain_data, temp_accept])
-
         # Test with and without burn-in
-        rhat_no_burn, _ = grubin(full_chain, M=4, burn=0)
-        rhat_with_burn, _ = grubin(full_chain, M=4, burn=300)
+        rhat_no_burn, _ = grubin(chain_data, M=4, burn=0)
+        rhat_with_burn, _ = grubin(chain_data, M=4, burn=300)
 
         # R-hat should be better (closer to 1) with proper burn-in
         assert rhat_with_burn[0] < rhat_no_burn[0]
@@ -429,12 +423,39 @@ class TestGrubin:
 
         # Single well-mixed chain
         chain_data = np.random.randn(n_samples, 2)
-        # Add temperature and acceptance columns
-        temp_accept = np.ones((n_samples, 2))
-        full_chain = np.column_stack([chain_data, temp_accept])
 
-        rhat, idx = grubin(full_chain, M=4)
+        rhat, idx = grubin(chain_data, M=4)
 
         # Should show good convergence when split
+        assert len(rhat) == 2
         assert np.all(rhat < 1.2)
         assert len(idx) == 0  # No parameters above default threshold
+
+    def test_grubin_returns_one_rhat_per_column(self):
+        """Every supplied column is a parameter; none is silently dropped.
+
+        Regression test: grubin used to slice off the last two columns, so a
+        D-parameter chain came back with D-2 R-hat values -- silently omitting
+        two real parameters from the convergence check.
+        """
+        rng = np.random.default_rng(0)
+        for d in (1, 2, 3, 5):
+            rhat, _ = grubin(rng.standard_normal((400, d)), M=2)
+            assert len(rhat) == d
+
+    def test_grubin_accepts_load_chain_output(self):
+        """The documented user path -- load_chain()["samples"][k] -- works directly."""
+        ndim = 3
+        rng = np.random.default_rng(1)
+        # load_chain returns parameters only, shape (nsamples, ndim)
+        samples = rng.standard_normal((600, ndim))
+
+        rhat, idx = grubin(samples, M=2)
+
+        assert len(rhat) == ndim
+        assert np.all(np.isfinite(rhat))
+
+    def test_grubin_rejects_non_2d(self):
+        """A 1-D array is a usage error, not something to reinterpret."""
+        with pytest.raises(ValueError, match=r"\(T, D\)"):
+            grubin(np.random.default_rng(2).standard_normal(500), M=2)

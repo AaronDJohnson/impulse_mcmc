@@ -250,9 +250,16 @@ def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
     Parameters
     ----------
     chains : np.ndarray or list of np.ndarray
-        MCMC chain data as a 2-D array of shape (T, D+2), where the last two
-        columns are dropped before analysis. If a list of two arrays, they are
-        concatenated along axis 0 before processing.
+        MCMC draws as a 2-D array of shape ``(T, D)`` holding **parameters
+        only**, matching :func:`effective_sample_size`. If a list of two
+        arrays, they are concatenated along axis 0 before processing.
+
+        This is exactly what :meth:`~impulse.PTSampler.load_chain` returns in
+        ``chain["samples"][k]``. If you are reading a raw ``chain_*.txt`` file
+        instead, slice off its four trailing bookkeeping columns first::
+
+            data = np.loadtxt("chains/chain_0.txt")
+            rhat, idx = grubin(data[:, :ndim])
     M : int, default 2
         Number of segments to split the chain into.
     threshold : float, default 1.01
@@ -266,15 +273,35 @@ def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
         Modern R-hat per parameter.
     idx : np.ndarray
         Indices of parameters where R-hat > threshold.
+
+    Raises
+    ------
+    ValueError
+        If ``chains`` is not 2-D.
+
+    Notes
+    -----
+    Versions before 2.0.0 silently dropped the last two columns of the input.
+    That convention matched no format this library produces -- chain files
+    carry four trailing columns (lnlike, lnprob, accepted, temperature) and
+    ``load_chain`` returns none -- so it either discarded real parameters or
+    promoted lnlike/lnprob to parameters, without complaining either way.
+    Pass parameters only.
     """
-    # ---- ingest & (optionally) concatenate two chains (your original behavior) ----
+    # ---- ingest & (optionally) concatenate two chains ----
     if isinstance(chains, list) and len(chains) == 2:
-        data = np.concatenate([chains[0], chains[1]])
+        data = np.asarray(np.concatenate([chains[0], chains[1]]), dtype=float)
     else:
-        data = chains
+        data = np.asarray(chains, dtype=float)
+    if data.ndim != 2:
+        raise ValueError(
+            f"Expected chains with shape (T, D) holding parameters only, got "
+            f"shape {data.shape}. If this is a raw chain file, slice off its "
+            "four trailing columns (lnlike, lnprob, accepted, temperature) first."
+        )
     if burn is None:  # if no burn is set, burn 10% of the chain
         burn = int(0.1 * data.shape[0])
-    X = data[burn:, :-2]  # keep your "drop last two columns" behavior
+    X = data[burn:]
     T = X.shape[0]
 
     # ---- split into M contiguous subchains of equal length ----
@@ -285,7 +312,7 @@ def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
         P = int(np.floor(T / M))
         extra = T - M * P
         burn += extra
-        X = data[burn:, :-2]
+        X = data[burn:]
         chunks = np.split(X, M, axis=0)
 
     # data_s: shape (M, N, D) with N = draws per split-chain, D = #params
