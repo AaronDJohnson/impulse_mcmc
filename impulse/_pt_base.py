@@ -783,10 +783,13 @@ class _PTSamplerBase:
         # when restore_state_checkpoint is called standalone (advanced use /
         # tests) build a matching one first so the restore is self-sufficient.
         if not hasattr(self, "short_chain"):
+            # Same ring sizing as the sampling path (issue #11); the restore
+            # below overwrites short_iters from the checkpoint anyway, but a
+            # standalone restore should not build an undersized ring first.
             self.short_chain = ShortChain(
                 self.ndim,
                 self.ntemps,
-                self.save_freq,
+                max(self.save_freq, self.cov_update),
                 iteration=0,
                 outdir=self.outdir,
                 resume=True,
@@ -866,10 +869,22 @@ class _PTSamplerBase:
         if self.ptstate.ladder is None:  # this shouldn't happen!
             raise ValueError("PTState ladder is not initialized")
         # setup save chains
+        #
+        # The ring serves two consumers with different depth requirements:
+        # the disk flush needs `save_freq`, but the adaptation refresh calls
+        # get_recent_samples(cov_update) every `cov_update` iterations. Sizing
+        # the ring at save_freq alone means get_recent_samples silently clamps
+        # to short_iters whenever cov_update > save_freq (file_io.py), so the
+        # covariance and DE buffer see only save_freq/cov_update of the chain
+        # and `sample_total` advances on a correspondingly slow clock -- at
+        # save_freq=100, cov_update=2000 the adaptation observes 3% of the run.
+        # Size for the deeper consumer. This does NOT change flush cadence:
+        # save_chain writes `_unsaved` rows and the loop still calls it every
+        # save_freq iterations. See GitHub issue #11.
         self.short_chain = ShortChain(
             self.ndim,
             self.ntemps,
-            self.save_freq,
+            max(self.save_freq, self.cov_update),
             iteration=0,
             outdir=self.outdir,
             resume=self.resume,

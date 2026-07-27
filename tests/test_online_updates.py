@@ -137,6 +137,47 @@ class TestUpdateCovariance:
         np.testing.assert_array_almost_equal(new_cov, new_cov.T)
 
 
+class TestSvdGroupsRidge:
+    """The ridge that stops the adaptive proposal becoming an absorbing state.
+
+    am/scam take their whole step scale from proposal_L. A singular covariance
+    therefore gives proposal_L == 0 in some direction, after which no default
+    proposal can move that coordinate ever again -- the chain reports a point
+    mass with zero variance while its acceptance rate looks perfect.
+    """
+
+    def test_singular_covariance_gives_zero_proposal_without_ridge(self):
+        """Precondition: this is the failure mode the ridge exists to prevent."""
+        cov = np.zeros((2, 2))  # what a never-moving chain's history produces
+        _, _, L = svd_groups([None], [None], [np.array([0, 1])], cov)
+        assert np.all(L[0] == 0.0)
+
+    def test_ridge_keeps_proposal_non_degenerate(self):
+        cov = np.zeros((2, 2))
+        _, _, L = svd_groups([None], [None], [np.array([0, 1])], cov, ridge=1e-10)
+        assert not np.all(L[0] == 0.0)
+        # the step scale is sqrt(ridge) in every direction
+        np.testing.assert_allclose(np.abs(L[0]).max(), np.sqrt(1e-10), rtol=1e-6)
+
+    def test_ridge_is_negligible_for_a_healthy_covariance(self):
+        """A well-conditioned covariance must be essentially unchanged."""
+        cov = np.array([[2.0, 0.5], [0.5, 1.0]])
+        _, _, plain = svd_groups([None], [None], [np.array([0, 1])], cov)
+        _, _, ridged = svd_groups([None], [None], [np.array([0, 1])], cov, ridge=1e-10)
+        np.testing.assert_allclose(ridged[0], plain[0], atol=1e-8)
+
+    def test_ridge_rescues_a_partially_collapsed_covariance(self):
+        """One dead direction must not zero out that column of L."""
+        cov = np.diag([1.0, 0.0])  # dim 1 collapsed, dim 0 healthy
+        _, _, L = svd_groups([None], [None], [np.array([0, 1])], cov, ridge=1e-10)
+        # every direction retains some scale
+        assert np.linalg.matrix_rank(L[0], tol=1e-12) == 2
+
+    def test_negative_ridge_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            svd_groups([None], [None], [np.array([0, 1])], np.eye(2), ridge=-1.0)
+
+
 class TestSvdGroups:
     """Test suite for svd_groups function"""
 

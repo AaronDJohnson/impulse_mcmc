@@ -415,6 +415,99 @@ class TestPTSampler:
         assert abs(cold[500:, 0].mean()) < 0.25
         assert abs(cold[500:, 0].std() - 1.0) < 0.25
 
+    def test_narrow_posterior_started_at_the_mode_does_not_freeze(self, temp_dir):
+        """A posterior far narrower than the initial covariance must still sample.
+
+        Regression test for an ABSORBING state in the default proposal mixture.
+        am/scam take their entire scale from proposal_L and de from the history
+        buffer -- there is no fixed-scale proposal. Starting at the mode of a
+        narrow posterior, every early proposal is rejected, the history buffer
+        fills with identical rows, their covariance is exactly zero, and
+        proposal_L becomes exactly zero: no proposal can move that coordinate
+        again. The chain then reports a point mass with sd == 0 while its
+        acceptance rate looks perfectly healthy, because the identity proposal
+        has log-ratio 0 and is always accepted.
+
+        This is the documented "start at the MAP" workflow, so it must work at
+        defaults with no sample_cov supplied.
+        """
+        sigma = 1e-3
+
+        def lnlike(x):
+            x = np.asarray(x, dtype=float)
+            if x.ndim == 1:
+                return float(-0.5 * np.sum((x / sigma) ** 2))
+            return -0.5 * np.sum((x / sigma) ** 2, axis=1)
+
+        def lnprior(x):
+            x = np.asarray(x, dtype=float)
+            if x.ndim == 1:
+                return 0.0 if np.all(np.abs(x) <= 5) else -np.inf
+            out = np.zeros(x.shape[0])
+            out[np.any(np.abs(x) > 5, axis=1)] = -np.inf
+            return out
+
+        sampler = PTSampler(
+            ndim=2,
+            lnlike=lnlike,
+            lnprior=lnprior,
+            ntemps=1,
+            seed=1,
+            outdir=temp_dir,
+            save_freq=8000,
+        )
+        sampler.sample(np.zeros(2), num_iterations=8000)
+        cold = sampler.load_chain()["samples"][0]
+
+        # the chain actually moved
+        assert len(np.unique(cold, axis=0)) > 100
+        # and recovers the true width rather than reporting zero
+        sd = cold[2000:].std(axis=0)
+        assert np.all(sd > 0.3 * sigma), f"collapsed: sd={sd} vs sigma={sigma}"
+        assert np.all(sd < 3.0 * sigma), f"over-dispersed: sd={sd} vs sigma={sigma}"
+
+    def test_adaptation_intake_does_not_depend_on_save_freq(self, temp_dir):
+        """save_freq is an I/O knob and must not throttle adaptation.
+
+        Regression test for GitHub issue #11: the ShortChain ring was sized
+        save_freq, but the adaptation refresh asks for cov_update samples, so
+        get_recent_samples silently clamped whenever cov_update > save_freq and
+        the covariance/DE buffer saw only save_freq/cov_update of the chain.
+        """
+
+        def lnlike(x):
+            x = np.asarray(x, dtype=float)
+            return float(-0.5 * np.sum(x**2)) if x.ndim == 1 else -0.5 * np.sum(x**2, axis=1)
+
+        def lnprior(x):
+            x = np.asarray(x, dtype=float)
+            if x.ndim == 1:
+                return 0.0 if np.all(np.abs(x) <= 10) else -np.inf
+            out = np.zeros(x.shape[0])
+            out[np.any(np.abs(x) > 10, axis=1)] = -np.inf
+            return out
+
+        cov_update = 400
+        totals = []
+        for save_freq in (100, 400, 1000):
+            outdir = os.path.join(temp_dir, f"sf{save_freq}")
+            sampler = PTSampler(
+                ndim=2,
+                lnlike=lnlike,
+                lnprior=lnprior,
+                ntemps=1,
+                seed=3,
+                outdir=outdir,
+                save_freq=save_freq,
+                cov_update=cov_update,
+            )
+            sampler.sample(np.zeros(2), num_iterations=1200)
+            totals.append(sampler.multi_chain_stats.chain_stats[0].sample_total)
+            # the ring must be deep enough for the adaptation consumer
+            assert sampler.short_chain.short_iters >= cov_update
+
+        assert len(set(totals)) == 1, f"adaptation intake varied with save_freq: {totals}"
+
     def test_pt_sampler_sample_bad_initial_likelihood(self, simple_prior, temp_dir):
         """Test error handling with bad initial likelihood"""
 

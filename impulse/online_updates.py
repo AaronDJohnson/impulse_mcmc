@@ -71,7 +71,12 @@ def update_covariance(
 
 
 def svd_groups(
-    svd_U: list, svd_S: list, groups: list, sample_cov: np.ndarray, proposal_L: list | None = None
+    svd_U: list,
+    svd_S: list,
+    groups: list,
+    sample_cov: np.ndarray,
+    proposal_L: list | None = None,
+    ridge: float = 0.0,
 ) -> tuple[list, list, list]:
     """
     Compute eigen-decomposition for parameter groups from covariance matrix.
@@ -96,6 +101,24 @@ def svd_groups(
     proposal_L : list or None
         List to store precomputed ``U * sqrt(S)`` matrices.  If *None*,
         a new list is created.
+    ridge : float, default 0.0
+        Non-negative constant added to the diagonal of each group's
+        covariance before the eigendecomposition (Haario et al. 2001's
+        ``epsilon * I`` regularization).
+
+        This is what keeps the adaptive proposal from becoming an absorbing
+        state.  ``am``/``scam`` take their entire step scale from
+        ``proposal_L``, so a singular ``sample_cov`` gives ``proposal_L == 0``
+        in some direction and *no* proposal can ever move that coordinate
+        again -- the chain reports a point mass with zero variance while its
+        acceptance rate looks perfect (the identity proposal has log-ratio 0
+        and is always accepted).  A degenerate covariance is easy to reach:
+        start at the mode of a posterior narrower than the initial
+        ``sample_cov`` and every early proposal is rejected, so the history
+        buffer fills with identical rows and their covariance is exactly zero.
+
+        A positive ridge keeps the proposal non-degenerate, so the chain can
+        always move and the empirical covariance recovers on its own.
 
     Returns
     -------
@@ -121,8 +144,12 @@ def svd_groups(
     """
     if proposal_L is None:
         proposal_L = [None] * len(groups)
+    if ridge < 0.0:
+        raise ValueError(f"ridge must be non-negative, got {ridge}")
     for ct, group in enumerate(groups):
         covgroup = sample_cov[group][:, group]
+        if ridge > 0.0:
+            covgroup = covgroup + ridge * np.eye(len(group))
         try:
             eigvals, eigvecs = np.linalg.eigh(covgroup)
         except np.linalg.LinAlgError:

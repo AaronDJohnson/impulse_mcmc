@@ -21,6 +21,12 @@ from impulse.product_space import ParameterLayout
 from impulse.sampler_state import PTState, SamplerState
 from impulse.utils import shift_array
 
+#: Ridge added to the proposal covariance, as a fraction of the mean initial
+#: variance (Haario et al. 2001's ``epsilon``). Small enough to be irrelevant to
+#: a healthy adaptive covariance, large enough that a fully collapsed one still
+#: yields a proposal that can move. See :func:`~impulse.online_updates.svd_groups`.
+COV_RIDGE_REL = 1e-10
+
 
 @dataclass
 class _PerModelState:
@@ -139,8 +145,24 @@ class ChainStats:
         self._buffer = np.zeros((self.buffer_size, self.ndim))
         self.buffer_full = False
 
+        # Ridge (Haario et al. 2001 `epsilon * I`) keeping the adaptive proposal
+        # from degenerating into an absorbing state -- see svd_groups. Scaled to
+        # the INITIAL covariance so it is meaningful for the problem's units: a
+        # fixed absolute constant would be either useless on a tiny-scale
+        # posterior or a large perturbation on a huge-scale one. The initial
+        # covariance is the only scale information available before sampling.
+        initial_scale = float(np.mean(np.diag(self.sample_cov)))
+        if not np.isfinite(initial_scale) or initial_scale <= 0.0:
+            initial_scale = 1.0
+        self._cov_ridge = COV_RIDGE_REL * initial_scale
+
         self.svd_U, self.svd_S, self.proposal_L = svd_groups(
-            self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L
+            self.svd_U,
+            self.svd_S,
+            self.groups,
+            self.sample_cov,
+            self.proposal_L,
+            ridge=self._cov_ridge,
         )
 
     def update_buffer(self, new_samples: np.ndarray) -> None:
@@ -221,6 +243,7 @@ class ChainStats:
                     pm.groups,
                     pm.sample_cov,
                     pm.proposal_L,
+                    ridge=self._cov_ridge,
                 )
             return
 
@@ -248,7 +271,12 @@ class ChainStats:
         self.sample_cov = np.atleast_2d(np.cov(buf, rowvar=False, ddof=1))
         # new SVD on groups
         self.svd_U, self.svd_S, self.proposal_L = svd_groups(
-            self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L
+            self.svd_U,
+            self.svd_S,
+            self.groups,
+            self.sample_cov,
+            self.proposal_L,
+            ridge=self._cov_ridge,
         )
 
     def get_group_U(self, group_idx: int) -> np.ndarray:
@@ -314,6 +342,7 @@ class ChainStats:
                 model_groups,
                 self.sample_cov,
                 model_proposal_L,
+                ridge=self._cov_ridge,
             )
             self._per_model[k] = _PerModelState(
                 groups=model_groups,
