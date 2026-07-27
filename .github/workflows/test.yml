@@ -35,12 +35,13 @@ jobs:
 
     - name: Run tests (fast suite)
       run: |
-        pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=84
+        pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=87
 
-    # Coverage ENFORCEMENT is --cov-fail-under above (measured 87% after the
-    # dead parallel.py was removed; 84 leaves headroom against per-platform
-    # drift). Note this job does not install the [flow] extra, so
-    # impulse/flow_proposals.py reports 0% here and is included in that 87%. The
+    # Coverage ENFORCEMENT is --cov-fail-under above (measured 90% after the
+    # dead parallel.py was removed and wrapping/SBC tests were added; 87 leaves
+    # headroom against per-platform drift). Note this job does not install the
+    # [flow] extra, so impulse/flow_proposals.py reports 0% here and is
+    # included in that 90%. The
     # codecov upload is reporting only: one matrix cell, non-blocking,
     # because tokenless v4 uploads are rate-limit flaky. Set a
     # CODECOV_TOKEN secret and fail_ci_if_error: true to harden it.
