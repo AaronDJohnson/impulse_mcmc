@@ -1,98 +1,370 @@
 name: Deploy to PyPI
 
+# Release pipeline: test -> build -> verify the BUILT artifact -> publish.
+#
+# Build and publish are separate jobs on purpose. pypa/gh-action-pypi-publish's
+# own README calls building and publishing in one job a security issue: a
+# poisoned build dependency would run in a job holding `id-token: write` and
+# could mint an OIDC token that impersonates this repository on PyPI. The
+# publish jobs below run no project code at all -- they only download an
+# artifact that was produced by a job with no id-token permission.
+#
+# Routing:
+#   release published, not a pre-release -> PyPI
+#   release published, IS a pre-release  -> TestPyPI  (never real PyPI)
+#   workflow_dispatch, target=testpypi   -> TestPyPI
+#   workflow_dispatch, target=pypi       -> PyPI, and only if expected_version
+#                                           matches the version actually built
+#
+# PREREQUISITE: trusted publishers must be registered first, with
+# Workflow name = deploy.yml (the FILENAME, not the `name:` above) and
+# Environment name = pypi / testpypi to match the `environment:` keys below.
+
 on:
   release:
     types: [published]
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Deployment environment'
+      target:
+        description: 'Where to publish'
         required: true
         default: 'testpypi'
         type: choice
         options:
-        - testpypi
-        - pypi
+          - testpypi
+          - pypi
+      expected_version:
+        description: 'REQUIRED for target=pypi. The version you intend to publish, e.g. 2.0.0. The build must produce exactly this version or the run fails.'
+        required: false
+        type: string
+
+# Default is read-only. Without this the repo default applies, which is
+# `write` on this repository -- meaning the test job would execute arbitrary
+# dependency and test code with a token that can push to the repo.
+permissions:
+  contents: read
+
+# Never cancel a publish in flight.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  # ---------------------------------------------------------------- tests ---
   test:
+    name: Tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
 
-    - name: Install package
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
 
-    - name: Import smoke test (declared deps only)
-      run: python -c "import impulse; print(impulse.__version__)"
+      - name: Import smoke test (declared deps only)
+        # Catches an accidental hard dependency on an optional extra.
+        run: python -c "import impulse; print(impulse.__version__)"
 
-    - name: Install test dependencies
-      run: pip install pytest
+      - name: Install test dependencies
+        run: pip install pytest
 
-    - name: Run tests (fast suite)
-      run: |
-        pytest tests/ -v -m "not slow" --ignore=tests/test_parallel.py
+      - name: Run tests (fast suite)
+        run: pytest tests/ -v -m "not slow"
 
-  deploy:
+  slow-tests:
     runs-on: ubuntu-latest
-    needs: test
-    environment:
-      name: ${{ github.event.inputs.environment || 'pypi' }}
-    permissions:
-      id-token: write  # required for PyPI trusted publishing (OIDC)
+    timeout-minutes: 45
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
 
-    - name: Install build dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build twine
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
 
-    - name: Build package
-      run: python -m build
+      - name: Install test dependencies
+        run: pip install pytest
 
-    - name: Check package
-      run: twine check dist/*
+      - name: Run slow tests
+        run: pytest tests/ -v -m slow
 
-    - name: Verify version consistency
-      run: |
-        WHEEL_VERSION=$(basename dist/*.whl | cut -d- -f2)
-        SDIST_VERSION=$(basename dist/*.tar.gz | sed -E 's/\.tar\.gz$//' | rev | cut -d- -f1 | rev)
-        echo "Wheel version: $WHEEL_VERSION"
-        echo "Sdist version: $SDIST_VERSION"
-        if [ "$WHEEL_VERSION" != "$SDIST_VERSION" ]; then
-          echo "::error::Wheel version ($WHEEL_VERSION) does not match sdist version ($SDIST_VERSION)"
-          exit 1
-        fi
-        if [ "${{ github.event_name }}" = "release" ]; then
-          TAG="${{ github.event.release.tag_name }}"
-          if [ "$TAG" != "v$WHEEL_VERSION" ]; then
-            echo "::error::Release tag ($TAG) does not match built package version (expected v$WHEEL_VERSION)"
+  # ---------------------------------------------------------------- build ---
+  build:
+    needs: [test, slow-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # No id-token here. This job runs the build backend and therefore
+    # third-party code; it must not be able to mint a PyPI token.
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # `packaging` is used below to parse distribution filenames properly.
+          pip install build twine packaging
+
+      - name: Build sdist and wheel
+        # Build isolation fetches a current setuptools, which satisfies the
+        # setuptools>=77 floor that the PEP 639 `license = "MIT"` form needs.
+        # Do NOT add --no-isolation.
+        run: python -m build
+
+      - name: Check package metadata
+        run: twine check dist/*
+
+      - name: Verify exactly one sdist and one wheel
+        # `basename dist/*.whl` with two matches means `basename NAME SUFFIX`,
+        # which silently prints only the first file and exits 0. Reproduced
+        # locally: with 1.0.0 and 2.0.0 wheels present the old version gate
+        # reported 1.0.0 and passed, while gh-action-pypi-publish uploads the
+        # WHOLE dist/ directory. Assert the count before parsing anything.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          whls=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          if [ "${#whls[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly 1 wheel in dist/, found ${#whls[@]}: ${whls[*]:-<none>}"
             exit 1
           fi
-          echo "Release tag $TAG matches built package version"
-        fi
+          if [ "${#sdists[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly 1 sdist in dist/, found ${#sdists[@]}: ${sdists[*]:-<none>}"
+            exit 1
+          fi
+          echo "wheel=${whls[0]}"
+          echo "sdist=${sdists[0]}"
 
-    - name: Publish to Test PyPI
-      if: github.event.inputs.environment == 'testpypi' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'testpypi')
-      uses: pypa/gh-action-pypi-publish@release/v1
-      with:
-        repository-url: https://test.pypi.org/legacy/
+      - name: Verify version consistency
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(python - <<'PY'
+          import pathlib, sys
+          from packaging.utils import parse_sdist_filename, parse_wheel_filename
+          dist = pathlib.Path("dist")
+          (whl,) = dist.glob("*.whl")
+          (sdist,) = dist.glob("*.tar.gz")
+          wheel_name, wheel_version, _, _ = parse_wheel_filename(whl.name)
+          sdist_name, sdist_version = parse_sdist_filename(sdist.name)
+          if (wheel_name, wheel_version) != (sdist_name, sdist_version):
+              print(
+                  f"::error::wheel is {wheel_name} {wheel_version} but sdist is "
+                  f"{sdist_name} {sdist_version}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          if str(wheel_name) != "impulse-mcmc":
+              print(f"::error::unexpected distribution name {wheel_name}", file=sys.stderr)
+              raise SystemExit(1)
+          print(wheel_version)
+          PY
+          )
+          echo "Built version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-    - name: Publish to PyPI
-      if: github.event_name == 'release' || github.event.inputs.environment == 'pypi'
-      uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Verify release tag matches built version
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          TAG='${{ github.event.release.tag_name }}'
+          VERSION='${{ steps.version.outputs.version }}'
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::Release tag ($TAG) does not match built version (expected v$VERSION)"
+            exit 1
+          fi
+          echo "Release tag $TAG matches built version $VERSION"
+
+      - name: Verify requested version matches built version (manual pypi run)
+        # workflow_dispatch has no tag to check against, and its ref dropdown
+        # DEFAULTS TO THE DEFAULT BRANCH (main), which is far behind. Without
+        # this, "Run workflow -> pypi" is a one-click publish of whatever that
+        # branch happens to contain. Force the operator to state the version.
+        if: github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'
+        run: |
+          set -euo pipefail
+          EXPECTED='${{ inputs.expected_version }}'
+          VERSION='${{ steps.version.outputs.version }}'
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::expected_version is required when target=pypi. Re-run and enter the version you intend to publish (built version is $VERSION, from ref ${{ github.ref }})."
+            exit 1
+          fi
+          if [ "$EXPECTED" != "$VERSION" ]; then
+            echo "::error::expected_version ($EXPECTED) does not match built version ($VERSION) on ref ${{ github.ref }}"
+            exit 1
+          fi
+          echo "Requested version $EXPECTED matches built version $VERSION"
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  # ------------------------------------------------- verify the artifact ---
+  verify-artifact:
+    # This is the check that was missing entirely. `twine check` only validates
+    # that metadata renders on PyPI -- it never unpacks, installs, or imports
+    # anything, which is exactly how an sdist missing tests/conftest.py shipped.
+    # Install the REAL artifact and exercise it.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor and ceiling of the supported range.
+        python-version: ['3.10', '3.13']
+
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Install the built WHEEL and import it
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/whl-venv"
+          "$RUNNER_TEMP/whl-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/whl-venv/bin/pip" install dist/*.whl
+          INSTALLED=$("$RUNNER_TEMP/whl-venv/bin/python" -c "import impulse; print(impulse.__version__)")
+          echo "Imported impulse $INSTALLED from the built wheel"
+          if [ "$INSTALLED" != "${{ needs.build.outputs.version }}" ]; then
+            echo "::error::Installed __version__ ($INSTALLED) != built version (${{ needs.build.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Install from the SDIST and run its packaged test suite
+        # Proves MANIFEST.in actually ships a runnable suite (conftest.py
+        # included) -- the defect class this repo just hit. An editable install
+        # can never catch this.
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/sdist-venv"
+          "$RUNNER_TEMP/sdist-venv/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/sdist-venv/bin/pip" install dist/*.tar.gz pytest
+          mkdir -p "$RUNNER_TEMP/sdist-src"
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist-src" --strip-components=1
+          test -f "$RUNNER_TEMP/sdist-src/tests/conftest.py" || {
+            echo "::error::sdist does not contain tests/conftest.py -- MANIFEST.in regression"; exit 1; }
+          cd "$RUNNER_TEMP/sdist-src"
+          "$RUNNER_TEMP/sdist-venv/bin/python" -m pytest tests/ -q -m "not slow"
+
+  # -------------------------------------------------------------- publish ---
+  publish-testpypi:
+    needs: [build, verify-artifact]
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi') ||
+      (github.event_name == 'release' && github.event.release.prerelease == true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/impulse-mcmc
+
+    # Only id-token. Naming any scope zeroes every other one, and this job does
+    # not check out code, so it needs nothing else.
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # TestPyPI is a scratch target; a re-run should not hard-fail on a
+          # filename that already exists. Deliberately NOT set for real PyPI.
+          skip-existing: true
+          # `attestations` defaults to true (PEP 740 provenance) and works
+          # because this is trusted publishing. Do not disable it.
+
+  publish-pypi:
+    needs: [build, verify-artifact]
+    if: >-
+      (github.event_name == 'release' && github.event.release.prerelease == false) ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    environment:
+      name: pypi
+      url: https://pypi.org/p/impulse-mcmc
+
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v8
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.14.1
+        # No skip-existing: a release that silently uploads nothing must fail.
+
+  # Fail loudly instead of reporting a green "release" that published nothing.
+  publish-guard:
+    needs: [publish-testpypi, publish-pypi]
+    if: always() && !cancelled()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert exactly one publish job ran
+        run: |
+          set -euo pipefail
+          TESTPYPI='${{ needs.publish-testpypi.result }}'
+          PYPI='${{ needs.publish-pypi.result }}'
+          echo "publish-testpypi: $TESTPYPI"
+          echo "publish-pypi:     $PYPI"
+          if [ "$TESTPYPI" = "failure" ] || [ "$PYPI" = "failure" ]; then
+            echo "::error::A publish job failed."
+            exit 1
+          fi
+          if [ "$TESTPYPI" != "success" ] && [ "$PYPI" != "success" ]; then
+            echo "::error::No publish job ran. Nothing was uploaded, but the run would otherwise report success."
+            exit 1
+          fi

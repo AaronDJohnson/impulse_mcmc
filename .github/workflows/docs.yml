@@ -1,62 +1,130 @@
 name: Docs
 
+# Docs are PUBLISHED only when a release is published, or manually via
+# workflow_dispatch. Pull requests build the docs as a check (-W means any
+# Sphinx warning fails the PR) but never touch the live site.
+#
+# There is deliberately NO `push:` trigger. Deploying on pushes to both main
+# and v2 gave two independent deployers for a single Pages site with no shared
+# concurrency group, so the published site nondeterministically showed
+# whichever branch finished last.
+#
+# PREREQUISITES (repository settings, not fixable from this file):
+#   1. Settings -> Pages -> Build and deployment -> Source = "GitHub Actions".
+#      (Already done: the repo reports build_type "workflow".)
+#   2. Settings -> Environments -> github-pages -> Deployment branches and tags
+#      MUST contain a rule of ref type "Tag" matching v* .
+#      Enabling Pages auto-created a branch-only rule allowing just `main`, and
+#      a release run executes at refs/tags/vX.Y.Z -- a tag, not a branch -- so
+#      without the tag rule every release deploy fails with
+#      "Branch ... is not allowed to deploy to github-pages due to environment
+#      protection rules."
+
 on:
-  push:
-    branches: [ main, v2 ]
+  release:
+    types: [published]
   pull_request:
-    branches: [ main, v2 ]
+    branches: [main, v2]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: docs-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # A superseded docs BUILD is worth nothing, so cancelling it is free.
+    # (The deploy job below uses the opposite policy, which is why concurrency
+    # is declared per job rather than at workflow level.)
+    concurrency:
+      group: docs-build-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
 
-    - name: Install pandoc (required by nbsphinx)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y pandoc
+      - name: Install pandoc (required by nbsphinx)
+        # nbsphinx shells out to pandoc to convert notebook markdown cells even
+        # though nbsphinx_execute = 'never'. This is not optional.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
 
-    - name: Install package and docs dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .
-        # ipython provides the pygments lexer for notebook code cells
-        pip install "sphinx>=8" "myst-parser>=4" "nbsphinx>=0.9" "sphinx-rtd-theme>=3" ipython
+      - name: Install package and docs dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Non-editable: installs the same way users do, so a packaging break
+          # (missing subpackage) fails here rather than after publishing.
+          pip install .
+          # Upper bounds are deliberate. This build runs with -W, so a new
+          # deprecation warning in any of these would break a RELEASE.
+          # ipython provides the pygments lexer for notebook code cells.
+          pip install \
+            "sphinx>=8,<9" \
+            "myst-parser>=4,<5" \
+            "nbsphinx>=0.9,<0.10" \
+            "sphinx-rtd-theme>=3,<4" \
+            "ipython"
 
-    - name: Build HTML docs (warnings are errors)
-      # The local build is warning-clean; keep it that way.
-      # Notebooks are rendered from stored outputs, never executed
-      # (nbsphinx_execute = 'never' in docs/conf.py).
-      run: python -m sphinx -b html -W --keep-going docs docs/_build/html
+      - name: Build HTML docs (warnings are errors)
+        # -d writes the doctree cache OUTSIDE the published tree. Sphinx
+        # defaults it to <outdir>/.doctrees, which would publish
+        # environment.pickle (a ~335 KB pickle, i.e. arbitrary code on load,
+        # embedding absolute build paths) to the open web.
+        #
+        # --keep-going is intentionally absent: since Sphinx 8.1 it is a no-op
+        # (application.py sets `self.keep_going = bool(warningiserror)  #
+        # Unused` and the flag is argparse.SUPPRESS'd), and it is a removal
+        # candidate in Sphinx 9. -W alone already reports every warning and
+        # exits non-zero.
+        #
+        # Notebooks are rendered from stored outputs, never executed
+        # (nbsphinx_execute = 'never' in docs/conf.py).
+        run: |
+          python -m sphinx -b html -W \
+            -d "${{ runner.temp }}/doctrees" \
+            docs docs/_build/html
 
-    - name: Upload Pages artifact
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: docs/_build/html
+      - name: Upload Pages artifact
+        # Skipped on pull_request: the deploy job cannot run for a PR, so the
+        # artifact would be ~17 MB uploaded for nothing.
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/_build/html
 
-  # Deploy only on pushes to main or v2; PRs stop after the build job.
-  # NOTE: requires Pages to be enabled with source "GitHub Actions" in the
-  # repository settings (Settings -> Pages -> Build and deployment).
   deploy:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v2')
+    # Release or manual only. PRs stop after build.
+    # Pre-releases are excluded: `release: types: [published]` DOES fire for
+    # pre-releases, and there is only one live docs site, so an rc would
+    # silently overwrite the stable docs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && github.event.release.prerelease == false)
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # A repo has exactly ONE Pages site, so the group must be global -- not
+    # keyed on github.ref, which puts different refs in different groups and
+    # therefore does not serialize anything.
+    # cancel-in-progress MUST stay false: actions/deploy-pages has no `post:`
+    # hook, so cancelling mid-poll abandons a deployment that the server has
+    # already created, with no reliable signal about the live site's state.
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
 
     permissions:
+      contents: read    # not strictly needed today (no checkout), but keeps a
+                        # later `actions/checkout` here from failing with a 403
       pages: write      # deploy to GitHub Pages
       id-token: write   # verify the deployment origin (OIDC)
 
@@ -65,6 +133,6 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
