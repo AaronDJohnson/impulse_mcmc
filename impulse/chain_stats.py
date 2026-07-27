@@ -204,7 +204,9 @@ class ChainStats:
                     continue
                 buf = pm.buffer[-n_filled:]
                 pm.sample_mean = np.mean(buf, axis=0)
-                pm.sample_cov = np.cov(buf, rowvar=False, ddof=1)
+                # atleast_2d: np.cov returns a 0-d scalar for a single column,
+                # which breaks the (ndim, ndim) contract svd_groups relies on.
+                pm.sample_cov = np.atleast_2d(np.cov(buf, rowvar=False, ddof=1))
                 pm.svd_U, pm.svd_S, pm.proposal_L = svd_groups(
                     pm.svd_U,
                     pm.svd_S,
@@ -233,7 +235,9 @@ class ChainStats:
         n_filled = min(self.sample_total, self.buffer_size)
         buf = self._buffer[-n_filled:]
         self.sample_mean = np.mean(buf, axis=0)
-        self.sample_cov = np.cov(buf, rowvar=False, ddof=1)
+        # atleast_2d: np.cov returns a 0-d scalar for a single column (ndim == 1),
+        # which breaks the (ndim, ndim) contract svd_groups relies on.
+        self.sample_cov = np.atleast_2d(np.cov(buf, rowvar=False, ddof=1))
         # new SVD on groups
         self.svd_U, self.svd_S, self.proposal_L = svd_groups(
             self.svd_U, self.svd_S, self.groups, self.sample_cov, self.proposal_L

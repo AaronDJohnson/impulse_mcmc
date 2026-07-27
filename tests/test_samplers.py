@@ -389,6 +389,32 @@ class TestPTSampler:
         assert hasattr(sampler, "short_chain")
         assert sampler.short_chain.iteration == 10
 
+    def test_pt_sampler_ndim_1_end_to_end(self, simple_likelihood, simple_prior, temp_dir):
+        """A 1-parameter model must sample correctly, not crash on covariance update.
+
+        Regression test: np.cov returns a 0-d scalar for a single column, which
+        used to raise "IndexError: too many indices for array" from svd_groups at
+        the first covariance update. Runs past the default cov_update=100 so the
+        update actually fires, and checks the recovered N(0, 1) moments.
+        """
+        sampler = PTSampler(
+            ndim=1,
+            lnlike=simple_likelihood,
+            lnprior=simple_prior,
+            ntemps=3,
+            outdir=temp_dir,
+            seed=42,
+            save_freq=400,
+        )
+        sampler.sample([0.0], num_iterations=1500)
+
+        cold = sampler.load_chain()["samples"][0]
+        assert cold.shape == (1500, 1)
+        assert np.all(np.isfinite(cold))
+        # target is the standard normal restricted to |x| <= 5
+        assert abs(cold[500:, 0].mean()) < 0.25
+        assert abs(cold[500:, 0].std() - 1.0) < 0.25
+
     def test_pt_sampler_sample_bad_initial_likelihood(self, simple_prior, temp_dir):
         """Test error handling with bad initial likelihood"""
 

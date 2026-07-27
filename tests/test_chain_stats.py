@@ -165,6 +165,25 @@ class TestChainStats:
         # Statistics should be updated (non-default values)
         assert not np.allclose(stats.sample_mean, np.zeros(2))
 
+    def test_recursive_update_1d_keeps_cov_2d(self):
+        """ndim=1: np.cov returns a 0-d scalar, which must be promoted to (1, 1).
+
+        Regression test: without the promotion, svd_groups raises
+        "IndexError: too many indices for array: array is 0-dimensional"
+        on the first covariance update of any 1-parameter run.
+        """
+        ptstate = PTState(ndim=1, ntemps=1, min_temp=1.0, max_temp=1.0)
+        rng = np.random.default_rng(0)
+        stats = ChainStats(ndim=1, pt_state=ptstate, chain_index=0, rng=rng, buffer_size=10)
+
+        stats.recursive_update(0, rng.standard_normal((6, 1)))
+
+        assert stats.sample_cov.shape == (1, 1)
+        assert stats.sample_mean.shape == (1,)
+        # the group SVD must have run and produced a usable 1x1 factor
+        assert stats.proposal_L is not None
+        assert stats.proposal_L[0].shape == (1, 1)
+
     def test_recursive_update_none_checks(self, ptstate_2d):
         """Test recursive_update error handling for None values"""
         rng = np.random.default_rng(42)
