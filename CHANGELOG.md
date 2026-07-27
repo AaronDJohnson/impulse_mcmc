@@ -86,8 +86,32 @@ rewrite and shares no API with it.
   [SECURITY.md](SECURITY.md)). `NUTSSampler` checkpointing remains on pickle
   for now (its checkpointing is separate from the PT engine).
 
+### Removed
+
+- `impulse/parallel.py` and its `ParallelLikelihood` class are removed. They
+  were never exported from `impulse`, never used by any sampler, never
+  documented, and carried 0% test coverage; the shared-memory worker pool also
+  deadlocked reliably, which is why the suite had to be run with
+  `--ignore=tests/test_parallel.py` in every CI job. The parallelism the
+  samplers actually expose is unaffected: pass `threads=` to use the
+  `ThreadPoolExecutor` path in the likelihood wrapper, or `vectorized=True` to
+  evaluate a batch yourself. Removing the module lifted measured coverage from
+  84% to 87% and let CI drop its exclusions (gate raised 79 -> 84).
+
 ### Fixed
 
+- Resuming a run with a different `save_freq`, `buffer_size`, `cov_update` or
+  `swap_steps` was silently accepted even though the checkpoint recorded all
+  four. A changed `save_freq` discarded chain rows (600 of 2000 in a measured
+  case, no warning); a changed `buffer_size` broke the
+  `len(_buffer) == buffer_size` invariant and crashed the differential-evolution
+  proposal with an out-of-bounds index. All six run-shaping scalars are now
+  verified on resume with an error that names the field and both values, and
+  `ChainStats.set_checkpoint_state` restores `buffer_size` alongside the buffer.
+- 1-parameter models (`ndim=1`) crashed at the first covariance update with
+  `IndexError: too many indices for array: array is 0-dimensional`, because
+  `np.cov` returns a scalar rather than a 1x1 matrix for a single column. Both
+  the global and per-model covariance paths now promote with `np.atleast_2d`.
 - Differential evolution never ran at realistic run lengths: the stock
   `de` was gated on a completely full history buffer (more than
   `buffer_size` samples, 50,000 by default) and the jump selector

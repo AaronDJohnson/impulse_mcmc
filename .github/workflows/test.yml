@@ -35,10 +35,12 @@ jobs:
 
     - name: Run tests (fast suite)
       run: |
-        pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=79 --ignore=tests/test_parallel.py
+        pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=84
 
-    # Coverage ENFORCEMENT is --cov-fail-under above (measured 82% at gate
-    # introduction; 79 leaves headroom against per-platform drift). The
+    # Coverage ENFORCEMENT is --cov-fail-under above (measured 87% after the
+    # dead parallel.py was removed; 84 leaves headroom against per-platform
+    # drift). Note this job does not install the [flow] extra, so
+    # impulse/flow_proposals.py reports 0% here and is included in that 87%. The
     # codecov upload is reporting only: one matrix cell, non-blocking,
     # because tokenless v4 uploads are rate-limit flaky. Set a
     # CODECOV_TOKEN secret and fail_ci_if_error: true to harden it.
@@ -76,7 +78,7 @@ jobs:
 
     - name: Run slow tests
       run: |
-        pytest tests/ -v -m slow --ignore=tests/test_parallel.py
+        pytest tests/ -v -m slow
 
   floor-versions:
     # Verify the declared lower bounds (numpy>=1.24, scipy>=1.10, tqdm>=4.60) still work.
@@ -106,7 +108,7 @@ jobs:
 
     - name: Run tests (fast suite, no coverage)
       run: |
-        pytest tests/ -v -m "not slow" --ignore=tests/test_parallel.py
+        pytest tests/ -v -m "not slow"
 
   lint:
     runs-on: ubuntu-latest
