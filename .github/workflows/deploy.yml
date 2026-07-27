@@ -189,10 +189,15 @@ jobs:
 
       - name: Verify release tag matches built version
         if: github.event_name == 'release'
+        # Values arrive through env, never through ${{ }} interpolated into the
+        # script body. git check-ref-format permits quotes, $, ; and backticks in
+        # tag names, so interpolating a tag directly is shell injection -- in the
+        # job that produces the very dist/ the OIDC publisher uploads.
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          TAG='${{ github.event.release.tag_name }}'
-          VERSION='${{ steps.version.outputs.version }}'
           if [ "$TAG" != "v$VERSION" ]; then
             echo "::error::Release tag ($TAG) does not match built version (expected v$VERSION)"
             exit 1
@@ -205,16 +210,19 @@ jobs:
         # this, "Run workflow -> pypi" is a one-click publish of whatever that
         # branch happens to contain. Force the operator to state the version.
         if: github.event_name == 'workflow_dispatch' && inputs.target == 'pypi'
+        # workflow_dispatch inputs are entirely free-form text; pass via env.
+        env:
+          EXPECTED: ${{ inputs.expected_version }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          EXPECTED='${{ inputs.expected_version }}'
-          VERSION='${{ steps.version.outputs.version }}'
           if [ -z "$EXPECTED" ]; then
-            echo "::error::expected_version is required when target=pypi. Re-run and enter the version you intend to publish (built version is $VERSION, from ref ${{ github.ref }})."
+            echo "::error::expected_version is required when target=pypi. Re-run and enter the version you intend to publish (built version is $VERSION, from ref $REF)."
             exit 1
           fi
           if [ "$EXPECTED" != "$VERSION" ]; then
-            echo "::error::expected_version ($EXPECTED) does not match built version ($VERSION) on ref ${{ github.ref }}"
+            echo "::error::expected_version ($EXPECTED) does not match built version ($VERSION) on ref $REF"
             exit 1
           fi
           echo "Requested version $EXPECTED matches built version $VERSION"
@@ -258,6 +266,8 @@ jobs:
           path: dist/
 
       - name: Install the built WHEEL and import it
+        env:
+          BUILT_VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
           python -m venv "$RUNNER_TEMP/whl-venv"
@@ -265,8 +275,8 @@ jobs:
           "$RUNNER_TEMP/whl-venv/bin/pip" install dist/*.whl
           INSTALLED=$("$RUNNER_TEMP/whl-venv/bin/python" -c "import impulse; print(impulse.__version__)")
           echo "Imported impulse $INSTALLED from the built wheel"
-          if [ "$INSTALLED" != "${{ needs.build.outputs.version }}" ]; then
-            echo "::error::Installed __version__ ($INSTALLED) != built version (${{ needs.build.outputs.version }})"
+          if [ "$INSTALLED" != "$BUILT_VERSION" ]; then
+            echo "::error::Installed __version__ ($INSTALLED) != built version ($BUILT_VERSION)"
             exit 1
           fi
 
@@ -283,7 +293,20 @@ jobs:
           tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP/sdist-src" --strip-components=1
           test -f "$RUNNER_TEMP/sdist-src/tests/conftest.py" || {
             echo "::error::sdist does not contain tests/conftest.py -- MANIFEST.in regression"; exit 1; }
+          # Delete the extracted source package before running the suite.
+          # `python -m pytest` puts CWD on sys.path, so with impulse/ still
+          # present `import impulse` resolves to the extracted SOURCE tree and
+          # the installed sdist is never exercised -- which is exactly the
+          # failure this gate exists to catch (a module missing from the
+          # INSTALLED package). Verified locally: with the tree present the
+          # import resolves to ./impulse/__init__.py; with it removed it
+          # resolves into site-packages.
+          rm -rf "$RUNNER_TEMP/sdist-src/impulse"
           cd "$RUNNER_TEMP/sdist-src"
+          "$RUNNER_TEMP/sdist-venv/bin/python" -c "import impulse, pathlib; \
+            p = pathlib.Path(impulse.__file__).resolve(); \
+            assert 'site-packages' in p.parts, f'expected the installed sdist, got {p}'; \
+            print('importing installed sdist from', p)"
           "$RUNNER_TEMP/sdist-venv/bin/python" -m pytest tests/ -q -m "not slow"
 
   # -------------------------------------------------------------- publish ---
@@ -354,10 +377,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Assert exactly one publish job ran
+        env:
+          TESTPYPI: ${{ needs.publish-testpypi.result }}
+          PYPI: ${{ needs.publish-pypi.result }}
         run: |
           set -euo pipefail
-          TESTPYPI='${{ needs.publish-testpypi.result }}'
-          PYPI='${{ needs.publish-pypi.result }}'
           echo "publish-testpypi: $TESTPYPI"
           echo "publish-pypi:     $PYPI"
           if [ "$TESTPYPI" = "failure" ] || [ "$PYPI" = "failure" ]; then

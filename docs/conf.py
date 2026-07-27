@@ -5,6 +5,7 @@
 #
 # The build is fully offline: no intersphinx, no remote assets.
 
+import glob
 import json
 import os
 import shutil
@@ -90,13 +91,29 @@ _NOTEBOOKS = {
     # filename -> title to inject when the notebook lacks a leading "# ..."
     "sinusoidal_model.ipynb": "Sinusoid fitting with parallel tempering",
     "rjmcmc_sinusoids.ipynb": "Product-space model selection: counting sinusoids",
-    "high_dimensional_test.ipynb": None,  # already starts with a title cell
+    # high_dimensional_test.ipynb is deliberately NOT rendered: its stored
+    # outputs were produced by pre-2.0.0 code and had to be cleared (they
+    # reported sigma 2.718 against a true value of 0.800 -- exp() of the old
+    # constant `accepted` column). The page would otherwise claim to show a
+    # full run while displaying nothing, or worse, wrong numbers. Re-execute
+    # the notebook and restore it here.
 }
 
 
 def _stage_notebooks() -> None:
     dst_dir = os.path.join(DOCS_DIR, "examples")
     os.makedirs(dst_dir, exist_ok=True)
+
+    # Prune notebooks staged by an earlier build that are no longer listed.
+    # Without this, dropping an entry from _NOTEBOOKS leaves its copy behind in
+    # a working tree (docs/examples/*.ipynb is gitignored, so git will not clean
+    # it), and Sphinx then fails the -W build with
+    # "document isn't included in any toctree". CI never sees this because it
+    # builds from a fresh checkout; a local build would break confusingly.
+    for stale in glob.glob(os.path.join(dst_dir, "*.ipynb")):
+        if os.path.basename(stale) not in _NOTEBOOKS:
+            os.remove(stale)
+
     for name, title in _NOTEBOOKS.items():
         src = os.path.join(REPO_ROOT, "examples", name)
         dst = os.path.join(dst_dir, name)

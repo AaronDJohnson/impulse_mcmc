@@ -2,7 +2,7 @@
 
 The repository ships complete, runnable Jupyter notebooks in
 [`examples/`](https://github.com/AaronDJohnson/impulse_mcmc/tree/main/examples).
-The three below are rendered here with their **stored outputs** — they are
+The two below are rendered here with their **stored outputs** — they are
 never executed during documentation builds (full runs take tens of
 thousands of iterations).
 
@@ -11,13 +11,15 @@ thousands of iterations).
 
 sinusoidal_model
 rjmcmc_sinusoids
-high_dimensional_test
 ```
 
 ## More notebooks in the repository
 
 These additional notebooks are stored without outputs; run them locally:
 
+- [`high_dimensional_test.ipynb`](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/high_dimensional_test.ipynb)
+  — a 52-parameter Bayesian linear regression stress test (50,000 iterations
+  across 30 temperatures).
 - [`rjpt_sinusoids.ipynb`](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/rjpt_sinusoids.ipynb)
   — product-space model selection with `HybridPTSampler`.
 - [`rjmcmc_nuts_sinusoids.ipynb`](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/rjmcmc_nuts_sinusoids.ipynb)

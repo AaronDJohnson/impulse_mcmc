@@ -3,7 +3,7 @@ message: "If you use this software, please cite it using the metadata below."
 type: software
 title: impulse-mcmc
 version: 2.0.0
-date-released: 2026-07-04
+date-released: 2026-07-26
 authors:
   - family-names: Johnson
     given-names: Aaron D.

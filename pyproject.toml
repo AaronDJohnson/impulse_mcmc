@@ -40,7 +40,10 @@ dev = [
   "isort>=7",
 ]
 flow = [
-  "coppuccino",
+  # coppuccino declares Requires-Python >=3.11, but impulse supports >=3.10.
+  # Without the marker, `pip install "impulse-mcmc[flow]"` fails to resolve on
+  # 3.10 -- and that is baked into the immutable wheel metadata for a release.
+  "coppuccino; python_version >= '3.11'",
 ]
 
 [project.urls]

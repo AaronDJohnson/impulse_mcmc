@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2026-07-04
+## [2.0.0] - 2026-07-26
 
 Version 1.0.0 on PyPI is the pre-rewrite package (the old `base.py` /
 `mhsampler.py` / `ptsampler.py` API, since removed). 2.0.0 is a complete
@@ -96,7 +96,7 @@ rewrite and shares no API with it.
   samplers actually expose is unaffected: pass `threads=` to use the
   `ThreadPoolExecutor` path in the likelihood wrapper, or `vectorized=True` to
   evaluate a batch yourself. Removing the module lifted measured coverage from
-  84% to 87% and let CI drop its exclusions (gate raised 79 -> 84).
+  84% to 87% and let CI drop its exclusions.
 
 ### Fixed
 
@@ -189,8 +189,10 @@ rewrite and shares no API with it.
   uninterrupted one bit-exactly for both samplers.
 - `plots` optional-dependency extra providing matplotlib for the
   `impulse.validation` plotting helpers.
-- `pytest-timeout` in the `dev` extra (guards local full-suite runs against
-  the known `tests/test_parallel.py` hang; CI skips that module).
+- `pytest-timeout` in the `dev` extra, so a local run can bound a hanging
+  test with `--timeout=N`. (The specific hang it was originally added for
+  lived in `tests/test_parallel.py`, which this release removes; see
+  *Removed*.)
 - Releases now use PyPI trusted publishing (OIDC). Before the next release,
   trusted publishers must be registered on both pypi.org (environment
   `pypi`) and test.pypi.org (environment `testpypi`) for this repository's
