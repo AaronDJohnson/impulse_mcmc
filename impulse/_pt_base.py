@@ -220,8 +220,7 @@ def setup_standard_jumps(
     >>> # Each chain now has three proposal types with specified weights
     """
     # The stock de already uses the module default; a non-default min_fill
-    # needs a picklable carrier for the threshold (checkpoints pickle every
-    # registered proposal). Both register under the name 'de'.
+    # needs an object to carry the threshold. Both register under the name 'de'.
     de_jump = de if de_min_fill == DE_MIN_FILL else DEProposal(de_min_fill)
     jumps = [
         JumpProposals(multi_chain_stats.chain_stats[ii]) for ii in range(multi_chain_stats.ntemps)

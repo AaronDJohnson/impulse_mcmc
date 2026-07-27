@@ -38,7 +38,7 @@ def _adapter_view(field: str) -> property:
     attributes on the HybridPTSampler instance; tests and diagnostics poke
     them.  These class-level properties keep that surface readable AND
     writable while the state lives on the adapter — and, being class-level,
-    they never enter ``__dict__``, so new checkpoints pickle only
+    they never enter ``__dict__``, so new checkpoints record only
     ``_nuts_adapter``.  Every access routes through
     :meth:`HybridPTSampler._ensure_nuts_adapter`, which transparently migrates
     2.0-era raw attributes restored by unpickling into an adapter.
@@ -541,11 +541,14 @@ class HybridPTSampler(_PTSamplerBase):
             is the log-Jacobian of the rescaling) see the "Custom
             proposals" section of the README and docs.
 
-            The proposal must be PICKLABLE — checkpoints pickle every
-            registered proposal — so use a module-level function or a
-            callable class, never a closure or lambda. Callable classes
-            must define a ``__name__`` attribute; it keys acceptance-rate
-            reports.
+            Checkpoints store no code, so the proposal is not serialized.
+            To resume, re-register the same proposals in the same order
+            with the same weights; the sampler verifies this against the
+            checkpoint and raises ``CheckpointMismatchError`` otherwise.
+            Callable classes must define a ``__name__`` attribute; it keys
+            acceptance-rate reports and is what the resume check matches
+            on. A proposal that adapts internal state can persist it by
+            implementing ``get_checkpoint_state`` / ``set_checkpoint_state``.
         weight : float
             Relative weight for this proposal (normalized against all
             registered proposals).

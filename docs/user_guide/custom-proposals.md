@@ -101,31 +101,74 @@ print(cold.mean(), cold.std())          # both ~ 1.0
 print(sampler.proposal_acceptance_rates()["log_scale_jump"]["rate"])
 ```
 
-## Picklability rules
+## Checkpoint rules: re-register, don't pickle
 
-Checkpoints pickle the whole sampler, **including every registered
-proposal** (see {doc}`checkpointing`). Therefore:
+Checkpoints do **not** serialize your proposals. The default `.npz` + `.json`
+format stores no code at all (see {doc}`checkpointing`); resume works by
+*reconstruct-then-restore*, so the contract is:
 
-- **Use callable classes defined at module level**, as above — instances
-  pickle their attributes and reimport the class by name.
-- **Don't use closures or lambdas** as proposals: they can't be pickled,
-  so the first checkpoint write (every `save_freq` iterations) fails.
+- **Register the same proposals, in the same order, with the same weights**
+  before resuming. On resume the sampler compares the reconstructed proposal
+  list against the names and weights recorded in the checkpoint and raises
+  `CheckpointMismatchError` if they differ — naming the offending proposal
+  rather than silently sampling from a different kernel.
 - Give the class a `__name__` class attribute. It labels the proposal in
-  acceptance-rate reports.
-- Anything the instance holds must itself be picklable (arrays, floats,
-  module-level functions are fine; open files and RNGs of your own are
-  not — use `chain_stats.rng`).
+  acceptance-rate reports *and* is what the resume check matches on.
+- **Callable classes at module level are still the recommended style**, since
+  they give you a stable `__name__` and somewhere to hang state. A closure or
+  lambda is not a checkpointing error — it will sample and checkpoint fine —
+  but you must be able to re-create an equivalent object at resume time, and
+  a lambda's `__name__` is `"<lambda>"`, which makes the mismatch message far
+  less useful.
+
+```{note}
+Versions before 2.0.0 pickled the whole sampler, so proposals had to be
+picklable and lambdas genuinely broke the first checkpoint write. That
+restriction is gone with the `.npz` + `.json` format. Pickle checkpoints are
+still readable but deprecated; see {doc}`checkpointing`.
+```
 
 ## Adaptive custom proposals
 
 A proposal may adapt internal state between calls (the built-in
 normalizing-flow proposal refits itself from the history buffer, for
-example). If it does, expose a `freeze_adaptation()` method: when the
-sampler reaches `num_adapt` (see {doc}`parallel-tempering`), it calls
-`freeze_adaptation()` on every proposal that has one, so the transition
-kernel becomes exactly Markovian after the freeze. The freeze should be
-idempotent and its state picklable — a frozen proposal must stay frozen
-across checkpoint/resume.
+example). Two optional hooks matter:
+
+**Persisting adapted state across resume.** Because nothing is pickled, a
+proposal's internal state is only saved if it opts in by implementing
+`get_checkpoint_state()` / `set_checkpoint_state(state)`:
+
+```python
+class AdaptiveJump:
+    __name__ = "adaptive_jump"
+
+    def __init__(self, sigma=1.0):
+        self.sigma = sigma
+
+    def __call__(self, chain_stats):
+        q = chain_stats.current_sample.copy()
+        q += chain_stats.rng.standard_normal(chain_stats.ndim) * self.sigma
+        return q, 0.0
+
+    # --- optional: survive checkpoint/resume ---
+    def get_checkpoint_state(self):
+        return {"sigma": float(self.sigma)}          # JSON-friendly values
+
+    def set_checkpoint_state(self, state):
+        self.sigma = float(state["sigma"])
+```
+
+The sampler captures this from each stateful proposal when it checkpoints and
+restores it on resume. Without these hooks a resumed run silently restarts your
+proposal from its constructor defaults, discarding whatever it had learned.
+
+**Freezing adaptation.** If the proposal adapts, also expose
+`freeze_adaptation()`: when the sampler reaches `num_adapt` (see
+{doc}`parallel-tempering`) it calls `freeze_adaptation()` on every proposal
+that has one, so the transition kernel becomes exactly Markovian after the
+freeze. The freeze should be idempotent, and the frozen flag should be part of
+the state returned by `get_checkpoint_state()` — a frozen proposal must stay
+frozen across checkpoint/resume.
 
 ## Trans-dimensional proposals
 

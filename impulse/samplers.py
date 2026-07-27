@@ -3,7 +3,8 @@
 :class:`PTSampler` runs adaptive parallel-tempering MCMC: a weighted mixture
 of AM/SCAM/DE (and user-registered) proposals per temperature chain,
 neighbour swaps with automatic temperature-ladder adaptation, periodic
-chain saving, and bit-exact pickle-based checkpoint/resume. The
+chain saving, and bit-exact checkpoint/resume via the no-code-execution
+``.npz`` + ``.json`` format. The
 :meth:`PTSampler.from_product_space` constructor pre-wires a sampler for
 product-space (birth-death) model selection (combined birth/death kernel,
 model-index jump, source swap, min-fill-gated DE). Module-level helpers — :func:`setup_seeds`,
@@ -335,11 +336,14 @@ class PTSampler(_PTSamplerBase):
             is the log-Jacobian of the rescaling) see the "Custom
             proposals" section of the README and docs.
 
-            The proposal must be PICKLABLE — checkpoints pickle every
-            registered proposal — so use a module-level function or a
-            callable class, never a closure or lambda. Callable classes
-            must define a ``__name__`` attribute; it keys acceptance-rate
-            reports.
+            Checkpoints store no code, so the proposal is not serialized.
+            To resume, re-register the same proposals in the same order
+            with the same weights; the sampler verifies this against the
+            checkpoint and raises ``CheckpointMismatchError`` otherwise.
+            Callable classes must define a ``__name__`` attribute; it keys
+            acceptance-rate reports and is what the resume check matches
+            on. A proposal that adapts internal state can persist it by
+            implementing ``get_checkpoint_state`` / ``set_checkpoint_state``.
         weight : float
             Relative weight for this proposal type (normalized against all
             registered proposals).

@@ -68,8 +68,9 @@ Key points:
 - `chain` also carries `"lnlike"`, `"lnprob"`, `"accepted"`, and
   `"temperature"` arrays of shape `(ntemps, nsamples)`.
 - Chains are streamed to `<outdir>/chain_<i>.txt` during the run, and a
-  pickle checkpoint is written to `<outdir>/sampler_checkpoint.pkl` every
-  `save_freq` iterations (see {doc}`checkpointing`).
+  checkpoint is written to `<outdir>/sampler_checkpoint.npz` plus
+  `<outdir>/sampler_checkpoint.json` every `save_freq` iterations. Loading one
+  executes no code (see {doc}`checkpointing`).
 - The initial position must be inside the prior support with finite
   likelihood, otherwise `sample` raises `ValueError`. You can pass a single
   `(ndim,)` vector (replicated across chains) or an `(ntemps, ndim)` array.

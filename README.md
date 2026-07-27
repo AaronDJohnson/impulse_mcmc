@@ -261,10 +261,12 @@ proposing `a` from `b`. It is **added** to the log-posterior ratio in the
 Metropolis-Hastings acceptance, so positive `qxy` favors acceptance, and symmetric
 proposals return `qxy = 0.0`.
 
-Proposals must be **picklable** — checkpoints pickle every registered proposal —
-so use module-level functions or callable classes (not closures or lambdas).
-Callable classes must define a `__name__` attribute; it keys the acceptance-rate
-reports and internal proposal checks.
+Checkpoints store **no code**, so proposals are not serialized: to resume, you
+re-register the same proposals, in the same order, with the same weights, and the
+sampler verifies that against the checkpoint (raising `CheckpointMismatchError`
+if they differ). Module-level functions and callable classes are the recommended
+style; callable classes must define a `__name__` attribute, which keys the
+acceptance-rate reports and is what the resume check matches on.
 
 An asymmetric example — a multiplicative random walk, where `qxy` is the
 log-Jacobian of the rescaling:

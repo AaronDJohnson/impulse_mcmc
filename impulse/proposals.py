@@ -9,10 +9,12 @@ where ``qxy`` is the log proposal-density ratio
 with ``x`` the CURRENT sample and ``y`` the PROPOSED sample (``q(a | b)`` is
 the density of proposing ``a`` from ``b``). ``qxy`` is ADDED to the
 log-posterior ratio in the Metropolis-Hastings acceptance, so positive
-``qxy`` favors acceptance and symmetric proposals return ``0.0``. Proposals
-must be picklable (checkpoints pickle every registered proposal): use
-module-level functions or callable classes, and give callable classes a
-``__name__`` attribute (it keys acceptance-rate reports). The module
+``qxy`` favors acceptance and symmetric proposals return ``0.0``. Checkpoints
+store no code, so proposals are not serialized: to resume, re-register the same
+proposals in the same order with the same weights (the sampler verifies this).
+Use module-level functions or callable classes, and give callable classes a
+``__name__`` attribute (it keys acceptance-rate reports and the resume check).
+The module
 provides the adaptive kernels :func:`am`, :func:`scam`, and the
 min-fill-gated :func:`de` (:class:`DEProposal` registers it with a
 non-default ``min_fill``; :class:`EarlyDE` / :func:`make_early_de` are
@@ -532,11 +534,11 @@ class DEProposal:
     Picklable differential-evolution proposal with a configurable ``min_fill``.
 
     Callable-class wrapper around :func:`de` for registering the
-    difference move with a non-default activation threshold (checkpoints
-    pickle every registered proposal, so the threshold must live on a
-    picklable object rather than in a closure).  ``__name__`` is ``'de'``,
-    so acceptance-rate reports key it identically to the module-level
-    :func:`de`.
+    difference move with a non-default activation threshold.  A class
+    rather than a closure so the threshold is inspectable state and the
+    object carries a stable ``__name__`` for acceptance reports and the
+    resume check.  ``__name__`` is ``'de'``, so acceptance-rate reports key
+    it identically to the module-level :func:`de`.
 
     Parameters
     ----------

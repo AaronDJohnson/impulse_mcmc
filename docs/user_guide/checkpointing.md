@@ -65,23 +65,43 @@ custom proposals are code. Resume therefore works in two steps:
    does this for you).
 
 Before restoring, the loader **verifies** the reconstruction matches the
-checkpoint metadata — sampler class, `ndim`, `ntemps`, and the ordered
+checkpoint metadata — sampler class; the run-shaping scalars `ndim`, `ntemps`,
+`swap_steps`, `cov_update`, `save_freq` and `buffer_size`; and the ordered
 proposal names *and* weights on every chain. If anything differs it raises a
-clear error naming the first mismatch (e.g. a missing custom jump or a changed
-weight), rather than silently restoring into the wrong sampler:
+clear error naming the first mismatch (e.g. a missing custom jump, a changed
+weight, or a changed `save_freq`), rather than silently restoring into the wrong
+sampler:
 
 ```python
+import numpy as np
+from impulse import HybridPTSampler
 from impulse.birth_death import BirthDeathProductSpace
 
-def make_rj_sampler():
-    space = BirthDeathProductSpace(loglike, logprior, num_sources=3,
-                               num_params=2, source_prior_draw=draw)
-    # Same weights and the same custom jumps as the original run:
-    return HybridPTSampler.from_product_space(space, ntemps=8, seed=1,
-                                   outdir="./chains_rj", resume=True)
+NUM_PARAMS, NUM_SOURCES = 2, 3
+LO, HI = np.array([0.0, 0.0]), np.array([5.0, 3.0])
+data = np.zeros(32)
 
-make_rj_sampler().sample(x0, num_iterations=50_000)   # first run
-make_rj_sampler().sample(x0, num_iterations=50_000)   # resume — same wiring
+def loglike(params):
+    return -0.5 * float(np.sum(data**2))
+
+def logprior(params):
+    p = np.asarray(params).reshape(-1, NUM_PARAMS)
+    return 0.0 if np.all((p >= LO) & (p <= HI)) else -np.inf
+
+def draw(rng):
+    return rng.uniform(LO, HI)
+
+space = BirthDeathProductSpace(loglike, logprior, num_sources=NUM_SOURCES,
+                               num_params=NUM_PARAMS, source_prior_draw=draw)
+
+def make_rj_sampler():
+    # Same space, same weights, and the same custom jumps as the original run:
+    return HybridPTSampler.from_product_space(space, ntemps=8, seed=1,
+                                              outdir="./chains_rj", resume=True)
+
+x0 = space.draw_initial_position(np.random.default_rng(1))
+make_rj_sampler().sample(x0, num_iterations=2_000)   # first run
+make_rj_sampler().sample(x0, num_iterations=4_000)   # resume — same wiring
 ```
 
 This is how resume always worked in practice — the pickle format stored
