@@ -466,6 +466,71 @@ class TestMetadataMismatch:
         with pytest.raises(CheckpointMismatchError, match="weight"):
             restore_state_checkpoint(wrong, str(tmp_path / "sampler_checkpoint.json"))
 
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("save_freq", 55),
+            ("cov_update", 33),
+            ("buffer_size", 500),
+            ("swap_steps", 7),
+        ],
+    )
+    def test_run_shaping_scalar_mismatch_raises(self, tmp_path, field, value):
+        """Every scalar the checkpoint records must be verified, not just ndim/ntemps.
+
+        Regression test: these four were written into the checkpoint metadata but
+        never compared on resume. Silently accepting them corrupts the run --
+        a changed save_freq discards chain rows and a changed buffer_size breaks
+        the len(_buffer) == buffer_size invariant.
+        """
+        original = _pt(str(tmp_path))
+        original.sample(np.array([0.3, -0.2]), num_iterations=40)
+        # _pt pins save_freq/cov_update/buffer_size, so build explicitly to
+        # override exactly one of them.
+        params = dict(
+            ndim=2,
+            lnlike=_gauss_lnlike,
+            lnprior=_flat_lnprior,
+            ntemps=3,
+            seed=SEED,
+            outdir=str(tmp_path),
+            save_freq=20,
+            cov_update=10,
+            buffer_size=80,
+        )
+        params[field] = value
+        wrong = PTSampler(**params)
+        with pytest.raises(CheckpointMismatchError, match=field):
+            restore_state_checkpoint(wrong, str(tmp_path / "sampler_checkpoint.json"))
+
+    def test_resume_preserves_every_chain_row(self, tmp_path):
+        """Resuming to N total iterations must leave exactly N rows on disk.
+
+        Regression test for silent data loss: with save_freq unverified, resuming
+        a 100-iteration run with a different save_freq truncated the chain file to
+        the last checkpointed row and discarded the remainder without warning.
+        """
+        _pt(str(tmp_path)).sample(np.array([0.3, -0.2]), num_iterations=100)
+        _pt(str(tmp_path), resume=True).sample(np.array([0.3, -0.2]), num_iterations=260)
+
+        with open(tmp_path / "chain_0.txt") as fh:
+            assert sum(1 for _ in fh) == 260
+
+    def test_restore_keeps_buffer_size_invariant(self, tmp_path):
+        """set_checkpoint_state must restore buffer_size alongside the buffer.
+
+        Regression test: restoring _buffer without buffer_size left the DE
+        proposal drawing indices from a range that did not match the array it
+        indexes -- IndexError at proposals.py when the buffer grew.
+        """
+        original = _pt(str(tmp_path))
+        original.sample(np.array([0.3, -0.2]), num_iterations=60)
+        good = _pt(str(tmp_path))
+        restore_state_checkpoint(good, str(tmp_path / "sampler_checkpoint.json"))
+
+        for cs in good.multi_chain_stats.chain_stats:
+            assert len(cs._buffer) == cs.buffer_size
+
     def test_matching_custom_jump_restores(self, tmp_path):
         original = _pt(str(tmp_path))
         original.add_custom_jump(_shift_proposal, weight=10)

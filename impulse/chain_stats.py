@@ -406,6 +406,12 @@ class ChainStats:
         self.sample_cov = np.array(arrays["sample_cov"], dtype=float)
         self.sample_mean = np.array(arrays["sample_mean"], dtype=float)
         self._buffer = np.array(arrays["buffer"], dtype=float)
+        # Keep the len(_buffer) == buffer_size invariant. Restoring the buffer
+        # without its size leaves the differential-evolution proposal drawing
+        # indices from a range that does not match the array it indexes: it
+        # raises IndexError when the buffer grew across the resume and silently
+        # mis-scales the adaptation history when it shrank.
+        self.buffer_size = len(self._buffer)
         if meta["has_current_sample"]:
             self.current_sample = np.array(arrays["current_sample"], dtype=float)
         ng = len(self.groups)

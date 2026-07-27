@@ -216,11 +216,22 @@ def _check_schema(meta: dict) -> None:
 def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
     """Verify the reconstructed sampler matches the checkpoint; raise on mismatch.
 
-    Checks (first mismatch reported): sampler class, ``ndim``, ``ntemps``,
-    and — per chain — the ordered proposal names and their weights. This is
-    the guardrail behind the reconstruct-then-restore contract: callables are
-    not serialized, so the caller must rebuild the sampler exactly as the
-    original run did.
+    Checks (first mismatch reported): sampler class; the run-shaping scalars
+    ``ndim``, ``ntemps``, ``swap_steps``, ``cov_update``, ``save_freq`` and
+    ``buffer_size``; and — per chain — the ordered proposal names and their
+    weights. This is the guardrail behind the reconstruct-then-restore
+    contract: callables are not serialized, so the caller must rebuild the
+    sampler exactly as the original run did.
+
+    Every scalar checked here is one that :meth:`_capture_checkpoint_state`
+    already writes. They are verified rather than silently accepted because a
+    mismatch corrupts the run rather than merely changing it: a different
+    ``save_freq`` truncates the chain file to the last checkpointed row and
+    discards the difference, and a different ``buffer_size`` breaks the
+    ``len(_buffer) == buffer_size`` invariant, which either crashes the
+    differential-evolution proposal with an out-of-bounds index (when the
+    buffer grows) or silently mis-scales the adaptation history (when it
+    shrinks).
     """
     cls_name = type(sampler).__name__
     if meta.get("sampler_class") != cls_name:
@@ -228,16 +239,32 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
             f"checkpoint was written by {meta.get('sampler_class')!r} but is "
             f"being resumed into a {cls_name!r}; reconstruct the same sampler class."
         )
-    if int(meta["ndim"]) != int(sampler.ndim):
-        raise CheckpointMismatchError(
-            f"ndim mismatch: checkpoint has ndim={meta['ndim']} but the "
-            f"reconstructed sampler has ndim={sampler.ndim}."
-        )
-    if int(meta["ntemps"]) != int(sampler.ntemps):
-        raise CheckpointMismatchError(
-            f"ntemps mismatch: checkpoint has ntemps={meta['ntemps']} but the "
-            f"reconstructed sampler has ntemps={sampler.ntemps}."
-        )
+
+    def _sampler_buffer_size(s: Any) -> int:
+        return int(s.multi_chain_stats.chain_stats[0].buffer_size)
+
+    scalar_checks = (
+        ("ndim", lambda s: int(s.ndim)),
+        ("ntemps", lambda s: int(s.ntemps)),
+        ("swap_steps", lambda s: int(s.swap_steps)),
+        ("cov_update", lambda s: int(s.cov_update)),
+        ("save_freq", lambda s: int(s.save_freq)),
+        ("buffer_size", _sampler_buffer_size),
+    )
+    for key, getter in scalar_checks:
+        if key not in meta or meta[key] is None:
+            # Older checkpoints may predate a given field; nothing to verify.
+            continue
+        expected = int(meta[key])
+        actual = getter(sampler)
+        if expected != actual:
+            raise CheckpointMismatchError(
+                f"{key} mismatch: checkpoint has {key}={expected} but the "
+                f"reconstructed sampler has {key}={actual}; rebuild the sampler "
+                f"with {key}={expected} to resume this run, or start a fresh "
+                "run (resume=False, or a new outdir) to change it."
+            )
+
     ck_bundle = meta["proposal_bundle"]
     jump_proposals = sampler.proposal_bundle.jump_proposals
     for i, jp in enumerate(jump_proposals):
