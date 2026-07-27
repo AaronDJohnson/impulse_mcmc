@@ -208,3 +208,29 @@ rewrite and shares no API with it.
   SPDX `license = "MIT"` expression (builds fail on older setuptools).
 - Classifiers: Python 3.10-3.13, `Development Status :: 4 - Beta`, and
   `Typing :: Typed` (the package ships `py.typed`).
+- Added `MANIFEST.in`. Without it setuptools fell back to the legacy distutils
+  `test*.py` glob, which collects `tests/test_*.py` but drops
+  `tests/conftest.py` — so the shipped source distribution contained a test
+  suite that could not run (relevant to downstream packagers: conda-forge,
+  Debian, Spack). The sdist now also ships `CHANGELOG.md`, `CITATION.cff`,
+  `CONTRIBUTING.md`, `SECURITY.md`, and the documentation sources. Note this
+  defect is invisible when building in a working tree that contains a stale
+  `*.egg-info/SOURCES.txt`; verify sdist contents from a clean clone.
+- The project description and `CITATION.cff` no longer say "reversible-jump".
+  This string becomes immutable PyPI metadata per version, and the term was
+  retired from the API in this same release.
+
+### Changed (documentation)
+
+- The requirement that custom proposals be **picklable** is withdrawn — the
+  `.npz` + `.json` checkpoint format stores no code, so proposals are not
+  serialized at all and a lambda proposal now checkpoints and resumes fine.
+  What replaces it is the reconstruct-then-restore contract: re-register the
+  same proposals, in the same order, with the same weights, which the loader
+  verifies (`CheckpointMismatchError` on mismatch). Callable classes are still
+  recommended, but for a stable `__name__` — which keys acceptance reports and
+  the resume check — not for picklability.
+- Documented the `get_checkpoint_state()` / `set_checkpoint_state()` protocol,
+  which is how an adaptive proposal persists internal state under the default
+  format. It was previously undocumented, so a proposal that adapted between
+  calls silently restarted from its constructor defaults on resume.
