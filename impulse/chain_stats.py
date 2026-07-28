@@ -28,6 +28,55 @@ from impulse.utils import shift_array
 COV_RIDGE_REL = 1e-10
 
 
+class _HistoryBuffer:
+    """Tail-filled rolling window of recent chain states.
+
+    This is the single owner of the sample history that feeds two very
+    different consumers: the differential-evolution move (which wants *diverse*
+    pairs to form difference vectors) and the adaptive covariance (which wants a
+    long horizon). Both the global chain statistics and each per-model state own
+    one of these, which is what keeps their update logic from drifting apart --
+    the two paths previously carried separate copies of the same append,
+    fill-tracking, and moment-estimation code.
+
+    Rows are stored at the TAIL: ``buffer[-n_filled:]`` is the valid window and
+    everything before it is zero padding, so ``buffer[-k:]`` is always the k most
+    recent states regardless of how full the buffer is.
+
+    The counters (``sample_total``, ``buffer_full``, ``buffer_size``) stay on the
+    owning object because they are part of its constructor and checkpoint
+    surface; this class owns the array and the *logic*, which is the part that
+    both paths duplicated and the single place a future storage policy (e.g.
+    retaining thinned rather than consecutive states) has to change.
+    """
+
+    @staticmethod
+    def append(buffer: np.ndarray, new_samples: np.ndarray) -> np.ndarray:
+        """Return ``buffer`` with ``new_samples`` written at the tail.
+
+        Rows live at the TAIL: ``buffer[-n_filled:]`` is the valid window and
+        anything before it is zero padding, so ``buffer[-k:]`` is always the k
+        most recent states however full the buffer is.
+        """
+        n = len(new_samples)
+        buffer = shift_array(buffer, -n)
+        buffer[-n:] = new_samples
+        return buffer
+
+    @staticmethod
+    def moments(buffer: np.ndarray, n_filled: int) -> Optional[tuple]:
+        """``(mean, cov)`` over the filled tail, or None if too few samples.
+
+        ``atleast_2d`` because np.cov returns a 0-d scalar for a single column
+        (ndim == 1), which would break the (ndim, ndim) contract svd_groups
+        relies on.
+        """
+        if n_filled < 2:
+            return None
+        buf = buffer[-n_filled:]
+        return np.mean(buf, axis=0), np.atleast_2d(np.cov(buf, rowvar=False, ddof=1))
+
+
 @dataclass
 class _PerModelState:
     """Per-model statistics for adaptive proposals in product-space model selection.
@@ -184,8 +233,7 @@ class ChainStats:
         >>> stats.update_buffer(new_samples)
         >>> # Buffer now contains the new samples in most recent positions
         """
-        self._buffer = shift_array(self._buffer, -len(new_samples))
-        self._buffer[-len(new_samples) :] = new_samples
+        self._buffer = _HistoryBuffer.append(self._buffer, new_samples)
         if not self.buffer_full:
             if self.sample_total > self.buffer_size:
                 self.buffer_full = True
@@ -221,22 +269,14 @@ class ChainStats:
                 if not np.any(mask):
                     continue
                 model_samples = new_samples[mask]
-                old_count = pm.sample_total
                 pm.sample_total += len(model_samples)
-                # buffer update
-                pm.buffer = shift_array(pm.buffer, -len(model_samples))
-                pm.buffer[-len(model_samples) :] = model_samples
+                pm.buffer = _HistoryBuffer.append(pm.buffer, model_samples)
                 if not pm.buffer_full and pm.sample_total > self.buffer_size:
                     pm.buffer_full = True
-                # covariance update: recompute from filled buffer portion
-                n_filled = min(pm.sample_total, self.buffer_size)
-                if n_filled < 2:
+                moments = _HistoryBuffer.moments(pm.buffer, min(pm.sample_total, self.buffer_size))
+                if moments is None:
                     continue
-                buf = pm.buffer[-n_filled:]
-                pm.sample_mean = np.mean(buf, axis=0)
-                # atleast_2d: np.cov returns a 0-d scalar for a single column,
-                # which breaks the (ndim, ndim) contract svd_groups relies on.
-                pm.sample_cov = np.atleast_2d(np.cov(buf, rowvar=False, ddof=1))
+                pm.sample_mean, pm.sample_cov = moments
                 pm.svd_U, pm.svd_S, pm.proposal_L = svd_groups(
                     pm.svd_U,
                     pm.svd_S,
@@ -263,12 +303,10 @@ class ChainStats:
         if sample_num + len(new_samples) < 2:
             return
         # Recompute mean and covariance from the filled portion of the buffer
-        n_filled = min(self.sample_total, self.buffer_size)
-        buf = self._buffer[-n_filled:]
-        self.sample_mean = np.mean(buf, axis=0)
-        # atleast_2d: np.cov returns a 0-d scalar for a single column (ndim == 1),
-        # which breaks the (ndim, ndim) contract svd_groups relies on.
-        self.sample_cov = np.atleast_2d(np.cov(buf, rowvar=False, ddof=1))
+        moments = _HistoryBuffer.moments(self._buffer, min(self.sample_total, self.buffer_size))
+        if moments is None:
+            return
+        self.sample_mean, self.sample_cov = moments
         # new SVD on groups
         self.svd_U, self.svd_S, self.proposal_L = svd_groups(
             self.svd_U,
