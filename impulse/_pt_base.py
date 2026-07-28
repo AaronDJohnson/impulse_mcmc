@@ -118,7 +118,7 @@ def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:
 
 
 def setup_chain_stats(
-    ndim, ptstate, rngs, groups, sample_cov, sample_mean, buffer_size, temps
+    ndim, ptstate, rngs, groups, sample_cov, sample_mean, buffer_size, temps, buffer_thin=1
 ) -> MultiChainStats:
     """
     Initialize chain statistics tracking for all temperature chains.
@@ -172,6 +172,7 @@ def setup_chain_stats(
             sample_cov=sample_cov,
             sample_mean=sample_mean,
             buffer_size=buffer_size,
+            buffer_thin=buffer_thin,
         )
         for ii in range(ntemps)
     ]
@@ -422,6 +423,7 @@ class _PTSamplerBase:
         lnlike: Callable,
         lnprior: Callable,
         buffer_size: int = 50_000,
+        buffer_thin: int = 1,
         sample_mean: Optional[np.ndarray] = None,
         sample_cov: Optional[np.ndarray] = None,
         groups: Optional[list] = None,
@@ -497,6 +499,7 @@ class _PTSamplerBase:
             sample_mean,
             buffer_size,
             self.ptstate.ladder,
+            buffer_thin,
         )
         self.proposal_bundle = setup_standard_jumps(
             self.multi_chain_stats, am_weight, scam_weight, de_weight, de_min_fill=de_min_fill

@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from impulse.chain_stats import ChainStats, MultiChainStats
+from impulse.chain_stats import ChainStats, MultiChainStats, _HistoryBuffer
 from impulse.sampler_state import PTState, SamplerState
 
 
@@ -519,3 +519,65 @@ class TestEnablePerModelLayout:
         for cs in multi.chain_stats:
             assert cs._nmodel_idx == layout.nmodel_index
             assert cs._num_models == num_models
+
+
+class TestHistoryBufferThinning:
+    """Storing every buffer_thin-th state instead of every consecutive one.
+
+    The DE history buffer holds ~89% redundant rows at realistic autocorrelation
+    (measured ESS 4362 of 39901 at ACT~9). Retaining every k-th state keeps the
+    same iteration HORIZON with k times fewer rows, which is what makes it safe:
+    naively shrinking buffer_size instead shortens the horizon and measurably
+    biases the adaptive covariance (a 500-row buffer at cov_update=10 samples a
+    posterior 2.8% too narrow; the same buffer with thin=25 is 0.35% off, versus
+    0.07% for the 100x larger default buffer).
+    """
+
+    def test_phase_is_global_not_per_batch(self):
+        """Retained rows are the global iterations divisible by thin."""
+        rows = np.arange(100, dtype=float).reshape(-1, 1)
+        kept, seen = [], 0
+        for start in range(0, 100, 7):  # ragged batches, deliberately not a multiple
+            batch = rows[start : start + 7]
+            sel = _HistoryBuffer.select_for_storage(batch, seen, 5)
+            kept.extend(sel[:, 0].tolist())
+            seen += len(batch)
+        assert kept == list(range(0, 100, 5))
+
+    def test_thin_one_is_identity(self):
+        rows = np.arange(10, dtype=float).reshape(-1, 1)
+        out = _HistoryBuffer.select_for_storage(rows, 3, 1)
+        np.testing.assert_array_equal(out, rows)
+
+    def test_buffer_stores_every_kth_state(self):
+        ptstate = PTState(ndim=1, ntemps=1, min_temp=1.0, max_temp=1.0)
+        stats = ChainStats(
+            ndim=1,
+            pt_state=ptstate,
+            chain_index=0,
+            rng=np.random.default_rng(0),
+            buffer_size=50,
+            buffer_thin=4,
+        )
+        samples = np.arange(80, dtype=float).reshape(-1, 1)
+        for start in range(0, 80, 10):
+            stats.recursive_update(start, samples[start : start + 10])
+
+        # sample_total counts STORED rows -- `de` derives its window from it and
+        # indexes buffer[-n_filled:], so counting raw iterations here would make
+        # DE read zero padding.
+        assert stats.sample_total == 20
+        assert stats._seen_raw == 80
+        stored = stats._buffer[-stats.sample_total :][:, 0]
+        np.testing.assert_array_equal(stored, np.arange(0, 80, 4))
+
+    def test_rejects_bad_thin(self):
+        ptstate = PTState(ndim=1, ntemps=1, min_temp=1.0, max_temp=1.0)
+        with pytest.raises(ValueError, match="buffer_thin must be >= 1"):
+            ChainStats(
+                ndim=1,
+                pt_state=ptstate,
+                chain_index=0,
+                rng=np.random.default_rng(0),
+                buffer_thin=0,
+            )

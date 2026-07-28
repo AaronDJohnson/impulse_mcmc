@@ -51,6 +51,23 @@ class _HistoryBuffer:
     """
 
     @staticmethod
+    def select_for_storage(new_samples: np.ndarray, seen_raw: int, thin: int) -> np.ndarray:
+        """Rows of ``new_samples`` to retain when storing every ``thin``-th state.
+
+        The phase is taken from ``seen_raw``, the number of states seen before
+        this batch, so the retained rows are exactly the global iterations
+        divisible by ``thin`` no matter how the run is chunked into batches.
+        Slicing each batch with ``[::thin]`` instead would restart the phase
+        every batch and retain a non-uniformly spaced set.
+
+        ``thin <= 1`` returns the batch unchanged.
+        """
+        if thin <= 1:
+            return new_samples
+        offset = (-seen_raw) % thin
+        return new_samples[offset::thin]
+
+    @staticmethod
     def append(buffer: np.ndarray, new_samples: np.ndarray) -> np.ndarray:
         """Return ``buffer`` with ``new_samples`` written at the tail.
 
@@ -94,7 +111,8 @@ class _PerModelState:
     proposal_L: list
     buffer: np.ndarray
     buffer_full: bool = False
-    sample_total: int = 0
+    sample_total: int = 0  # STORED rows (differs from seen_raw when thinning)
+    seen_raw: int = 0  # this model's raw visits; carries the thinning phase
 
 
 @dataclass
@@ -165,6 +183,7 @@ class ChainStats:
     # DEBuffer pieces:
     sample_total: int = 0
     buffer_size: int = 50_000
+    buffer_thin: int = 1
 
     def __post_init__(self):
         if self.pt_state.ladder is None:
@@ -191,8 +210,14 @@ class ChainStats:
         if self.proposal_L is None:
             self.proposal_L = [None for _ in range(len(self.groups))]
 
+        if self.buffer_thin < 1:
+            raise ValueError(f"buffer_thin must be >= 1, got {self.buffer_thin}")
         self._buffer = np.zeros((self.buffer_size, self.ndim))
         self.buffer_full = False
+        # Raw states seen, as opposed to states STORED (which is sample_total).
+        # These differ exactly when buffer_thin > 1, and this counter carries the
+        # global thinning phase across batches and across a resume.
+        self._seen_raw = 0
 
         # Ridge (Haario et al. 2001 `epsilon * I`) keeping the adaptive proposal
         # from degenerating into an absorbing state -- see svd_groups. Scaled to
@@ -269,8 +294,17 @@ class ChainStats:
                 if not np.any(mask):
                     continue
                 model_samples = new_samples[mask]
-                pm.sample_total += len(model_samples)
-                pm.buffer = _HistoryBuffer.append(pm.buffer, model_samples)
+                # Thinning phase is per model, counted in that model's own
+                # visits, so each model's buffer spans buffer_thin * capacity
+                # of ITS OWN samples.
+                stored = _HistoryBuffer.select_for_storage(
+                    model_samples, pm.seen_raw, self.buffer_thin
+                )
+                pm.seen_raw += len(model_samples)
+                if len(stored) == 0:
+                    continue
+                pm.sample_total += len(stored)
+                pm.buffer = _HistoryBuffer.append(pm.buffer, stored)
                 if not pm.buffer_full and pm.sample_total > self.buffer_size:
                     pm.buffer_full = True
                 moments = _HistoryBuffer.moments(pm.buffer, min(pm.sample_total, self.buffer_size))
@@ -297,8 +331,18 @@ class ChainStats:
             raise ValueError("groups must be initialized before calling recursive_update")
 
         # update buffer
-        self.sample_total += len(new_samples)
-        self.update_buffer(new_samples)
+        # Retain every buffer_thin-th state. sample_total counts STORED rows, not
+        # raw iterations, because `de` derives its window as
+        # min(sample_total, buffer_size) and indexes buffer[-n_filled:]; if
+        # sample_total counted raw iterations under thinning, that window would
+        # reach past the stored rows into the zero padding and DE would build
+        # difference vectors out of zeros.
+        stored = _HistoryBuffer.select_for_storage(new_samples, self._seen_raw, self.buffer_thin)
+        self._seen_raw += len(new_samples)
+        if len(stored) == 0:
+            return
+        self.sample_total += len(stored)
+        self.update_buffer(stored)
         # need at least 2 total samples for a meaningful covariance update
         if sample_num + len(new_samples) < 2:
             return
@@ -434,6 +478,7 @@ class ChainStats:
         }
         meta: dict = {
             "sample_total": int(self.sample_total),
+            "seen_raw": int(getattr(self, "_seen_raw", self.sample_total)),
             "buffer_full": bool(self.buffer_full),
             "groups": [list(map(int, g)) for g in self.groups],
             "has_current_sample": self.current_sample is not None,
@@ -459,6 +504,7 @@ class ChainStats:
                     {
                         "k": int(k),
                         "sample_total": int(pm.sample_total),
+                        "seen_raw": int(getattr(pm, "seen_raw", pm.sample_total)),
                         "buffer_full": bool(pm.buffer_full),
                         "groups": [list(map(int, g)) for g in pm.groups],
                     }
@@ -476,6 +522,9 @@ class ChainStats:
     def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
         """Restore adaptive state from :meth:`get_checkpoint_state` output."""
         self.sample_total = int(meta["sample_total"])
+        # Checkpoints written before buffer_thin existed have no "seen_raw";
+        # there stored == raw, so sample_total is the correct phase.
+        self._seen_raw = int(meta.get("seen_raw", meta["sample_total"]))
         self.buffer_full = bool(meta["buffer_full"])
         self.groups = [np.array(g, dtype=int) for g in meta["groups"]]
         self.sample_cov = np.array(arrays["sample_cov"], dtype=float)
@@ -513,6 +562,7 @@ class ChainStats:
                     buffer=np.array(arrays[f"m{k}.buffer"], dtype=float),
                     buffer_full=bool(m["buffer_full"]),
                     sample_total=int(m["sample_total"]),
+                    seen_raw=int(m.get("seen_raw", m["sample_total"])),
                 )
 
     def update_sample(self, position: np.ndarray):
