@@ -144,6 +144,7 @@ class HybridPTSampler(_PTSamplerBase):
         # Standard PTSampler args
         buffer_size: int = 50_000,
         groups: Optional[list] = None,
+        unmanaged_indices: Optional[list] = None,
         sample_mean: Optional[np.ndarray] = None,
         sample_cov: Optional[np.ndarray] = None,
         loglargs: Optional[tuple] = None,
@@ -184,6 +185,7 @@ class HybridPTSampler(_PTSamplerBase):
             sample_mean=sample_mean,
             sample_cov=sample_cov,
             groups=groups,
+            unmanaged_indices=unmanaged_indices,
             loglargs=loglargs,
             loglkwargs=loglkwargs,
             logpargs=logpargs,
@@ -496,6 +498,10 @@ class HybridPTSampler(_PTSamplerBase):
             lnprior=product_space.get_logprior,
             lnlike_grad=lnlike_grad,
             groups=product_space.get_default_groups(),
+            # get_default_groups deliberately omits the model index: it is moved
+            # by the birth/death kernel and nmodel_jump, never by am/scam/de.
+            # Declare that so ChainStats does not warn about an uncovered index.
+            unmanaged_indices=[product_space.ndim - 1],
             sample_cov=sample_cov,
             sample_mean=sample_mean,
             am_weight=am_weight,

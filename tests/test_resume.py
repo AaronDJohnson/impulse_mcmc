@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from impulse import PTSampler
 from impulse.resume import check_for_checkpoint, checkpoint_sampler, load_checkpoint
 
 
@@ -1248,3 +1249,66 @@ class TestResumeLegacyNUTSAdapterMigration:
         assert sampler._mass_matrix_injected == {2}
         # Idempotent: a second call returns the same adapter
         assert sampler._ensure_nuts_adapter() is adapter
+
+
+class TestResumeWithoutUsableCheckpoint:
+    """resume=True must not append a cold-start run onto an existing chain.
+
+    Regression test: with no usable checkpoint the sampler fell through to a
+    COLD START while prepare_files kept the existing chain files, so a 3000-row
+    chain silently became 6000 rows with an unconverged burn-in transient
+    spliced into the middle -- a file that is a valid sample of neither run, and
+    zero warnings. Reachable from a torn write, a deleted checkpoint, or any
+    earlier run shorter than save_freq (which never writes a checkpoint).
+    """
+
+    @staticmethod
+    def _lnlike(x):
+        x = np.asarray(x, dtype=float)
+        return float(-0.5 * np.sum(x**2)) if x.ndim == 1 else -0.5 * np.sum(x**2, axis=1)
+
+    @staticmethod
+    def _lnprior(x):
+        x = np.asarray(x, dtype=float)
+        if x.ndim == 1:
+            return 0.0 if np.all(np.abs(x) <= 10) else -np.inf
+        out = np.zeros(x.shape[0])
+        out[np.any(np.abs(x) > 10, axis=1)] = -np.inf
+        return out
+
+    def _sampler(self, outdir, **kw):
+        return PTSampler(
+            ndim=2,
+            lnlike=self._lnlike,
+            lnprior=self._lnprior,
+            ntemps=1,
+            seed=1,
+            outdir=outdir,
+            save_freq=500,
+            **kw,
+        )
+
+    def test_raises_when_chain_exists_but_checkpoint_does_not(self, tmp_path):
+        outdir = str(tmp_path)
+        self._sampler(outdir).sample(np.zeros(2), num_iterations=1000)
+        rows_before = sum(1 for _ in open(os.path.join(outdir, "chain_0.txt")))
+        os.remove(os.path.join(outdir, "sampler_checkpoint.json"))
+
+        with pytest.raises(RuntimeError, match="no usable checkpoint"):
+            self._sampler(outdir, resume=True).sample(np.zeros(2), num_iterations=1000)
+
+        # and the existing chain is left untouched
+        rows_after = sum(1 for _ in open(os.path.join(outdir, "chain_0.txt")))
+        assert rows_after == rows_before
+
+    def test_resume_true_on_empty_outdir_still_works(self, tmp_path):
+        """The 'continue if possible' idiom must keep working."""
+        outdir = str(tmp_path / "fresh")
+        self._sampler(outdir, resume=True).sample(np.zeros(2), num_iterations=500)
+        assert sum(1 for _ in open(os.path.join(outdir, "chain_0.txt"))) == 500
+
+    def test_normal_resume_still_works(self, tmp_path):
+        outdir = str(tmp_path)
+        self._sampler(outdir).sample(np.zeros(2), num_iterations=1000)
+        self._sampler(outdir, resume=True).sample(np.zeros(2), num_iterations=2000)
+        assert sum(1 for _ in open(os.path.join(outdir, "chain_0.txt"))) == 2000

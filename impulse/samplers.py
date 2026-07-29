@@ -295,6 +295,10 @@ class PTSampler(_PTSamplerBase):
             lnlike=product_space.get_loglikelihood,
             lnprior=product_space.get_logprior,
             groups=product_space.get_default_groups(),
+            # get_default_groups deliberately omits the model index: it is moved
+            # by the birth/death kernel and nmodel_jump, never by am/scam/de.
+            # Declare that so ChainStats does not warn about an uncovered index.
+            unmanaged_indices=[product_space.ndim - 1],
             sample_cov=sample_cov,
             sample_mean=sample_mean,
             am_weight=am_weight,

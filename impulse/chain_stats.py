@@ -11,6 +11,7 @@ learned separately for each model index. :class:`MultiChainStats` holds one
 across the ladder.
 """
 
+import warnings
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -184,6 +185,10 @@ class ChainStats:
     sample_total: int = 0
     buffer_size: int = 50_000
     buffer_thin: int = 1
+    # Indices the CALLER guarantees are moved by some other proposal, so their
+    # absence from `groups` is intentional (the product-space model index is
+    # moved by birth/death and nmodel_jump, never by am/scam/de).
+    unmanaged_indices: Optional[list] = None
 
     def __post_init__(self):
         if self.pt_state.ladder is None:
@@ -203,6 +208,44 @@ class ChainStats:
             self.sample_mean = np.atleast_1d(np.asarray(self.sample_mean, dtype=float))
         if self.groups is None:
             self.groups = [np.arange(0, self.ndim)]
+        else:
+            # Groups must cover every coordinate. am/scam/de each pick ONE group
+            # per call, so a coordinate in no group is never proposed: it stays
+            # pinned at its initial value forever and the chain samples a
+            # CONDITIONAL of the posterior rather than the marginal, with no
+            # error and a healthy-looking acceptance rate. Refuse to build that
+            # state rather than let it produce confident wrong answers.
+            covered = {int(i) for g in self.groups for i in np.atleast_1d(g)}
+            out_of_range = sorted(i for i in covered if i < 0 or i >= self.ndim)
+            if out_of_range:
+                raise ValueError(
+                    f"groups contain out-of-range parameter index/indices "
+                    f"{out_of_range} for ndim={self.ndim}."
+                )
+            declared = set(int(i) for i in (self.unmanaged_indices or ()))
+            missing = sorted(set(range(self.ndim)) - covered - declared)
+            if missing:
+                # A warning rather than an error: an uncovered coordinate is
+                # legitimate when a DIFFERENT proposal moves it, which is exactly
+                # the product-space layout -- BirthDeathProductSpace.get_default_groups
+                # excludes the model index on purpose because birth/death and
+                # nmodel_jump move it, not am/scam/de. ChainStats cannot know
+                # which other proposals are registered, so it cannot decide.
+                #
+                # It is still worth saying out loud: if nothing else moves these
+                # coordinates the chain is REDUCIBLE and silently samples a
+                # conditional of the posterior rather than the marginal, with a
+                # perfectly healthy-looking acceptance rate.
+                warnings.warn(
+                    f"groups do not cover parameter index/indices {missing} "
+                    f"(ndim={self.ndim}). am/scam/de only propose within a group, so "
+                    "unless another registered proposal moves them (as birth/death "
+                    "and nmodel_jump do for a product-space model index) they will "
+                    "stay frozen at their initial values and the chain will sample a "
+                    "conditional of the posterior, not the marginal.",
+                    UserWarning,
+                    stacklevel=3,
+                )
         if self.svd_U is None:
             self.svd_U = [None for _ in range(len(self.groups))]
         if self.svd_S is None:

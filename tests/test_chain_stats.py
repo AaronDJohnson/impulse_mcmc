@@ -581,3 +581,58 @@ class TestHistoryBufferThinning:
                 rng=np.random.default_rng(0),
                 buffer_thin=0,
             )
+
+
+class TestGroupsCoverage:
+    """Groups must cover every parameter or the chain is reducible.
+
+    am/scam/de each pick ONE group per call, so a coordinate that appears in no
+    group is never proposed: it stays pinned at its initial value and the chain
+    samples a CONDITIONAL of the posterior instead of the marginal. Measured on
+    a correlated 2-D Gaussian, that produced a reported mean 44% off and a width
+    40% off, silently, with a healthy acceptance rate.
+    """
+
+    def _stats(self, ndim, groups):
+        ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
+        return ChainStats(
+            ndim=ndim,
+            pt_state=ptstate,
+            chain_index=0,
+            rng=np.random.default_rng(0),
+            groups=groups,
+        )
+
+    def test_uncovered_parameter_warns(self):
+        """A warning, not an error: the product-space layout legitimately leaves
+        the model index out of groups because birth/death moves it instead."""
+        with pytest.warns(UserWarning, match="do not cover parameter"):
+            self._stats(3, [[0, 1]])
+
+    def test_warning_names_the_missing_indices(self):
+        with pytest.warns(UserWarning, match=r"\[1, 3\]"):
+            self._stats(4, [[0], [2]])
+
+    def test_out_of_range_index_rejected(self):
+        with pytest.raises(ValueError, match="out-of-range"):
+            self._stats(2, [[0, 1, 5]])
+
+    @pytest.mark.parametrize(
+        "ndim,groups",
+        [
+            (3, [[0, 1], [2]]),
+            (3, [[0], [1], [2]]),
+            (3, [[0, 1, 2]]),
+            (3, [[0, 1], [1, 2]]),  # overlapping is fine, all covered
+            (1, [[0]]),
+        ],
+    )
+    def test_valid_groupings_accepted(self, ndim, groups):
+        stats = self._stats(ndim, groups)
+        assert len(stats.groups) == len(groups)
+
+    def test_default_groups_cover_everything(self):
+        ptstate = PTState(ndim=4, ntemps=1, min_temp=1.0, max_temp=1.0)
+        stats = ChainStats(ndim=4, pt_state=ptstate, chain_index=0, rng=np.random.default_rng(0))
+        covered = {int(i) for g in stats.groups for i in np.atleast_1d(g)}
+        assert covered == set(range(4))

@@ -118,7 +118,16 @@ def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:
 
 
 def setup_chain_stats(
-    ndim, ptstate, rngs, groups, sample_cov, sample_mean, buffer_size, temps, buffer_thin=1
+    ndim,
+    ptstate,
+    rngs,
+    groups,
+    sample_cov,
+    sample_mean,
+    buffer_size,
+    temps,
+    buffer_thin=1,
+    unmanaged_indices=None,
 ) -> MultiChainStats:
     """
     Initialize chain statistics tracking for all temperature chains.
@@ -173,6 +182,7 @@ def setup_chain_stats(
             sample_mean=sample_mean,
             buffer_size=buffer_size,
             buffer_thin=buffer_thin,
+            unmanaged_indices=unmanaged_indices,
         )
         for ii in range(ntemps)
     ]
@@ -424,6 +434,7 @@ class _PTSamplerBase:
         lnprior: Callable,
         buffer_size: int = 50_000,
         buffer_thin: int = 1,
+        unmanaged_indices: Optional[list] = None,
         sample_mean: Optional[np.ndarray] = None,
         sample_cov: Optional[np.ndarray] = None,
         groups: Optional[list] = None,
@@ -500,6 +511,7 @@ class _PTSamplerBase:
             buffer_size,
             self.ptstate.ladder,
             buffer_thin,
+            unmanaged_indices,
         )
         self.proposal_bundle = setup_standard_jumps(
             self.multi_chain_stats, am_weight, scam_weight, de_weight, de_min_fill=de_min_fill
@@ -925,6 +937,30 @@ class _PTSamplerBase:
         # look for checkpoint in outdir
         _resumed_from_checkpoint = False
         self.checkpoint_path = check_for_checkpoint(self.outdir)
+        if self.resume and self.checkpoint_path is None:
+            # resume=True with no usable checkpoint used to fall through to a
+            # COLD START while prepare_files kept the existing chain files, so
+            # the run appended a fresh burn-in transient onto a completed chain
+            # and produced one file that is a valid sample of nothing. Zero
+            # warnings were emitted. Reachable from a torn write, a deleted
+            # checkpoint, or any earlier run shorter than save_freq (which never
+            # writes a checkpoint at all).
+            #
+            # An empty outdir is still fine: `resume=True` as a
+            # "continue if possible" idiom must keep working.
+            paths = getattr(self.short_chain, "filepaths", [])
+            non_empty = [p for p in paths if os.path.exists(p) and os.path.getsize(p) > 0]
+            if non_empty:
+                raise RuntimeError(
+                    f"resume=True but no usable checkpoint was found in {self.outdir!r}, "
+                    f"while chain files already contain data "
+                    f"({os.path.basename(non_empty[0])} and {len(non_empty) - 1} other(s)). "
+                    "Continuing would append a fresh cold-start run onto the existing "
+                    "chain, splicing an unconverged transient into the middle of the "
+                    "file. Either restore the checkpoint, or start a clean run with "
+                    "resume=False or a new outdir (note resume=False DELETES the "
+                    "existing chain files in that directory)."
+                )
         if self.resume and self.checkpoint_path is not None:
             _resumed_from_checkpoint = True
             self._logger.info("Resuming from checkpoint: %s", self.checkpoint_path)
