@@ -4,7 +4,7 @@ Two on-disk formats exist:
 
 **New (default) — no code execution on load.** :class:`impulse.PTSampler`
 and :class:`impulse.HybridPTSampler` checkpoint to ``sampler_checkpoint.npz``
-(array state, via :func:`numpy.savez`) plus
+(array state, via :func:`numpy.savez`, uncompressed) plus
 ``sampler_checkpoint.json`` (a schema-versioned metadata sidecar: RNG
 bit-generator states, the ordered proposal names/weights, and every
 component's scalar state). Loading uses ``numpy.load(..., allow_pickle=
@@ -94,7 +94,7 @@ def _checkpoint_base(path: Optional[str], sampler: Any) -> str:
 def save_state_checkpoint(sampler: Any, path: Optional[str] = None) -> str:
     """Atomically write the no-code-execution checkpoint (``.npz`` + ``.json``).
 
-    The array state goes to ``<base>.npz`` (compressed) and the metadata to
+    The array state goes to ``<base>.npz`` (uncompressed, for write speed) and the metadata to
     ``<base>.json``. Both are written to temp files and ``os.replace``\\ d into
     place with the JSON sidecar committed LAST, so an interrupted write leaves
     a ``.npz`` with no ``.json`` — which :func:`check_for_checkpoint` treats as

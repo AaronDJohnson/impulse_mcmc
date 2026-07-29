@@ -149,7 +149,7 @@ class ChainStats:
         Current parameter position.
     sample_total : int, default 0
         Total number of samples processed.
-    buffer_size : int, default 50000
+    buffer_size : int, default 2000
         Size of circular buffer for differential evolution proposals.
 
     Examples
@@ -481,10 +481,13 @@ class ChainStats:
 
     def __setstate__(self, state: dict) -> None:
         """Restore from pickle, recomputing proposal_L for old checkpoints."""
-        # Back-fill attributes introduced after older pickles were written.
-        # A legacy .pkl predates these, and without defaults the first
-        # covariance update raises AttributeError. The npz path gets the same
-        # protection via meta.get() in set_checkpoint_state.
+        self.__dict__.update(state)
+        # Back-fill attributes introduced after older pickles were written, AFTER
+        # restoring the state: pickle hands __setstate__ an EMPTY __dict__, so
+        # back-filling first read sample_total as 0 and sample_cov as absent,
+        # giving _seen_raw = 0 and a scale-1.0 ridge no matter what the
+        # checkpoint actually held. The npz path gets the same protection via
+        # meta.get() in set_checkpoint_state.
         self.__dict__.setdefault("buffer_thin", 1)
         self.__dict__.setdefault("_seen_raw", self.__dict__.get("sample_total", 0))
         self.__dict__.setdefault("unmanaged_indices", None)
@@ -494,7 +497,6 @@ class ChainStats:
             if not np.isfinite(scale) or scale <= 0.0:
                 scale = 1.0
             self._cov_ridge = COV_RIDGE_REL * scale
-        self.__dict__.update(state)
         if not hasattr(self, "proposal_L") or self.proposal_L is None:
             # any pickled instance went through __post_init__, so these are set
             assert self.groups is not None and self.svd_U is not None and self.svd_S is not None

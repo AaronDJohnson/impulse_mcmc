@@ -264,10 +264,15 @@ class HybridPTSampler(_PTSamplerBase):
         # and the chain converged to neither. With a REQUIRED extra argument the
         # run died mid-sampling with a TypeError; with a DEFAULTED one it
         # completed silently and sampled the wrong distribution (measured
-        # sd 5.05 against a true 4.0). Bind the extras here so every NUTS call
-        # site inherits them while keeping the single-vector signature.
+        # sd 5.05 against a true 4.0). Bind the extras onto every single-vector
+        # callable the NUTS path uses -- likelihood, prior AND gradient.
         self._raw_lnlike = _bind_extra_args(lnlike, loglargs, loglkwargs)
         self._raw_lnprior = _bind_extra_args(lnprior, logpargs, logpkwargs)
+        # lnlike_grad computes the SAME likelihood, so it takes the same extras.
+        # Binding only the two above closed just half the wrong-density class:
+        # the gradient kept using its own defaults and the chain still sampled
+        # the wrong target (measured sd 1.57 against a true 4.0).
+        lnlike_grad = _bind_extra_args(lnlike_grad, loglargs, loglkwargs) if lnlike_grad else None
 
         # NUTS configuration
         self.lnlike_grad = lnlike_grad
@@ -676,11 +681,15 @@ class HybridPTSampler(_PTSamplerBase):
 
             # Check prior FIRST — cheap and catches out-of-bounds before
             # potentially expensive/unstable gradient computation.
-            if self._product_space is not None:
-                # All source blocks (active and inactive), model index excluded.
-                lp = raw_lnprior(trial[: self._product_space.layout.nmodel_index])
-            else:
-                lp = raw_lnprior(trial)
+            # raw_lnprior on the product-space path IS product_space.get_logprior,
+            # which reads the model index off the END of the vector itself
+            # (model_index_of -> rint(params[-1])). Handing it a truncated vector
+            # made it rint the LAST SOURCE PARAMETER as a model index, fail the
+            # validity check and return -inf for every proposal -- so NUTS was
+            # skipped on every iteration while nuts_enabled reported True.
+            # Measured: 0 of 800 nuts_step calls, 800 of 800 once the full vector
+            # is passed. Pass the whole vector; get_logprior does its own slicing.
+            lp = raw_lnprior(trial)
 
             if not np.isfinite(lp):
                 return -np.inf, np.zeros_like(x_active)

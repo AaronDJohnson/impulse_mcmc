@@ -180,7 +180,7 @@ rewrite and shares no API with it.
   four. A changed `save_freq` discarded chain rows (600 of 2000 in a measured
   case, no warning); a changed `buffer_size` broke the
   `len(_buffer) == buffer_size` invariant and crashed the differential-evolution
-  proposal with an out-of-bounds index. All six run-shaping scalars are now
+  proposal with an out-of-bounds index. All seven run-shaping scalars are now
   verified on resume with an error that names the field and both values, and
   `ChainStats.set_checkpoint_state` restores `buffer_size` alongside the buffer.
 - 1-parameter models (`ndim=1`) crashed at the first covariance update with

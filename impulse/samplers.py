@@ -54,7 +54,7 @@ class PTSampler(_PTSamplerBase):
         Log-likelihood function that accepts parameter arrays.
     lnprior : callable
         Log-prior function that accepts parameter arrays.
-    buffer_size : int, default 50000
+    buffer_size : int, default 2000
         Size of internal buffer for storing samples and computing statistics.
     sample_mean : np.ndarray, optional
         Initial estimate of parameter means for adaptive proposals.

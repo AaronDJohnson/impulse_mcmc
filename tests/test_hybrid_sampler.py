@@ -1113,7 +1113,13 @@ class TestNUTSBindsExtraArgs:
         return out
 
     @staticmethod
-    def _grad(a, sigma=4.0):
+    def _grad(a, sigma=1.0):
+        """Default 1.0 deliberately DIFFERS from the bound loglargs value of 4.0.
+
+        With the gradient's default equal to the bound value the test passed
+        whether or not the binding reached lnlike_grad -- it was blind to half
+        its own bug. The gradient must receive the bound extras too.
+        """
         a = np.asarray(a, dtype=float)
         return float(-0.5 * np.sum((a / sigma) ** 2)), -a / sigma**2
 
@@ -1163,3 +1169,80 @@ class TestNUTSBindsExtraArgs:
         )
         s.sample(np.zeros(2), num_iterations=3000)  # must not raise
         assert s.load_chain()["samples"].shape[1] == 3000
+
+
+class TestProductSpaceNUTSActuallyRuns:
+    """The product-space NUTS transition must take steps, not silently no-op.
+
+    Regression test: logp_and_grad handed product_space.get_logprior a TRUNCATED
+    vector with the model index stripped. get_logprior reads that index off the
+    END of the vector itself, so it rinted the last SOURCE parameter as a model
+    index, failed the validity check and returned -inf for every proposal --
+    NUTS was skipped on every iteration while nuts_enabled reported True.
+    Measured 0 of 800 nuts_step calls; 800 of 800 after the fix.
+
+    The failure only shows when the last source parameter is far from a valid
+    model index, so the priors here deliberately live in [8, 14].
+    """
+
+    NP, NS = 2, 3
+    LO = np.array([8.0, 8.0])
+    HI = np.array([14.0, 14.0])
+    _T = np.linspace(0, 1, 20)
+
+    @classmethod
+    def _ll(cls, p):
+        p = np.asarray(p, dtype=float)
+        m = np.zeros(20)
+        for i in range(len(p) // cls.NP):
+            m += p[i * cls.NP] * cls._T
+        return -0.5 * float(np.sum(m**2))
+
+    @classmethod
+    def _lp(cls, p):
+        p = np.asarray(p, dtype=float).reshape(-1, cls.NP)
+        return 0.0 if np.all((p >= cls.LO) & (p <= cls.HI)) else -np.inf
+
+    @classmethod
+    def _grad(cls, a):
+        a = np.asarray(a, dtype=float)
+        m = np.zeros(20)
+        for i in range(len(a) // cls.NP):
+            m += a[i * cls.NP] * cls._T
+        g = np.zeros_like(a)
+        for i in range(len(a) // cls.NP):
+            g[i * cls.NP] = float(np.sum(-m * cls._T))
+        return -0.5 * float(np.sum(m**2)), g
+
+    def test_nuts_step_is_actually_called(self, temp_dir, monkeypatch):
+        import impulse.hybrid_sampler as hs
+        from impulse.birth_death import BirthDeathProductSpace
+
+        space = BirthDeathProductSpace(
+            loglikelihood=self._ll,
+            logprior=self._lp,
+            num_sources=self.NS,
+            num_params=self.NP,
+            source_prior_draw=lambda r: r.uniform(self.LO, self.HI),
+        )
+        calls = {"n": 0}
+        original = hs.nuts_step
+
+        def counting_nuts_step(*a, **k):
+            calls["n"] += 1
+            return original(*a, **k)
+
+        monkeypatch.setattr(hs, "nuts_step", counting_nuts_step)
+
+        s = hs.HybridPTSampler.from_product_space(
+            space,
+            lnlike_grad=self._grad,
+            ntemps=2,
+            seed=1,
+            outdir=temp_dir,
+            save_freq=300,
+        )
+        s.sample(space.draw_initial_position(np.random.default_rng(1)), num_iterations=300)
+
+        assert s.nuts_enabled
+        assert calls["n"] > 0, "product-space NUTS silently took zero steps"
