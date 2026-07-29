@@ -21,7 +21,8 @@ class TestChainStats:
         assert stats.chain_index == 0
         assert stats.rng is rng
         assert stats.sample_total == 0
-        assert stats.buffer_size == 50_000  # default
+        assert stats.buffer_size == 2_000  # default rows
+        assert stats.buffer_thin == 25  # -> 50_000-iteration horizon
         assert stats.buffer_full == False
 
         # Check default initialization
@@ -147,7 +148,9 @@ class TestChainStats:
     def test_recursive_update_basic(self, ptstate_2d):
         """Test basic recursive update functionality"""
         rng = np.random.default_rng(42)
-        stats = ChainStats(ndim=2, pt_state=ptstate_2d, chain_index=0, rng=rng, buffer_size=10)
+        stats = ChainStats(
+            ndim=2, pt_state=ptstate_2d, chain_index=0, rng=rng, buffer_size=10, buffer_thin=1
+        )
 
         # Set up initial state
         initial_sample_total = 5
@@ -444,6 +447,7 @@ class TestMultiChainStats:
                 rng=rng_list[i],
                 groups=groups,
                 buffer_size=50,
+                buffer_thin=1,  # exercise raw buffer mechanics, not the thinning policy
             )
             for i in range(3)
         ]

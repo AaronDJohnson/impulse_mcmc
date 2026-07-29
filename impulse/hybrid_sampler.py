@@ -142,7 +142,8 @@ class HybridPTSampler(_PTSamplerBase):
         step_size_min: float = 1e-4,
         step_size_max: float = 5.0,
         # Standard PTSampler args
-        buffer_size: int = 50_000,
+        buffer_size: int = 2_000,
+        buffer_thin: int = 25,
         groups: Optional[list] = None,
         unmanaged_indices: Optional[list] = None,
         sample_mean: Optional[np.ndarray] = None,
@@ -182,6 +183,7 @@ class HybridPTSampler(_PTSamplerBase):
             lnlike,
             lnprior,
             buffer_size=buffer_size,
+            buffer_thin=buffer_thin,
             sample_mean=sample_mean,
             sample_cov=sample_cov,
             groups=groups,

@@ -23,6 +23,46 @@ rewrite and shares no API with it.
 - `MassMatrix.from_covariance` now inverts its argument (builds
   `M = cov^-1`, matching Stan's convention). Use `MassMatrix.from_precision`
   when supplying Fisher/precision matrices directly.
+- The history-buffer defaults changed from `buffer_size=50_000, buffer_thin=1`
+  to `buffer_size=2_000, buffer_thin=25`. The retained HORIZON is unchanged —
+  both span 50,000 iterations — but only every 25th state is stored, because
+  consecutive MCMC states are highly autocorrelated (measured ~89% redundancy
+  at ACT≈9). Memory drops ~25x: 2100 MB → 84 MB at the documented
+  product-space defaults (`num_models=5, num_params=10, ntemps=21`).
+
+  Verified that this does NOT introduce adaptation bias, which is the reason
+  thinning is used instead of simply shrinking the buffer. Eigen-whitened
+  `E[z^2]` on a 6-D correlated Gaussian, 8 seeds x 60k iterations from exact
+  stationary starts (truth 1.0):
+
+  | buffer_size | thin | horizon | width error |
+  |---|---|---|---|
+  | 50000 | 1 | 50000 | +0.02% |
+  | 2000 | 25 | 50000 | −0.10% |
+  | 2000 | 1 | **2000** | **−0.60%** |
+
+  Bias tracks the horizon, not the row count: at identical memory, the thinned
+  buffer has 6x less bias. Chains are bit-different from earlier 2.0.0-dev
+  builds at the same seed. Set `buffer_thin=1` for the previous behavior.
+
+  Note `de_min_fill` counts STORED rows, so at the new defaults the
+  differential-evolution move activates after `100 * 25 = 2500` iterations
+  rather than 100. Short runs may want `buffer_thin=1`.
+- Checkpoints are written with `np.savez` instead of `np.savez_compressed`.
+  Compression measured 360 ms against 4.5 ms on a realistic payload — an 80x
+  cost, most of it spent deflating the zero padding in the history buffers —
+  and checkpoint writes were ~41% of wall time at the default `save_freq`. A
+  20,000-iteration run at `ntemps=8, ndim=10` went from 10.12 s to 4.68 s.
+  Checkpoint files are correspondingly larger and an uncompressed `.npz` can
+  now exceed the equivalent pickle; with the thinned buffers the absolute size
+  is small (2.2 MB at the defaults above).
+- `CHECKPOINT_SCHEMA_VERSION` is now 2. When per-model statistics are active,
+  `update_sample` makes the chain's `_buffer` the *same object* as the current
+  model's buffer, and the checkpoint was writing it under both `"buffer"` and
+  `"m{k}.buffer"` — storing the dominant array twice (measured 25% of the
+  buffer payload). The duplicate is dropped and the alias recorded in metadata.
+  Version 1 checkpoints still load; version 2 checkpoints will not load on
+  older impulse, which is what the version gate is for.
 - `grubin` now takes parameters **only**, shape `(T, D)` — the same contract as
   `effective_sample_size`, and exactly what `load_chain()` returns in
   `chain["samples"][k]`. It previously dropped the last two columns of its

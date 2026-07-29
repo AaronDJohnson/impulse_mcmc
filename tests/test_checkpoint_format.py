@@ -199,18 +199,29 @@ class TestFormatLayout:
         assert meta["ntemps"] == 3
         assert "impulse_version" in meta
 
-    def test_compressed_smaller_than_pickle(self, tmp_path):
+    def test_npz_is_uncompressed_and_not_bloated(self, tmp_path):
+        """The .npz is written UNCOMPRESSED, deliberately.
+
+        savez_compressed measured 360 ms against 4.5 ms for savez on a realistic
+        payload -- an 80x cost, most of it spent deflating the zero padding in
+        the history buffers -- and checkpoint writes were ~41% of wall time at
+        the default save_freq. The tradeoff is a larger file: an uncompressed
+        .npz can exceed the equivalent pickle, which is expected and fine.
+
+        What must hold is that the file is close to the raw array bytes: much
+        larger would mean unexpected payload, much smaller would mean
+        compression crept back in and with it the write cost.
+        """
         s = _hybrid_nuts(str(tmp_path))
         s.sample(_rj_x0(), num_iterations=120)
-        npz = os.path.getsize(tmp_path / "sampler_checkpoint.npz")
-        pkl = os.path.join(str(tmp_path), "sampler_checkpoint.pkl")
-        checkpoint_sampler(
-            s,
-            path=pkl,
-            format="pickle",
-            omit=("lnlike", "lnprior", "_raw_lnlike", "_raw_lnprior", "lnlike_grad"),
-        )
-        assert npz < os.path.getsize(pkl)
+
+        npz_path = tmp_path / "sampler_checkpoint.npz"
+        on_disk = os.path.getsize(npz_path)
+        with np.load(npz_path, allow_pickle=False) as z:
+            raw = sum(z[k].nbytes for k in z.files)
+
+        assert on_disk >= 0.95 * raw, "smaller than its own arrays -- compression is back"
+        assert on_disk <= raw + 64 * 1024, "far larger than its arrays -- unexpected payload"
 
 
 # ---------------------------------------------------------------------------

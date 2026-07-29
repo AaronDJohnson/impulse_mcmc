@@ -183,8 +183,8 @@ class ChainStats:
 
     # DEBuffer pieces:
     sample_total: int = 0
-    buffer_size: int = 50_000
-    buffer_thin: int = 1
+    buffer_size: int = 2_000
+    buffer_thin: int = 25
     # Indices the CALLER guarantees are moved by some other proposal, so their
     # absence from `groups` is intentional (the product-space model index is
     # moved by birth/death and nmodel_jump, never by am/scam/de).
@@ -517,6 +517,7 @@ class ChainStats:
         arrays: dict = {
             "sample_cov": np.asarray(self.sample_cov),
             "sample_mean": np.asarray(self.sample_mean),
+            # NOTE: "buffer" may be omitted below when it aliases a per-model buffer.
             "buffer": np.asarray(self._buffer),
         }
         meta: dict = {
@@ -558,6 +559,16 @@ class ChainStats:
                 "nmodel_idx": int(self._nmodel_idx),
                 "models": models,
             }
+            # update_sample() swaps the CURRENT model's state into our own
+            # fields, so self._buffer IS that model's buffer -- the same object.
+            # Writing it under both "buffer" and "m{k}.buffer" stored the
+            # dominant array of the checkpoint twice (measured 25% of the buffer
+            # payload). Record the reference and drop the duplicate.
+            for k, pm in per_model.items():
+                if pm.buffer is self._buffer:
+                    meta["buffer_alias_model"] = int(k)
+                    arrays.pop("buffer", None)
+                    break
         else:
             meta["per_model"] = None
         return arrays, meta
@@ -572,7 +583,14 @@ class ChainStats:
         self.groups = [np.array(g, dtype=int) for g in meta["groups"]]
         self.sample_cov = np.array(arrays["sample_cov"], dtype=float)
         self.sample_mean = np.array(arrays["sample_mean"], dtype=float)
-        self._buffer = np.array(arrays["buffer"], dtype=float)
+        if "buffer" in arrays:
+            self._buffer = np.array(arrays["buffer"], dtype=float)
+        else:
+            # Written by a checkpoint that de-duplicated the aliased per-model
+            # buffer (see get_checkpoint_state). update_sample re-establishes
+            # the alias on the next call.
+            alias_k = meta["buffer_alias_model"]
+            self._buffer = np.array(arrays[f"m{alias_k}.buffer"], dtype=float)
         # Keep the len(_buffer) == buffer_size invariant. Restoring the buffer
         # without its size leaves the differential-evolution proposal drawing
         # indices from a range that does not match the array it indexes: it

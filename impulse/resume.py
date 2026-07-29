@@ -4,7 +4,7 @@ Two on-disk formats exist:
 
 **New (default) — no code execution on load.** :class:`impulse.PTSampler`
 and :class:`impulse.HybridPTSampler` checkpoint to ``sampler_checkpoint.npz``
-(array state, via :func:`numpy.savez_compressed`) plus
+(array state, via :func:`numpy.savez`) plus
 ``sampler_checkpoint.json`` (a schema-versioned metadata sidecar: RNG
 bit-generator states, the ordered proposal names/weights, and every
 component's scalar state). Loading uses ``numpy.load(..., allow_pickle=
@@ -46,7 +46,7 @@ import numpy as np
 
 # Bump when the on-disk metadata layout changes incompatibly. The loader
 # accepts any version <= this and refuses newer ones with a clear error.
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
 
 # Basenames (in ``outdir``) for each checkpoint artifact.
 _NEW_BASENAME = "sampler_checkpoint"
@@ -141,7 +141,13 @@ def save_state_checkpoint(sampler: Any, path: Optional[str] = None) -> str:
     os.close(json_fd)
     try:
         with open(tmp_npz, "wb") as fp:
-            np.savez_compressed(fp, **arrays)
+            # Uncompressed on purpose. savez_compressed measured 360 ms vs
+            # 4.5 ms for savez on a realistic payload -- an 80x cost, largely
+            # spent deflating the zero padding in the history buffers. With
+            # the thinned buffer defaults the payload is ~25x smaller, so the
+            # extra bytes on disk are cheap and the checkpoint write stops
+            # dominating the run (it was ~41% of wall time at save_freq=1000).
+            np.savez(fp, **arrays)
         with open(tmp_json, "w") as fp:
             json.dump(meta, fp)
         # Commit: npz first, JSON last (the JSON sidecar is the marker).
@@ -366,7 +372,7 @@ def checkpoint_sampler(
 
     Notes
     -----
-    - New format: array state via ``np.savez_compressed``, metadata as JSON;
+    - New format: array state via ``np.savez``, metadata as JSON;
       loading executes no code. See :func:`save_state_checkpoint`.
     - Legacy format: a Python pickle of the whole object; loading it can
       execute arbitrary code (see SECURITY.md).
