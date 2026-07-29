@@ -140,6 +140,41 @@ rewrite and shares no API with it.
 
 ### Fixed
 
+- `resume=True` with no usable checkpoint no longer silently appends a fresh
+  cold-start run onto an existing chain (a completed 3000-row chain became 6000
+  rows with an unconverged transient spliced into the middle, with no warning).
+  It now raises `RuntimeError`. **This is a behavior change**: a run that
+  previously "succeeded" by corrupting its own output now stops. `resume=True`
+  on an empty output directory still starts fresh.
+- The adaptive covariance could collapse into an absorbing state: `am`/`scam`
+  take their entire step scale from `proposal_L`, so a posterior narrower than
+  the initial `sample_cov` started at the mode rejected every early proposal,
+  filled the history buffer with identical rows, and drove `proposal_L` to
+  exactly zero — after which no default proposal could move that coordinate
+  again. The chain reported a point mass with `sd = 0.0` while its acceptance
+  rate looked healthy (0.82). Fixed with a Haario et al. (2001) `epsilon * I`
+  ridge scaled to the initial covariance.
+- Adaptation was starved whenever `cov_update > save_freq`: the history ring was
+  sized `save_freq` but the adaptation refresh asks for `cov_update` samples, so
+  `get_recent_samples` silently clamped. At `save_freq=100, cov_update=2000` the
+  covariance saw 101 of 4000 samples. Reported by @thompsonphys (issue #11).
+- Chain thinning restarted its phase at every flush, so `thin=3` with
+  `save_freq=10` wrote iterations 0,3,6,9,10,13,... (gaps 3,3,3,1) instead of a
+  uniform 3 — a periodic artifact of period `save_freq` in any autocorrelation
+  or ESS estimate computed from the saved file. **Changes on-disk chain contents
+  for any `thin > 1` run.**
+- `loglargs`/`loglkwargs`/`logpargs`/`logpkwargs` were dropped on the NUTS path
+  of `HybridPTSampler`: the NUTS transition called the raw user callables, so
+  the MH step targeted the intended density while NUTS targeted the function's
+  defaults. With a defaulted extra argument this silently sampled the wrong
+  distribution (measured sd 5.05 against a true 4.0); with a required one the
+  run died mid-sampling with a `TypeError`.
+- Parameter `groups` that do not cover every index now warn at construction:
+  `am`/`scam`/`de` only propose within a group, so an uncovered coordinate stays
+  frozen and the chain samples a *conditional* of the posterior rather than the
+  marginal. The new `unmanaged_indices` argument declares indices that another
+  proposal moves (the product-space model index, moved by birth/death).
+
 - Resuming a run with a different `save_freq`, `buffer_size`, `cov_update` or
   `swap_steps` was silently accepted even though the checkpoint recorded all
   four. A changed `save_freq` discarded chain rows (600 of 2000 in a measured
@@ -194,12 +229,12 @@ rewrite and shares no API with it.
 
 - No-code-execution checkpoint format (now the default for `PTSampler` /
   `HybridPTSampler`): array state in `sampler_checkpoint.npz`
-  (`numpy.savez_compressed`) plus a schema-versioned `sampler_checkpoint.json`
+  (`numpy.savez`) plus a schema-versioned `sampler_checkpoint.json`
   metadata sidecar (`schema_version` starts at 1). Loading uses
   `numpy.load(..., allow_pickle=False)` and `json.load`, so resuming a
   checkpoint executes no code — it is as safe as reading a data file, including
   the automatic `resume=True` load from a shared `outdir`. The format is
-  smaller than the old pickle (savez compression) and carries an explicit
+  written uncompressed for write speed (see above) and carries an explicit
   schema version in place of implicit pickle-layout compatibility. Resume is
   *reconstruct then restore*: rebuild the sampler exactly as the original run
   did (same constructor / `from_product_space` / `add_custom_jump` calls), then

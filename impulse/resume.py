@@ -256,6 +256,7 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
         ("cov_update", lambda s: int(s.cov_update)),
         ("save_freq", lambda s: int(s.save_freq)),
         ("buffer_size", _sampler_buffer_size),
+        ("buffer_thin", lambda s: int(s.multi_chain_stats.chain_stats[0].buffer_thin)),
     )
     for key, getter in scalar_checks:
         if key not in meta or meta[key] is None:

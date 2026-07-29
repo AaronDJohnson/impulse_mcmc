@@ -7,6 +7,7 @@ reporting); this module adds the NUTS transition machinery, per-model
 step-size/mass-matrix adaptation, and NUTS diagnostics I/O.
 """
 
+import functools
 import logging
 import os
 from typing import Callable, Optional
@@ -29,6 +30,41 @@ from impulse.resume import CheckpointMismatchError, checkpoint_sampler, load_hyb
 from impulse.sampler_state import SamplerState, tempered_lnprobs
 from impulse.utils import prepare_files
 from impulse.wrapping import PeriodicSpec
+
+
+class _BoundExtraArgs:
+    """Call ``fn(x, *args, **kwargs)`` -- extras AFTER the parameter vector.
+
+    A callable class rather than ``functools.partial`` because partial PREPENDS
+    positional arguments: ``partial(lnlike, sigma)(x)`` calls
+    ``lnlike(sigma, x)``, binding the parameter vector to the wrong parameter.
+    The batch wrapper's convention is ``f(x, *args, **kwargs)``
+    (input_function_wrapper.py:141), and this has to match it exactly.
+    A class rather than a closure so it stays picklable for the legacy path.
+    """
+
+    def __init__(self, fn: Callable, args: tuple, kwargs: dict):
+        self.fn = fn
+        self.args = args
+        self.kwargs = kwargs
+        self.__name__ = getattr(fn, "__name__", "bound")
+
+    def __call__(self, x):
+        return self.fn(x, *self.args, **self.kwargs)
+
+
+def _bind_extra_args(fn: Callable, args: Optional[tuple], kwargs: Optional[dict]) -> Callable:
+    """Bind ``loglargs``/``loglkwargs``-style extras onto a single-vector callable.
+
+    The batch wrapper applied to ``self.lnlike`` / ``self.lnprior`` binds these
+    for the MH path. The NUTS path needs a callable taking ONE parameter vector,
+    so it cannot reuse that wrapper -- but it must not lose the arguments
+    either. Returns ``fn`` unchanged when there is nothing to bind, so the
+    common case adds no indirection at all.
+    """
+    if not args and not kwargs:
+        return fn
+    return _BoundExtraArgs(fn, tuple(args or ()), dict(kwargs or {}))
 
 
 def _adapter_view(field: str) -> property:
@@ -217,9 +253,21 @@ class HybridPTSampler(_PTSamplerBase):
             num_adapt=num_adapt,
         )
 
-        # Keep raw references for NUTS gradient building
-        self._raw_lnlike = lnlike
-        self._raw_lnprior = lnprior
+        # Keep raw references for NUTS gradient building.
+        #
+        # NUTS evaluates a SINGLE parameter vector, while self.lnlike/self.lnprior
+        # are batch wrappers over (n, ndim), so the NUTS path cannot use them
+        # directly. But the wrapper is also what binds loglargs/loglkwargs and
+        # logpargs/logpkwargs, so referencing the bare callables here silently
+        # dropped those arguments: the MH step targeted the user's intended
+        # density while the NUTS accept/reject targeted the function's DEFAULTS,
+        # and the chain converged to neither. With a REQUIRED extra argument the
+        # run died mid-sampling with a TypeError; with a DEFAULTED one it
+        # completed silently and sampled the wrong distribution (measured
+        # sd 5.05 against a true 4.0). Bind the extras here so every NUTS call
+        # site inherits them while keeping the single-vector signature.
+        self._raw_lnlike = _bind_extra_args(lnlike, loglargs, loglkwargs)
+        self._raw_lnprior = _bind_extra_args(lnprior, logpargs, logpkwargs)
 
         # NUTS configuration
         self.lnlike_grad = lnlike_grad

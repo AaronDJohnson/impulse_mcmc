@@ -481,6 +481,19 @@ class ChainStats:
 
     def __setstate__(self, state: dict) -> None:
         """Restore from pickle, recomputing proposal_L for old checkpoints."""
+        # Back-fill attributes introduced after older pickles were written.
+        # A legacy .pkl predates these, and without defaults the first
+        # covariance update raises AttributeError. The npz path gets the same
+        # protection via meta.get() in set_checkpoint_state.
+        self.__dict__.setdefault("buffer_thin", 1)
+        self.__dict__.setdefault("_seen_raw", self.__dict__.get("sample_total", 0))
+        self.__dict__.setdefault("unmanaged_indices", None)
+        if "_cov_ridge" not in self.__dict__:
+            cov = self.__dict__.get("sample_cov")
+            scale = float(np.mean(np.diag(cov))) if cov is not None else 1.0
+            if not np.isfinite(scale) or scale <= 0.0:
+                scale = 1.0
+            self._cov_ridge = COV_RIDGE_REL * scale
         self.__dict__.update(state)
         if not hasattr(self, "proposal_L") or self.proposal_L is None:
             # any pickled instance went through __post_init__, so these are set

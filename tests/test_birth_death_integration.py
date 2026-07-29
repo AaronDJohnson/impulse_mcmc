@@ -528,6 +528,11 @@ class TestPerModelStats:
             ntemps=2,
             seed=42,
             outdir=outdir,
+            # buffer_thin=1 so this asserts the ROUTING (which model each sample
+            # goes to), not the storage policy: with the default thin=25 only
+            # every 25th visit per model is retained and the counts below would
+            # measure thinning rather than partitioning.
+            buffer_thin=1,
         )
         cs = sampler.multi_chain_stats.chain_stats[0]
 

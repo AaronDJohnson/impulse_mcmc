@@ -66,7 +66,7 @@ custom proposals are code. Resume therefore works in two steps:
 
 Before restoring, the loader **verifies** the reconstruction matches the
 checkpoint metadata — sampler class; the run-shaping scalars `ndim`, `ntemps`,
-`swap_steps`, `cov_update`, `save_freq` and `buffer_size`; and the ordered
+`swap_steps`, `cov_update`, `save_freq`, `buffer_size` and `buffer_thin`; and the ordered
 proposal names *and* weights on every chain. If anything differs it raises a
 clear error naming the first mismatch (e.g. a missing custom jump, a changed
 weight, or a changed `save_freq`), rather than silently restoring into the wrong
@@ -140,8 +140,10 @@ The checkpoint is two files in `outdir`:
 
 - `sampler_checkpoint.npz` — all array state (positions, log-densities, the
   temperature ladder, per-chain and per-model adaptive statistics, DE history
-  buffers, NUTS mass matrices and sample buffers), compressed with
-  `numpy.savez_compressed`.
+  buffers, NUTS mass matrices and sample buffers), written with
+  `numpy.savez`. It is deliberately UNCOMPRESSED: compression measured 80x
+  slower on a realistic payload and made checkpoint writes ~41% of wall
+  time, so the files are larger but the writes are cheap.
 - `sampler_checkpoint.json` — a schema-versioned metadata sidecar: the
   `schema_version`, the impulse version, the sampler class and constructor
   echo, every RNG bit-generator state, the ordered proposal names and weights,
@@ -159,7 +161,7 @@ into place with the JSON sidecar committed **last**, so an interrupted write
 
 ## Schema versioning and compatibility
 
-The JSON sidecar carries a `schema_version` (currently `1`). The loader reads
+The JSON sidecar carries a `schema_version` (currently `2`). The loader reads
 the current schema and **refuses a newer one** with a clear error rather than
 misreading it — so a checkpoint written by a future impulse will not be
 silently mis-restored by an older one. Schema bumps are documented in

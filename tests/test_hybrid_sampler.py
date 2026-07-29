@@ -1090,3 +1090,76 @@ class TestStepSizeFreezeFinalization:
             if da.count > 0
         }
         assert any(not np.isclose(primals[key], sampler._step_sizes[key]) for key in primals)
+
+
+class TestNUTSBindsExtraArgs:
+    """loglargs/logpargs must reach the NUTS path, not just the MH path.
+
+    Regression test: the NUTS transition called the RAW user callables, which is
+    where loglargs/loglkwargs get bound, so the extras were silently dropped.
+    The MH step then targeted the user's intended density while NUTS targeted
+    the function's DEFAULTS and the chain converged to neither -- measured sd
+    5.05 against a true 4.0. With a REQUIRED extra argument the run instead died
+    mid-sampling with a TypeError.
+    """
+
+    @staticmethod
+    def _lnprior(x):
+        x = np.asarray(x, dtype=float)
+        if x.ndim == 1:
+            return 0.0 if np.all(np.abs(x) <= 40) else -np.inf
+        out = np.zeros(x.shape[0])
+        out[np.any(np.abs(x) > 40, axis=1)] = -np.inf
+        return out
+
+    @staticmethod
+    def _grad(a, sigma=4.0):
+        a = np.asarray(a, dtype=float)
+        return float(-0.5 * np.sum((a / sigma) ** 2)), -a / sigma**2
+
+    def test_defaulted_extra_arg_targets_the_bound_density(self, temp_dir):
+        """The silent case: without binding this sampled the wrong distribution."""
+
+        def lnlike(x, sigma=1.0):  # default 1.0 differs from the bound 4.0
+            x = np.asarray(x, dtype=float)
+            if x.ndim == 1:
+                return float(-0.5 * np.sum((x / sigma) ** 2))
+            return -0.5 * np.sum((x / sigma) ** 2, axis=1)
+
+        s = HybridPTSampler(
+            ndim=2,
+            lnlike=lnlike,
+            lnprior=self._lnprior,
+            lnlike_grad=self._grad,
+            loglargs=(4.0,),
+            ntemps=2,
+            seed=1,
+            outdir=temp_dir,
+            save_freq=15000,
+        )
+        s.sample(np.zeros(2), num_iterations=15000)
+        sd = s.load_chain()["samples"][0][3000:].std(axis=0)
+        assert np.all(np.abs(sd - 4.0) < 0.6), f"targeted the wrong density: sd={sd}"
+
+    def test_required_extra_arg_does_not_crash(self, temp_dir):
+        """The loud case: a required extra arg used to TypeError mid-sampling."""
+
+        def lnlike(x, sigma):
+            x = np.asarray(x, dtype=float)
+            if x.ndim == 1:
+                return float(-0.5 * np.sum((x / sigma) ** 2))
+            return -0.5 * np.sum((x / sigma) ** 2, axis=1)
+
+        s = HybridPTSampler(
+            ndim=2,
+            lnlike=lnlike,
+            lnprior=self._lnprior,
+            lnlike_grad=self._grad,
+            loglargs=(4.0,),
+            ntemps=2,
+            seed=1,
+            outdir=temp_dir,
+            save_freq=3000,
+        )
+        s.sample(np.zeros(2), num_iterations=3000)  # must not raise
+        assert s.load_chain()["samples"].shape[1] == 3000

@@ -82,6 +82,7 @@ from .product_space import NestedProductSpace
 
 # Checkpoint / resume
 from .resume import (
+    CheckpointMismatchError,
     check_for_checkpoint,
     checkpoint_sampler,
     load_checkpoint,
@@ -120,6 +121,7 @@ __all__ = [
     "effective_sample_size",
     "autocorr_length_ips_ims",
     # Checkpoint / resume
+    "CheckpointMismatchError",
     "checkpoint_sampler",
     "load_checkpoint",
     "load_nuts_checkpoint",
