@@ -278,6 +278,16 @@ rewrite and shares no API with it.
 
 ### Added
 
+- `verbose` keyword on `PTSampler`, `NUTSSampler` and `HybridPTSampler`
+  (default `True`). `verbose=False` suppresses the tqdm progress bars — useful
+  for batch/cluster jobs, notebooks, and nested loops such as SBC.
+  `run_sbc_continuous` and `run_sbc_model_selection` take the same flag for
+  their own simulation-level bar. It is presentation-only: it is never
+  checkpointed or verified on resume, and a run resumed with `verbose=False`
+  stays quiet even when the checkpoint came from a verbose run. Pinned by
+  `tests/test_verbose.py`, which also asserts the chain is byte-identical with
+  and without it.
+
 - No-code-execution checkpoint format (now the default for `PTSampler` /
   `HybridPTSampler`): array state in `sampler_checkpoint.npz`
   (`numpy.savez`) plus a schema-versioned `sampler_checkpoint.json`

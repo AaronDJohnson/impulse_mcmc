@@ -10,7 +10,7 @@ Provides tools for validating MCMC samplers via SBC:
 
 import shutil
 import tempfile
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -335,6 +335,7 @@ def run_sbc_continuous(
     burn: int = 500,
     thin: int = 1,
     seed: Optional[int] = None,
+    verbose: bool = True,
 ) -> dict:
     """
     Run SBC for continuous-parameter samplers.
@@ -356,6 +357,11 @@ def run_sbc_continuous(
         Thinning factor for posterior samples.
     seed : int, optional
         Random seed for reproducibility.
+    verbose : bool, default True
+        Show a progress bar over the simulations. Set ``False`` to silence it.
+        The per-simulation samplers have their own ``verbose`` flag, so
+        silencing a whole SBC run means passing ``verbose=False`` here *and*
+        inside ``sampler_factory``.
 
     Returns
     -------
@@ -365,12 +371,14 @@ def run_sbc_continuous(
         ``true_values`` : shape ``(n_simulations, ndim)``
         ``n_posterior`` : int, number of posterior samples per simulation
     """
-    try:
-        from tqdm import tqdm
+    iterator: Iterable[int] = range(n_simulations)
+    if verbose:
+        try:
+            from tqdm import tqdm
 
-        iterator = tqdm(range(n_simulations), desc="SBC continuous")
-    except ImportError:
-        iterator = range(n_simulations)
+            iterator = tqdm(range(n_simulations), desc="SBC continuous")
+        except ImportError:
+            pass
 
     rng = np.random.default_rng(seed)
 
@@ -430,6 +438,7 @@ def run_sbc_model_selection(
     n_simulations: int = 200,
     burn: int = 2000,
     seed: Optional[int] = None,
+    verbose: bool = True,
 ) -> dict:
     """
     Run SBC for model-selection (product-space) samplers.
@@ -454,6 +463,11 @@ def run_sbc_model_selection(
         Burn-in samples to discard.
     seed : int, optional
         Random seed for reproducibility.
+    verbose : bool, default True
+        Show a progress bar over the simulations. Set ``False`` to silence it.
+        The per-simulation samplers have their own ``verbose`` flag, so
+        silencing a whole SBC run means passing ``verbose=False`` here *and*
+        inside ``sampler_factory``.
 
     Returns
     -------
@@ -462,12 +476,14 @@ def run_sbc_model_selection(
         ``true_models`` : shape ``(n_simulations,)``
         ``posterior_probs`` : shape ``(n_simulations, num_models)``
     """
-    try:
-        from tqdm import tqdm
+    iterator: Iterable[int] = range(n_simulations)
+    if verbose:
+        try:
+            from tqdm import tqdm
 
-        iterator = tqdm(range(n_simulations), desc="SBC model selection")
-    except ImportError:
-        iterator = range(n_simulations)
+            iterator = tqdm(range(n_simulations), desc="SBC model selection")
+        except ImportError:
+            pass
 
     rng = np.random.default_rng(seed)
 

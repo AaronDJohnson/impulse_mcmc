@@ -139,6 +139,12 @@ class PTSampler(_PTSamplerBase):
         Markovian; samples drawn before the freeze are warmup and should
         be discarded for strict asymptotic guarantees. ``None`` adapts
         forever, preserving historical behavior.
+    verbose : bool, default True
+        Show the tqdm sampling progress bar. Set ``False`` to silence it
+        (batch/cluster jobs, nested loops such as SBC, notebooks). Presentation
+        only: it does not affect the chain, is never checkpointed, and is not
+        verified on resume -- a run resumed with ``verbose=False`` stays quiet
+        even if the checkpoint came from a verbose run.
 
         Resume semantics: when ``num_adapt`` is not passed (the default),
         resuming keeps the checkpointed value — un-freezing on resume by

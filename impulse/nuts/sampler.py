@@ -61,6 +61,11 @@ class NUTSSampler:
         submission and every requeue. See :meth:`sample`.
     save_warmup : bool
         Whether to include warmup samples in saved chain.
+    verbose : bool, default True
+        Show tqdm progress bars for the warmup and sampling phases. Set
+        ``False`` to silence them (batch jobs, nested SBC loops, notebooks).
+        Presentation only -- it does not affect the chain, and is neither
+        checkpointed nor verified on resume.
 
     Examples
     --------
@@ -92,6 +97,7 @@ class NUTSSampler:
         save_freq: int = 1000,
         resume: bool = False,
         save_warmup: bool = False,
+        verbose: bool = True,
     ) -> None:
         self.ndim = ndim
         self.logp_and_grad = logp_and_grad
@@ -103,6 +109,8 @@ class NUTSSampler:
         self.save_freq = save_freq
         self.resume = resume
         self.save_warmup = save_warmup
+        # Presentation only: not checkpointed, not verified on resume.
+        self.verbose = verbose
 
         # Parse mass matrix type
         if isinstance(mass_matrix_type, str):
@@ -186,7 +194,7 @@ class NUTSSampler:
             self._flush_to_disk(filepath, 0, write_idx)
 
         unsaved = 0
-        for _ in tqdm(range(remaining), desc="Sampling"):
+        for _ in tqdm(range(remaining), desc="Sampling", disable=not self.verbose):
             self.state = nuts_step(
                 self.state,
                 self.logp_and_grad,
@@ -251,7 +259,7 @@ class NUTSSampler:
         # only populated (and read) when save_warmup is set
         self._warmup_rows = []
 
-        for i in tqdm(range(self.num_warmup), desc="Warmup"):
+        for i in tqdm(range(self.num_warmup), desc="Warmup", disable=not self.verbose):
             self.state = nuts_step(
                 self.state,
                 self.logp_and_grad,

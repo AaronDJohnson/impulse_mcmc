@@ -353,6 +353,7 @@ class _PTSamplerBase:
         threads: int = 1,
         periodic: Optional[PeriodicSpec] = None,
         num_adapt: Optional[int] = _UNSET,
+        verbose: bool = True,
     ) -> None:
 
         if loglargs is None:
@@ -409,6 +410,10 @@ class _PTSamplerBase:
         self.save_freq = save_freq
         self.outdir = outdir
         self.resume = resume
+        # Presentation only: never checkpointed or verified, and owned by the
+        # process that is running now (see the __dict__.update site in
+        # sample(), which preserves it across a legacy pickle restore).
+        self.verbose = verbose
         # NEVER store the _UNSET sentinel on self (it must not end up in
         # pickled checkpoints); remember instead whether the caller passed
         # num_adapt explicitly, which controls the resume semantics.
@@ -837,9 +842,14 @@ class _PTSamplerBase:
                 loaded = self._load_checkpoint(self.checkpoint_path)
                 constructor_resume = self.resume
                 constructor_checkpoint_path = self.checkpoint_path
+                # verbose is presentation-only and belongs to THIS process: a
+                # run resumed with verbose=False must stay quiet even if the
+                # checkpoint was written by a verbose run.
+                constructor_verbose = getattr(self, "verbose", True)
                 self.__dict__.update(loaded.__dict__)
                 self.resume = constructor_resume
                 self.checkpoint_path = constructor_checkpoint_path
+                self.verbose = constructor_verbose
                 checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
             if num_adapt_explicit:
                 if checkpoint_num_adapt != constructor_num_adapt:
@@ -875,6 +885,7 @@ class _PTSamplerBase:
             initial=self.short_chain.iteration,
             total=num_iterations,
             desc="Sampling",
+            disable=not getattr(self, "verbose", True),
         ):
             adapting = self._adaptation_active(jj)
             if not adapting and not _proposals_frozen:

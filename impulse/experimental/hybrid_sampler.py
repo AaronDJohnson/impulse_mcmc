@@ -154,7 +154,7 @@ class HybridPTSampler(_PTSamplerBase):
     logpargs, logpkwargs, cov_update, save_freq, scam_weight, am_weight,
     de_weight, de_min_fill, seed, outdir, ntemps, swap_steps, min_temp,
     max_temp, temp_step, ladder, inf_temp, adapt_t0, adapt_nu, resume,
-    vectorized
+    vectorized, verbose
         Same as :class:`PTSampler`.
     """
 
@@ -210,6 +210,7 @@ class HybridPTSampler(_PTSamplerBase):
         threads: int = 1,
         periodic: Optional[PeriodicSpec] = None,
         num_adapt: Optional[int] = _UNSET,
+        verbose: bool = True,
     ) -> None:
         # Shared PT wiring (function wrappers, RNGs, PT state, chain stats,
         # proposal bundle, num_adapt sentinel handling)
@@ -250,6 +251,7 @@ class HybridPTSampler(_PTSamplerBase):
             threads=threads,
             periodic=periodic,
             num_adapt=num_adapt,
+            verbose=verbose,
         )
 
         # Keep raw references for NUTS gradient building.
