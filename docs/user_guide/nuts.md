@@ -65,6 +65,47 @@ Watch `get_diagnostics()`:
 - `num_max_depth` counting up means trajectories are being truncated —
   usually an under-informative mass matrix or unscaled parameters.
 
+### Checkpointing and resuming
+
+`NUTSSampler` checkpoints every `save_freq` iterations into the same
+no-code-execution `.npz` + `.json` pair as `PTSampler`, and resumes
+**bit-exactly** — see {doc}`checkpointing` for the shared contract. Two
+NUTS-specific points:
+
+- **Warmup runs once.** A resumed run restores the adapted step size and the
+  exact mass-matrix factorization instead of re-adapting them, so the
+  post-warmup kernel is unchanged across the boundary. Warmup rows already on
+  disk (with `save_warmup=True`) are not rewritten.
+- **`num_iterations` is a global target**, as everywhere else: to take a run
+  checkpointed at 5 000 iterations up to 20 000, resume with
+  `num_iterations=20_000`.
+
+```python
+import numpy as np
+from impulse import NUTSSampler
+
+def logp_and_grad(x):
+    return -0.5 * np.sum(x**2), -x
+
+def make_sampler():
+    return NUTSSampler(ndim=3, logp_and_grad=logp_and_grad, num_warmup=500,
+                       seed=1, outdir="./chains_nuts_resume", save_freq=500,
+                       resume=True)
+
+# First submission: no checkpoint yet, so this warms up and starts fresh.
+make_sampler().sample(np.zeros(3), num_iterations=4_000)
+
+# Requeue: continues from the checkpoint to the SAME global target, without
+# re-running warmup.
+make_sampler().sample(np.zeros(3), num_iterations=4_000)
+```
+
+Because the reconstruct-then-restore check covers the run-shaping arguments
+(`ndim`, `num_warmup`, `save_freq`, `max_tree_depth`, `target_accept`,
+`mass_matrix_type`, `save_warmup`), changing any of them on resume raises
+`CheckpointMismatchError` rather than silently restoring into a differently
+configured sampler.
+
 ## Mass-matrix conventions
 
 impulse follows **Stan's convention**: momenta are drawn

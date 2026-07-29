@@ -127,16 +127,20 @@ class TestChainIO:
 
 
 class TestCheckpointResume:
-    def test_checkpoint_and_load(self, temp_dir):
-        """Checkpoint and restore NUTSSampler."""
-        sampler = NUTSSampler(
+    def _sampler(self, temp_dir, **kw):
+        kw.setdefault("num_warmup", 50)
+        kw.setdefault("save_freq", 50)
+        return NUTSSampler(
             ndim=2,
             logp_and_grad=gaussian_logp_and_grad,
-            num_warmup=50,
             seed=42,
             outdir=temp_dir,
-            save_freq=50,
+            **kw,
         )
+
+    def test_checkpoint_and_load(self, temp_dir):
+        """Explicit pickle checkpoint round-trip (the legacy manual path)."""
+        sampler = self._sampler(temp_dir)
         sampler.sample(np.zeros(2), num_iterations=100)
 
         # Checkpoint
@@ -148,6 +152,74 @@ class TestCheckpointResume:
         assert loaded.ndim == 2
         assert loaded.logp_and_grad is gaussian_logp_and_grad
         np.testing.assert_array_equal(loaded.state.position, sampler.state.position)
+
+    def test_default_checkpoint_is_the_no_code_execution_format(self, temp_dir):
+        """Automatic checkpoints are .npz + .json, never a pickle.
+
+        NUTSSampler was the last writer of the deprecated pickle format; it now
+        implements the capture hook, so checkpoint_sampler selects the safe
+        format for it like it does for the PT samplers.
+        """
+        self._sampler(temp_dir).sample(np.zeros(2), num_iterations=100)
+        assert os.path.exists(os.path.join(temp_dir, "sampler_checkpoint.json"))
+        assert os.path.exists(os.path.join(temp_dir, "sampler_checkpoint.npz"))
+        assert not os.path.exists(os.path.join(temp_dir, "sampler_checkpoint.pkl"))
+
+        # Loading executes no code: allow_pickle=False must succeed.
+        with np.load(os.path.join(temp_dir, "sampler_checkpoint.npz"), allow_pickle=False) as npz:
+            assert "position" in npz.files
+
+    def test_resume_with_no_checkpoint_starts_fresh(self, temp_dir):
+        """The requeue idiom: the same script works for the first submission."""
+        sampler = self._sampler(temp_dir, resume=True)
+        sampler.sample(np.zeros(2), num_iterations=100)
+        assert sampler._iteration == 100
+
+    def test_resume_without_checkpoint_but_with_chain_rows_raises(self, temp_dir):
+        """Refuse to splice a fresh run onto an existing chain file.
+
+        save_freq exceeds the run length, so rows reach disk but no checkpoint
+        is ever written. Appending a second, re-warmed-up run to that file
+        would silently mix two chains, so this must raise rather than proceed.
+        """
+        self._sampler(temp_dir, save_freq=10_000).sample(np.zeros(2), num_iterations=40)
+        assert os.path.getsize(os.path.join(temp_dir, "chain_nuts.txt")) > 0
+
+        with pytest.raises(RuntimeError, match="no usable checkpoint"):
+            self._sampler(temp_dir, save_freq=10_000, resume=True).sample(
+                np.zeros(2), num_iterations=200
+            )
+
+    def test_resume_from_legacy_pickle_checkpoint_raises(self, temp_dir):
+        """Legacy NUTS pickles predate resume and lack the progress counters.
+
+        They were written but never read back, so they record neither the
+        iteration count nor the flushed-row count a resume needs. Refuse
+        clearly instead of guessing.
+        """
+        sampler = self._sampler(temp_dir)
+        sampler.sample(np.zeros(2), num_iterations=100)
+        # Emulate a pre-2.0 outdir: only a pickle checkpoint present.
+        for ext in (".json", ".npz"):
+            os.remove(os.path.join(temp_dir, "sampler_checkpoint" + ext))
+        checkpoint_sampler(
+            sampler,
+            path=os.path.join(temp_dir, "sampler_checkpoint.pkl"),
+            omit=("logp_and_grad",),
+        )
+
+        with pytest.raises(RuntimeError, match="legacy pickle checkpoint"):
+            self._sampler(temp_dir, resume=True).sample(np.zeros(2), num_iterations=200)
+
+    def test_resume_refuses_changed_run_shaping_argument(self, temp_dir):
+        """Reconstruct-then-restore: a changed num_warmup is caught, not absorbed."""
+        from impulse.resume import CheckpointMismatchError
+
+        self._sampler(temp_dir).sample(np.zeros(2), num_iterations=100)
+        with pytest.raises(CheckpointMismatchError, match="num_warmup mismatch"):
+            self._sampler(temp_dir, num_warmup=999, resume=True).sample(
+                np.zeros(2), num_iterations=200
+            )
 
 
 class TestDiagnostics:

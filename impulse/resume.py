@@ -2,8 +2,10 @@
 
 Two on-disk formats exist:
 
-**New (default) — no code execution on load.** :class:`impulse.PTSampler`
-and :class:`impulse.HybridPTSampler` checkpoint to ``sampler_checkpoint.npz``
+**New (default) — no code execution on load.** Every sampler
+(:class:`impulse.PTSampler`, :class:`impulse.NUTSSampler`, and the
+experimental :class:`impulse.experimental.HybridPTSampler`)
+checkpoints to ``sampler_checkpoint.npz``
 (array state, via :func:`numpy.savez`, uncompressed) plus
 ``sampler_checkpoint.json`` (a schema-versioned metadata sidecar: RNG
 bit-generator states, the ordered proposal names/weights, and every
@@ -23,11 +25,11 @@ code**, so :func:`load_checkpoint`, :func:`load_hybrid_checkpoint`, and
 :func:`load_nuts_checkpoint` emit a loud security/deprecation warning; only
 resume from pickle checkpoints you trust (see SECURITY.md). This path is
 retained unchanged for backward compatibility and is deprecated for removal
-in a future 2.x release. :class:`~impulse.nuts.sampler.NUTSSampler` still
-checkpoints via pickle (its checkpointing is separate from the PT engine).
+in a future 2.x release. No sampler in this package writes pickles any more.
 
-:func:`checkpoint_sampler` writes the new format for PT/hybrid samplers and
-pickle only for a legacy ``.pkl`` target; :func:`check_for_checkpoint`
+:func:`checkpoint_sampler` writes the new format for every sampler that
+implements the capture hook, and pickle only for an explicit legacy ``.pkl``
+target; :func:`check_for_checkpoint`
 locates a checkpoint in an output directory, preferring the new format and
 treating a lone ``.npz`` (json sidecar absent — a torn write) as no
 checkpoint.
@@ -76,6 +78,33 @@ class TornCheckpointError(ValueError):
 # ---------------------------------------------------------------------------
 
 
+def _jsonable_rng_state(state: Any) -> Any:
+    """Deep-convert a ``bit_generator.state`` mapping to JSON-native types.
+
+    numpy's ``BitGenerator.state`` is a nested dict of Python ``int``\\ s and
+    strings for the stock generators, but numpy integer scalars can appear
+    in some builds.  Recursively cast integers to ``int`` (JSON stores
+    arbitrary-precision ints exactly, so PCG64's 128-bit words survive the
+    round-trip losslessly) and pass strings/floats through unchanged.
+    """
+    if isinstance(state, dict):
+        return {k: _jsonable_rng_state(v) for k, v in state.items()}
+    if isinstance(state, (list, tuple)):
+        return [_jsonable_rng_state(v) for v in state]
+    if isinstance(state, bool):
+        return state
+    if isinstance(state, (int, np.integer)):
+        return int(state)
+    if isinstance(state, (float, np.floating)):
+        return float(state)
+    return state
+
+
+def _rng_state_from_json(state: Any) -> Any:
+    """Inverse of :func:`_jsonable_rng_state` (JSON already yields Python ints)."""
+    return state
+
+
 def _checkpoint_base(path: Optional[str], sampler: Any) -> str:
     """Return the extension-less base path for the new-format artifact pair.
 
@@ -102,8 +131,8 @@ def save_state_checkpoint(sampler: Any, path: Optional[str] = None) -> str:
 
     Parameters
     ----------
-    sampler : PTSampler or HybridPTSampler
-        Must implement ``_capture_checkpoint_state`` (the PT engine does).
+    sampler : PTSampler, NUTSSampler or HybridPTSampler
+        Must implement ``_capture_checkpoint_state`` (all of them do).
     path : str, optional
         Target path or base; defaults to ``<sampler.outdir>/sampler_checkpoint``.
 
@@ -257,6 +286,13 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
         ("save_freq", lambda s: int(s.save_freq)),
         ("buffer_size", _sampler_buffer_size),
         ("buffer_thin", lambda s: int(s.multi_chain_stats.chain_stats[0].buffer_thin)),
+        # NUTSSampler run-shaping scalars. Only ever present in NUTS metadata,
+        # so the PT samplers skip them (and vice versa) via the `key not in
+        # meta` guard below -- the sampler_class check above already
+        # guarantees the getters apply to the class that wrote them.
+        ("num_warmup", lambda s: int(s.num_warmup)),
+        ("max_tree_depth", lambda s: int(s.max_tree_depth)),
+        ("save_warmup", lambda s: int(bool(s.save_warmup))),
     )
     for key, getter in scalar_checks:
         if key not in meta or meta[key] is None:
@@ -271,6 +307,32 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
                 f"with {key}={expected} to resume this run, or start a fresh "
                 "run (resume=False, or a new outdir) to change it."
             )
+
+    # Non-scalar run-shaping fields that are not integers.
+    if meta.get("target_accept") is not None:
+        expected_ta = float(meta["target_accept"])
+        actual_ta = float(sampler.target_accept)
+        if expected_ta != actual_ta:
+            raise CheckpointMismatchError(
+                f"target_accept mismatch: checkpoint has {expected_ta} but the "
+                f"reconstructed sampler has {actual_ta}; rebuild with "
+                f"target_accept={expected_ta} to resume this run, or start a "
+                "fresh run (resume=False, or a new outdir) to change it."
+            )
+    if meta.get("mass_matrix_type") is not None:
+        expected_mm = str(meta["mass_matrix_type"])
+        actual_mm = str(sampler.mass_matrix_type.value)
+        if expected_mm != actual_mm:
+            raise CheckpointMismatchError(
+                f"mass_matrix_type mismatch: checkpoint has {expected_mm!r} but "
+                f"the reconstructed sampler has {actual_mm!r}; rebuild with "
+                f"mass_matrix_type={expected_mm!r} to resume this run, or start "
+                "a fresh run (resume=False, or a new outdir) to change it."
+            )
+
+    # NUTSSampler has no proposal mixture; only the PT samplers write this.
+    if "proposal_bundle" not in meta:
+        return
 
     ck_bundle = meta["proposal_bundle"]
     jump_proposals = sampler.proposal_bundle.jump_proposals
@@ -346,10 +408,9 @@ def checkpoint_sampler(
     Create an atomic checkpoint of sampler state for resuming interrupted runs.
 
     By default this writes the no-code-execution format (``.npz`` + ``.json``)
-    for PT/hybrid samplers. It falls back to a legacy pickle when the target
-    ``path`` ends in ``.pkl`` (e.g. :class:`~impulse.nuts.sampler.NUTSSampler`,
-    whose checkpointing is separate) or when the sampler does not implement the
-    new-format capture hook.
+    for every sampler that implements ``_capture_checkpoint_state`` -- which is
+    all of them. It falls back to a legacy pickle only when the target ``path``
+    ends in ``.pkl`` or when the sampler lacks that hook.
 
     Parameters
     ----------
@@ -395,8 +456,8 @@ def _pickle_checkpoint(
 ) -> str:
     """Legacy pickle writer (whole-object pickle with callables stripped).
 
-    Retained for :class:`~impulse.nuts.sampler.NUTSSampler` and for continuing
-    a run that was resumed from a ``.pkl``. Uses atomic rename and restores the
+    Reached only via an explicit ``.pkl`` target or when continuing a run that
+    was itself resumed from a ``.pkl``. Uses atomic rename and restores the
     stripped attributes on the in-memory object afterwards.
     """
     if path is None:
@@ -472,7 +533,10 @@ def load_nuts_checkpoint(path: str, logp_and_grad: Callable):
 
     .. warning::
         Unpickling can execute arbitrary code; only load checkpoints you trust
-        (see SECURITY.md). ``NUTSSampler`` checkpointing is separate from the
+        (see SECURITY.md). Current runs write the ``.npz`` + ``.json`` format,
+        so this is only for checkpoints written before 2.0; such checkpoints
+        cannot be resumed in place (they lack the progress counters) but can
+        be loaded for inspection. Kept separate from the
         PT engine and remains on the pickle format.
 
     Parameters

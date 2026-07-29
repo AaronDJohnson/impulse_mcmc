@@ -147,8 +147,10 @@ rewrite and shares no API with it.
   removal in a future 2.x release. `load_checkpoint`, `load_hybrid_checkpoint`,
   and `load_nuts_checkpoint` still read pickles but now emit a loud
   security/deprecation warning (unpickling can execute arbitrary code; see
-  [SECURITY.md](SECURITY.md)). `NUTSSampler` checkpointing remains on pickle
-  for now (its checkpointing is separate from the PT engine).
+  [SECURITY.md](SECURITY.md)). **Nothing in the package writes pickle
+  checkpoints any more** — `NUTSSampler` was the last one, and it now writes
+  `.npz` + `.json` like the PT samplers (see Fixed). The pickle readers remain
+  only so existing checkpoints stay loadable.
 
 ### Removed
 
@@ -164,6 +166,31 @@ rewrite and shares no API with it.
 
 ### Fixed
 
+- **`NUTSSampler(resume=True)` did not resume.** `self.resume` reached exactly
+  one line — `prepare_files(..., resume=...)`, which only chooses
+  append-vs-truncate — so the checkpoint it wrote was never read back. Warmup
+  re-ran unconditionally and `num_iterations` acted as an increment, meaning
+  `resume=True` appended a fresh, re-warmed-up run to the existing chain file:
+  300 iterations then a resume to 500 produced 800 rows with a re-adapted
+  transient spliced in, invisibly. The README's claim of "bit-exact
+  checkpoint/resume" covering NUTS, and the `resume` docstring, were both
+  false.
+
+  `NUTSSampler` now implements the same reconstruct-then-restore contract as
+  `PTSampler`: it restores position, gradient, log-density, the adapted step
+  size, the exact mass-matrix factorization and the RNG stream; **skips
+  warmup** on resume; treats `num_iterations` as a **global target**; and
+  truncates chain rows written after the last checkpoint before regenerating
+  them. Resume is bit-exact, pinned by
+  `tests/test_reproducibility.py::TestNUTSResumeEquivalence` (interrupted on a
+  checkpoint boundary, past the last checkpoint, and with `save_warmup=True`).
+
+  Two cases now raise instead of proceeding: `resume=True` with chain rows but
+  no checkpoint, and `resume=True` onto a pre-2.0 NUTS pickle (those record
+  neither the iteration count nor the row count a resume needs). Changing any
+  run-shaping argument on resume (`ndim`, `num_warmup`, `save_freq`,
+  `max_tree_depth`, `target_accept`, `mass_matrix_type`, `save_warmup`) raises
+  `CheckpointMismatchError`.
 - `resume=True` with no usable checkpoint no longer silently appends a fresh
   cold-start run onto an existing chain (a completed 3000-row chain became 6000
   rows with an unconverged transient spliced into the middle, with no warning).

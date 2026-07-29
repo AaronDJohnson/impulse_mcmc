@@ -42,6 +42,7 @@ import pytest
 
 from impulse.experimental.birth_death import BirthDeathProductSpace
 from impulse.experimental.hybrid_sampler import HybridPTSampler
+from impulse.nuts.sampler import NUTSSampler
 from impulse.resume import check_for_checkpoint
 from impulse.samplers import PTSampler
 
@@ -72,6 +73,17 @@ def _gauss_lnlike_grad(x):
     """``(active_params) -> (loglike, grad)`` for a standard Gaussian."""
     x = np.asarray(x, dtype=np.float64)
     return -0.5 * np.sum(x**2), -x
+
+
+# Anisotropic scales, so a diagonal mass matrix adapts away from the identity.
+_NUTS_SCALES = np.array([1.0, 0.35, 2.5])
+
+
+def _nuts_logp_and_grad(x):
+    """``(x) -> (logp, grad)`` for an anisotropic Gaussian."""
+    x = np.asarray(x, dtype=np.float64)
+    z = x / _NUTS_SCALES
+    return -0.5 * float(np.sum(z**2)), -z / _NUTS_SCALES
 
 
 # Small RJ problem: sum-of-sinusoids fit, 2 params (amplitude, frequency)
@@ -487,3 +499,127 @@ class TestLegacyCheckpointRowTracking:
                 f"chain_{ii}.txt no longer starts with the first run's "
                 "rows: resume destroyed pre-checkpoint history"
             )
+
+
+# ---------------------------------------------------------------------------
+# (4) NUTSSampler resume equivalence
+# ---------------------------------------------------------------------------
+
+
+def _nuts_sampler(outdir, resume=False, save_freq=40, save_warmup=False):
+    """A NUTSSampler on a mildly anisotropic Gaussian.
+
+    Anisotropic so the diagonal mass matrix actually adapts to something other
+    than the identity during warmup: a resumed run that silently re-adapted,
+    or restored the mass matrix approximately rather than exactly, would then
+    diverge from the uninterrupted trajectory.
+    """
+    return NUTSSampler(
+        ndim=3,
+        logp_and_grad=_nuts_logp_and_grad,
+        num_warmup=80,
+        mass_matrix_type="diagonal",
+        seed=SEED,
+        outdir=outdir,
+        save_freq=save_freq,
+        resume=resume,
+        save_warmup=save_warmup,
+    )
+
+
+def _read_nuts_rows(outdir):
+    """The chain file as raw text lines -- the strictest possible comparison."""
+    with open(os.path.join(outdir, "chain_nuts.txt")) as fp:
+        return fp.readlines()
+
+
+class TestNUTSResumeEquivalence:
+    """NUTSSampler: interrupted-then-resumed must equal one uninterrupted run,
+    bit-identically, over the full history.
+
+    The guarantee mirrors the PT samplers' (see the module docstring), with
+    NUTS-specific state: the restored run must NOT re-run warmup, and must
+    restore the adapted step size, the exact mass-matrix factorization, and
+    the RNG stream position. ``num_iterations`` is a global target.
+    """
+
+    def _run_pair(self, tmp_path, first_leg, target, save_warmup=False, save_freq=40):
+        full_dir = str(tmp_path / "full")
+        _nuts_sampler(full_dir, save_freq=save_freq, save_warmup=save_warmup).sample(
+            np.zeros(3), target
+        )
+
+        split_dir = str(tmp_path / "split")
+        _nuts_sampler(split_dir, save_freq=save_freq, save_warmup=save_warmup).sample(
+            np.zeros(3), first_leg
+        )
+        assert (
+            check_for_checkpoint(split_dir) is not None
+        ), "no checkpoint written during the first NUTS leg"
+        _nuts_sampler(split_dir, resume=True, save_freq=save_freq, save_warmup=save_warmup).sample(
+            np.zeros(3), target
+        )
+
+        full_rows, split_rows = _read_nuts_rows(full_dir), _read_nuts_rows(split_dir)
+        expected = target + (80 if save_warmup else 0)
+        assert (
+            len(full_rows) == expected
+        ), f"uninterrupted run wrote {len(full_rows)} rows, expected {expected}"
+        assert len(split_rows) == expected, (
+            f"resumed run wrote {len(split_rows)} rows, expected {expected}: rows were "
+            "duplicated or dropped across the resume boundary"
+        )
+        assert split_rows == full_rows, (
+            "resumed NUTS chain is not bit-identical to the uninterrupted run; "
+            f"first difference at row "
+            f"{next(i for i, (a, b) in enumerate(zip(full_rows, split_rows)) if a != b)}"
+        )
+
+    def test_resume_on_checkpoint_boundary(self, tmp_path):
+        """Interrupted exactly at a checkpoint (120 = 3 * save_freq)."""
+        self._run_pair(tmp_path, first_leg=120, target=200)
+
+    def test_resume_past_last_checkpoint(self, tmp_path):
+        """Interrupted AFTER the last checkpoint, so the first leg flushed rows
+        the checkpoint does not cover (100 iterations, checkpoint at 80).
+
+        Those trailing rows must be truncated and regenerated from the restored
+        RNG stream. Without the truncation they would be duplicated; without
+        the RNG restore they would differ.
+        """
+        self._run_pair(tmp_path, first_leg=100, target=200)
+
+    def test_resume_preserves_saved_warmup_rows(self, tmp_path):
+        """With save_warmup=True the resumed run must not re-run warmup nor
+        rewrite the warmup rows already on disk."""
+        self._run_pair(tmp_path, first_leg=100, target=200, save_warmup=True)
+
+    def test_num_iterations_is_a_global_target(self, tmp_path):
+        """Resuming with the same total does not extend the chain."""
+        outdir = str(tmp_path / "target")
+        _nuts_sampler(outdir).sample(np.zeros(3), 120)
+        before = _read_nuts_rows(outdir)
+        _nuts_sampler(outdir, resume=True).sample(np.zeros(3), 120)
+        assert _read_nuts_rows(outdir) == before, (
+            "resuming to an already-reached target changed the chain file; "
+            "num_iterations must be a global target, not an increment"
+        )
+
+    def test_resume_does_not_rerun_warmup(self, tmp_path):
+        """The resumed run restores the adapted step size instead of re-adapting.
+
+        Pinned via the step_size column: warmup ends with dual averaging's
+        smoothed value, and every post-warmup row carries it unchanged. A
+        resumed run that re-ran warmup would land on a different value.
+        """
+        outdir = str(tmp_path / "warm")
+        _nuts_sampler(outdir).sample(np.zeros(3), 120)
+        step_col = 3 + 5  # ndim + offset of step_size in _state_to_row
+        first_step = np.loadtxt(os.path.join(outdir, "chain_nuts.txt"))[-1, step_col]
+
+        _nuts_sampler(outdir, resume=True).sample(np.zeros(3), 200)
+        rows = np.loadtxt(os.path.join(outdir, "chain_nuts.txt"))
+        assert rows[120, step_col] == first_step, (
+            "step size changed across the resume boundary: warmup was re-run "
+            f"({rows[120, step_col]} != {first_step})"
+        )

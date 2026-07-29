@@ -1,7 +1,7 @@
 """Internal shared parallel-tempering engine (private module).
 
 :class:`_PTSamplerBase` owns everything :class:`impulse.PTSampler` and
-:class:`impulse.HybridPTSampler` have in common: constructor wiring (function
+:class:`impulse.experimental.HybridPTSampler` have in common: constructor wiring (function
 wrappers, per-chain RNGs, PT state/ladder, chain statistics, proposal
 bundle, ``num_adapt`` sentinel handling), the ``sample()`` loop skeleton
 (checkpoint resume incl. legacy birth/death migration and ``num_adapt``
@@ -14,7 +14,7 @@ pre-loop preparation, the adaptation-freeze transition, the post-MH step,
 and the save-time flush).
 
 Everything here is internal API: the public classes remain
-``impulse.PTSampler`` and ``impulse.HybridPTSampler`` at their historical
+``impulse.PTSampler`` and ``impulse.experimental.HybridPTSampler`` at their historical
 module locations, and the module-level setup helpers keep their public
 import paths via re-export from :mod:`impulse.samplers`.
 
@@ -38,7 +38,13 @@ from impulse.chain_stats import ChainStats, MultiChainStats
 from impulse.file_io import ShortChain
 from impulse.input_function_wrapper import _function_wrapper
 from impulse.proposals import DE_MIN_FILL, DEProposal, JumpProposals, ProposalBundle, am, de, scam
-from impulse.resume import check_for_checkpoint, checkpoint_sampler, restore_state_checkpoint
+from impulse.resume import (
+    _jsonable_rng_state,
+    _rng_state_from_json,
+    check_for_checkpoint,
+    checkpoint_sampler,
+    restore_state_checkpoint,
+)
 from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
 from impulse.sampler_step import pt_step, vectorized_mh_step
 from impulse.wrapping import PeriodicSpec, WrapSpec
@@ -52,31 +58,9 @@ from impulse.wrapping import PeriodicSpec, WrapSpec
 _UNSET: Any = object()
 
 
-def _jsonable_rng_state(state: Any) -> Any:
-    """Deep-convert a ``bit_generator.state`` mapping to JSON-native types.
-
-    numpy's ``BitGenerator.state`` is a nested dict of Python ``int``\\ s and
-    strings for the stock generators, but numpy integer scalars can appear
-    in some builds.  Recursively cast integers to ``int`` (JSON stores
-    arbitrary-precision ints exactly, so PCG64's 128-bit words survive the
-    round-trip losslessly) and pass strings/floats through unchanged.
-    """
-    if isinstance(state, dict):
-        return {k: _jsonable_rng_state(v) for k, v in state.items()}
-    if isinstance(state, (list, tuple)):
-        return [_jsonable_rng_state(v) for v in state]
-    if isinstance(state, bool):
-        return state
-    if isinstance(state, (int, np.integer)):
-        return int(state)
-    if isinstance(state, (float, np.floating)):
-        return float(state)
-    return state
-
-
-def _rng_state_from_json(state: Any) -> Any:
-    """Inverse of :func:`_jsonable_rng_state` (JSON already yields Python ints)."""
-    return state
+# RNG-state <-> JSON conversion lives in impulse.resume: it is a checkpoint
+# concern, and NUTSSampler needs it too without depending on the PT engine.
+# Re-exported here because this module's internals reference the short names.
 
 
 def setup_seeds(seed: Optional[int], ntemps: int) -> List[np.random.Generator]:
@@ -305,7 +289,7 @@ def setup_initial_position(initial_position: np.ndarray, ntemps: int) -> np.ndar
 
 
 class _PTSamplerBase:
-    """Shared engine behind :class:`impulse.PTSampler` and :class:`impulse.HybridPTSampler`.
+    """Shared engine behind :class:`impulse.PTSampler` and :class:`impulse.experimental.HybridPTSampler`.
 
     Internal — instantiate one of the public subclasses instead. Subclass
     hook points (all with PTSampler-appropriate defaults):

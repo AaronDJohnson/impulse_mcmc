@@ -1,7 +1,7 @@
 """Per-model NUTS adaptation state for the hybrid sampler (internal module).
 
 :class:`PerModelNUTSAdapter` owns the per-model NUTS adaptation caches and
-logic that :class:`impulse.HybridPTSampler` historically kept as raw instance
+logic that :class:`impulse.experimental.HybridPTSampler` historically kept as raw instance
 attributes: per-``(chain, dimension)`` step sizes and dual averagers,
 per-dimension mass matrices, cold-chain sample buffers, injected
 (Fisher) mass-matrix bookkeeping, the periodic mass-matrix re-estimation

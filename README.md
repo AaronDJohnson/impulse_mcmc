@@ -11,7 +11,8 @@ A modular and efficient implementation of parallel tempering MCMC with adaptive 
 **impulse-mcmc** is a parallel tempering MCMC sampler for production-scale Bayesian
 inference. It combines adaptive proposals (AM, SCAM, differential evolution,
 normalizing flows), automatic temperature-ladder adaptation, product-space (birth-death) model
-selection, and gradient-based NUTS transitions with bit-exact checkpoint/resume.
+selection, and gradient-based NUTS transitions. Every sampler checkpoints and
+resumes bit-exactly, in a format that executes no code on load.
 
 Two supported samplers share one interface:
 
@@ -342,11 +343,14 @@ sampler.sample([0.0, 0.0], num_iterations=20000)
 Checkpoints use a **no-code-execution format** by default — `sampler_checkpoint.npz`
 (arrays) plus a schema-versioned `sampler_checkpoint.json` — so loading one is as
 safe as reading a data file. Resume is *reconstruct then restore*: rebuild the
-sampler the same way (same constructor / `from_product_space` / `add_custom_jump` calls),
+sampler the same way (same constructor / product-space / `add_custom_jump` calls),
 then `resume=True` restores state into it. Legacy `sampler_checkpoint.pkl`
 checkpoints still load (with a security/deprecation warning), but unpickling one can
 execute arbitrary code — see [SECURITY.md](SECURITY.md) and the
 [checkpointing guide](docs/user_guide/checkpointing.md) for the full trust boundary.
+
+`NUTSSampler` follows the same contract, skipping warmup on resume and restoring
+the adapted step size and mass matrix rather than re-adapting them.
 
 ## Migrating from 1.x
 

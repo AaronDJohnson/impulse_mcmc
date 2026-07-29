@@ -36,8 +36,10 @@ source. This trust boundary applies **only** to the legacy pickle format:
   `outdir` somewhere only you (or your pipeline) can write. To move off the
   pickle format, start a fresh run (`resume=False`, or a new `outdir`): a run
   resumed from a `.pkl` keeps writing `.pkl` for the rest of that run.
-- `NUTSSampler` still checkpoints via pickle (its checkpointing is separate
-  from the PT engine); the same caution applies.
+- Nothing in the package **writes** pickle checkpoints any more:
+  `NUTSSampler` was the last one and now writes the `.npz` + `.json` format
+  like the PT samplers. The pickle readers are retained only so existing
+  checkpoints stay loadable, and the caution above applies to those.
 - Never load pickle checkpoints downloaded from the internet or attached to
   bug reports.
 

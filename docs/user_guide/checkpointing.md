@@ -1,8 +1,9 @@
 # Checkpointing and resuming
 
-Long runs should never be lost to a wall-clock limit or a crash. `PTSampler`
-and `HybridPTSampler` checkpoint alongside their chain files and resume from the
-checkpoint **bit-exactly**.
+Long runs should never be lost to a wall-clock limit or a crash. Every sampler
+— `PTSampler`, `NUTSSampler`, and the experimental `HybridPTSampler` —
+checkpoints alongside its chain files and resumes from the checkpoint
+**bit-exactly**.
 
 The default checkpoint format is a **no-code-execution** pair of files —
 `sampler_checkpoint.npz` (array state) and `sampler_checkpoint.json`
@@ -59,7 +60,7 @@ code — callables cannot be stored in a data file, and the product space and
 custom proposals are code. Resume therefore works in two steps:
 
 1. **Reconstruct** the sampler exactly as the original run did — the same
-   constructor arguments, the same `from_product_space` call, and the same
+   constructor arguments, the same product-space construction, and the same
    `add_custom_jump` registrations, in the same order.
 2. **Restore** the saved state into that reconstructed sampler (`resume=True`
    does this for you).
@@ -181,8 +182,12 @@ security/deprecation warning when they read one:
 - Keep `outdir` somewhere only you can write. A run resumed from a `.pkl`
   keeps writing `.pkl` for the rest of that run; to move fully to the new
   format, start a fresh run (`resume=False`, or a new `outdir`).
-- `NUTSSampler` still checkpoints via pickle (its checkpointing is separate
-  from the PT engine).
+- `NUTSSampler` used to checkpoint via pickle. It now writes the same
+  `.npz` + `.json` format as the PT samplers, so nothing in the package
+  writes pickles any more. Pre-2.0 NUTS pickles cannot be resumed from —
+  they were written but never read back, so they record neither the
+  iteration count nor the flushed-row count a resume needs, and
+  `resume=True` reports that rather than guessing.
 
 The pickle format is deprecated and slated for removal in a future 2.x
 release. See the project's
