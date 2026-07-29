@@ -172,7 +172,7 @@ def _join_wrapped_param_names(app, what, name, obj, options, lines):
     ``HybridPTSampler``'s docstring lists ~26 parameter names in one entry,
     wrapped over four lines; napoleon needs them on a single line.
     """
-    if name != "impulse.HybridPTSampler":
+    if name != "impulse.experimental.HybridPTSampler":
         return
     i = 0
     while i < len(lines):

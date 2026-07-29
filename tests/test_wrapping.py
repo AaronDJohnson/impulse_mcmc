@@ -1,7 +1,7 @@
 """Tests for periodic-parameter wrapping.
 
 impulse/wrapping.py had no test file at all despite being live in the sampler
-path (impulse/_pt_base.py, impulse/sampler_step.py, impulse/hybrid_sampler.py)
+path (impulse/_pt_base.py, impulse/sampler_step.py, impulse/experimental/hybrid_sampler.py)
 and documented in docs/user_guide/parallel-tempering.md.
 
 Its module docstring makes a correctness claim that nothing checked: that

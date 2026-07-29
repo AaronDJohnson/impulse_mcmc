@@ -18,7 +18,6 @@ did not write yourself.
    checkpoint_sampler
    load_checkpoint
    load_nuts_checkpoint
-   load_hybrid_checkpoint
    check_for_checkpoint
 
 .. autofunction:: checkpoint_sampler
@@ -26,8 +25,6 @@ did not write yourself.
 .. autofunction:: load_checkpoint
 
 .. autofunction:: load_nuts_checkpoint
-
-.. autofunction:: load_hybrid_checkpoint
 
 .. autofunction:: check_for_checkpoint
 

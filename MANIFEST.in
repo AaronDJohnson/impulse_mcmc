@@ -10,6 +10,10 @@
 # Tests: every .py, conftest.py included.
 recursive-include tests *.py
 
+# Test-adjacent scripts run by CI (check_doc_snippets.py executes every fenced
+# python block in the shipped docs), so the sdist's checks are self-contained.
+recursive-include scripts *.py
+
 # Community, release, and citation metadata (README and LICENSE are automatic).
 include CHANGELOG.md
 include CITATION.cff

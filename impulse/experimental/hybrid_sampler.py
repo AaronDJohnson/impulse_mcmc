@@ -16,10 +16,9 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-from impulse._pt_base import (
-    _UNSET,
+from impulse._pt_base import _UNSET, _PTSamplerBase
+from impulse.experimental._product_space_setup import (
     _expand_product_space_cov_mean,
-    _PTSamplerBase,
     _register_model_selection_jumps,
 )
 from impulse.nuts.adapter import PerModelNUTSAdapter
@@ -470,6 +469,10 @@ class HybridPTSampler(_PTSamplerBase):
         # Freeze the smoothed dual-averaging step sizes, not the
         # noisy primal iterates tracked during adaptation
         self._finalize_step_sizes()
+
+    # ------------------------------------------------------------------
+    # Custom jumps
+    # ------------------------------------------------------------------
 
     def _post_mh_step(self, adapting: bool) -> None:
         """Step B: NUTS transition on active continuous params (if enabled)."""

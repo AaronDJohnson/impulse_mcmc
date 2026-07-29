@@ -81,6 +81,30 @@ jobs:
       run: |
         pytest tests/ -v -m slow
 
+  doc-snippets:
+    # Every ```python block in README.md and docs/**/*.md is executed. This
+    # runs real (short) chains, so it lives outside the fast matrix.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v7
+
+    - name: Set up Python
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.12'
+
+    - name: Install package with plotting extras
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[plots]"
+
+    - name: Execute documentation snippets
+      env:
+        MPLBACKEND: Agg
+      run: python scripts/check_doc_snippets.py
+
   floor-versions:
     # Verify the declared lower bounds (numpy>=1.24, scipy>=1.10, tqdm>=4.60) still work.
     runs-on: ubuntu-latest

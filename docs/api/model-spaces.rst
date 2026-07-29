@@ -9,17 +9,17 @@ callable must satisfy.
 
 .. autosummary::
 
-   BirthDeathProductSpace
    NestedProductSpace
-
-BirthDeathProductSpace
-----------------------
-
-.. autoclass:: BirthDeathProductSpace
-   :members:
 
 NestedProductSpace
 ------------------
 
 .. autoclass:: NestedProductSpace
    :members:
+
+.. seealso::
+
+   :class:`impulse.experimental.BirthDeathProductSpace` -- the "N identical
+   sources" birth-death space, and
+   :func:`impulse.experimental.make_product_space_sampler` which wires a
+   sampler for it. Both live in :doc:`experimental`.

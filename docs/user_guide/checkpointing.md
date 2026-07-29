@@ -74,8 +74,7 @@ sampler:
 
 ```python
 import numpy as np
-from impulse import HybridPTSampler
-from impulse.birth_death import BirthDeathProductSpace
+from impulse.experimental import BirthDeathProductSpace, HybridPTSampler
 
 NUM_PARAMS, NUM_SOURCES = 2, 3
 LO, HI = np.array([0.0, 0.0]), np.array([5.0, 3.0])

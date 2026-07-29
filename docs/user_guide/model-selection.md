@@ -20,11 +20,12 @@ with `ndim = num_sources * num_params + 1`. `nmodel = k` means sources
 
 ## BirthDeathProductSpace: the contract
 
-{class}`~impulse.BirthDeathProductSpace` wires your model into this embedding.
+{class}`~impulse.experimental.BirthDeathProductSpace` wires your model into this embedding.
 
 ```python
 import numpy as np
-from impulse import PTSampler, BirthDeathProductSpace
+from impulse.experimental import (
+    BirthDeathProductSpace, make_product_space_sampler)
 
 rng = np.random.default_rng(0)
 t = np.linspace(0.0, 1.0, 100)
@@ -95,11 +96,11 @@ The contract, precisely:
 ## Building the sampler: `from_product_space`
 
 Don't wire proposals by hand — use
-{meth}`PTSampler.from_product_space <impulse.PTSampler.from_product_space>` (or
+{func}`~impulse.experimental.make_product_space_sampler` (or
 `HybridPTSampler.from_product_space` to add NUTS, see {doc}`nuts`):
 
 ```python
-sampler = PTSampler.from_product_space(
+sampler = make_product_space_sampler(
     space,
     ntemps=8,
     seed=42,

@@ -11,7 +11,7 @@ component's scalar state). Loading uses ``numpy.load(..., allow_pickle=
 False)`` and ``json.load``, so a tampered checkpoint can NOT execute code —
 loading one is as safe as reading a data file. The resume contract is
 *reconstruct then restore*: rebuild the sampler exactly as the original run
-did (same constructor / ``from_product_space`` / ``add_custom_jump`` calls), then
+did (same constructor / product-space / ``add_custom_jump`` calls), then
 ``resume=True`` (or :func:`restore_state_checkpoint`) verifies the
 reconstruction matches the checkpoint metadata and restores STATE into it.
 Callables and the product space are never serialized — the reconstruction

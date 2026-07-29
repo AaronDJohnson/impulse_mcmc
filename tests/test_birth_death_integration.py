@@ -13,7 +13,8 @@ import tempfile
 import numpy as np
 import pytest
 
-from impulse.birth_death import BirthDeathProductSpace
+from impulse.experimental.birth_death import BirthDeathProductSpace
+from impulse.experimental.product_space_sampler import make_product_space_sampler
 from impulse.samplers import PTSampler
 
 # -----------------------------------------------------------------------
@@ -83,7 +84,7 @@ def outdir():
 
 class TestFromProductSpace:
     def test_construction(self, product_space, outdir):
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=3,
             seed=42,
@@ -124,7 +125,7 @@ class TestFromProductSpace:
             num_params=NUM_PARAMS,
             source_prior_draw=_source_draw,
         )
-        sampler = PTSampler.from_product_space(space, ntemps=3, seed=42, outdir=outdir)
+        sampler = make_product_space_sampler(space, ntemps=3, seed=42, outdir=outdir)
         assert sampler.ndim == NUM_PARAMS + 1
         names = sorted(p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list)
         assert names == ["am", "de", "scam"]
@@ -133,7 +134,7 @@ class TestFromProductSpace:
         """birth_weight + death_weight == 0: the birth-death kernel is
         never selected, so it must not be constructed or registered (the
         other RJ jumps stay)."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             birth_weight=0,
             death_weight=0,
@@ -156,7 +157,7 @@ class TestFromProductSpace:
 
     def test_short_run(self, product_space, outdir):
         """Smoke test: sampler runs without error for a few iterations."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=3,
             seed=42,
@@ -340,7 +341,7 @@ class TestModelRecovery:
            43, 101, and 202 (P(1 source) = 0.54-0.63 vs the prior-MC gold
            standard ~[0.64, 0.29, 0.07]).
         """
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=5,
             seed=42,
@@ -367,7 +368,7 @@ class TestSampleCovExpansion:
 
     def test_per_source_cov_expanded(self, product_space, outdir):
         per_source_cov = np.array([[4.0, 0.5], [0.5, 1.0]])
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -385,7 +386,7 @@ class TestSampleCovExpansion:
 
     def test_full_cov_passed_through(self, product_space, outdir):
         full_cov = np.eye(NDIM) * 2.0
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -397,7 +398,7 @@ class TestSampleCovExpansion:
 
     def test_per_source_mean_expanded(self, product_space, outdir):
         per_source_mean = np.array([2.5, 1.5])
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -414,7 +415,7 @@ class TestSampleCovExpansion:
     def test_short_run_with_per_source_cov(self, product_space, outdir):
         """Smoke test: sampler runs with per-source covariance."""
         per_source_cov = np.diag([1.0, 0.5])
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -433,7 +434,7 @@ class TestPriorEnforcement:
     """Verify that ALL source parameters (active + inactive) stay within prior."""
 
     def test_all_params_in_bounds(self, product_space, outdir):
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=3,
             seed=42,
@@ -458,7 +459,7 @@ class TestPerModelStats:
 
     def test_per_model_state_initialized(self, product_space, outdir):
         """Per-model state has correct groups for each model."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -477,7 +478,7 @@ class TestPerModelStats:
 
     def test_update_sample_swaps_groups(self, product_space, outdir):
         """update_sample swaps in model-specific groups."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -500,7 +501,7 @@ class TestPerModelStats:
 
     def test_update_sample_swaps_buffer(self, product_space, outdir):
         """update_sample swaps in model-specific buffer and sample_total."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -523,7 +524,7 @@ class TestPerModelStats:
 
     def test_recursive_update_routes_samples(self, product_space, outdir):
         """recursive_update partitions samples by nmodel."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -551,7 +552,7 @@ class TestPerModelStats:
 
     def test_proposal_L_diverges(self, product_space, outdir):
         """proposal_L diverges between models after model-specific samples."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,
@@ -589,7 +590,7 @@ class TestPerModelStats:
 
     def test_short_run_with_per_model(self, product_space, outdir):
         """Smoke test: product-space model-selection sampling runs correctly with per-model stats."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=3,
             seed=42,
@@ -604,7 +605,7 @@ class TestPerModelStats:
 
     def test_pickle_roundtrip(self, product_space, outdir):
         """Pickle round-trip preserves per-model state."""
-        sampler = PTSampler.from_product_space(
+        sampler = make_product_space_sampler(
             product_space,
             ntemps=2,
             seed=42,

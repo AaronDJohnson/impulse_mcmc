@@ -6,7 +6,7 @@ not statistical:
 1. **Seed determinism** — two fresh runs with the same seed and configuration
    produce identical chain files (samples, lnlike, lnprob for every
    temperature), for both :class:`~impulse.samplers.PTSampler` and
-   :class:`~impulse.hybrid_sampler.HybridPTSampler` (including trans-dimensional
+   :class:`~impulse.experimental.hybrid_sampler.HybridPTSampler` (including trans-dimensional
    birth/death activity).
 
 2. **Resume equivalence** — an uninterrupted run of ``N + M`` iterations and a
@@ -40,8 +40,8 @@ import pickle
 import numpy as np
 import pytest
 
-from impulse.birth_death import BirthDeathProductSpace
-from impulse.hybrid_sampler import HybridPTSampler
+from impulse.experimental.birth_death import BirthDeathProductSpace
+from impulse.experimental.hybrid_sampler import HybridPTSampler
 from impulse.resume import check_for_checkpoint
 from impulse.samplers import PTSampler
 

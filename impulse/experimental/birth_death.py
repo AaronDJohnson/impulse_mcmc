@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from impulse.birth_death_proposals import (
+from impulse.experimental.birth_death_proposals import (
     default_birth_death_probs,
     make_birth_death_proposal,
     make_birth_proposal,
@@ -95,7 +95,7 @@ class BirthDeathProductSpace(NestedProductSpace):
     ...     source_prior_draw=lambda rng: rng.uniform(0, 5, size=3),
     ... )
     >>> from impulse import PTSampler
-    >>> sampler = PTSampler.from_product_space(space)
+    >>> sampler = make_product_space_sampler(space)
     """
 
     def __init__(
@@ -257,7 +257,7 @@ class BirthDeathProductSpace(NestedProductSpace):
         .. warning::
             Do not register this standalone with a constant selection weight;
             use :meth:`get_birth_death_proposal` (see
-            :class:`~impulse.birth_death_proposals.BirthProposal`).
+            :class:`~impulse.experimental.birth_death_proposals.BirthProposal`).
         """
         log_proposal, log_prior = self._source_draw_density_args()
         return make_birth_proposal(
@@ -293,7 +293,7 @@ class BirthDeathProductSpace(NestedProductSpace):
         .. warning::
             Do not register this standalone with a constant selection weight;
             use :meth:`get_birth_death_proposal` (see
-            :class:`~impulse.birth_death_proposals.DeathProposal`).
+            :class:`~impulse.experimental.birth_death_proposals.DeathProposal`).
         """
         log_proposal, log_prior = self._source_draw_density_args()
         return make_death_proposal(

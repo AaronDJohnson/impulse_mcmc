@@ -30,7 +30,7 @@ cold_samples = chain["samples"][0]   # (nsamples, ndim) cold chain
 - **Adaptive proposals** — AM, SCAM, and min-fill-gated differential
   evolution that stays active in product-space model-selection runs.
 - **Product-space model selection** via a product-space embedding with an
-  exact combined birth/death kernel (`PTSampler.from_product_space`).
+  exact combined birth/death kernel (`make_product_space_sampler`).
 - **NUTS** — standalone (`NUTSSampler`) or interleaved with PT and model
   moves (`HybridPTSampler`), with Stan-convention mass matrices.
 - **Checkpoint/resume** that is bit-exact for `PTSampler`/`HybridPTSampler`

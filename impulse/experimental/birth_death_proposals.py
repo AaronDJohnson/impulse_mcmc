@@ -67,7 +67,7 @@ class BirthProposal:
         ``log_proposal_density`` is not given.  If ``None`` the prior is
         assumed flat over the (in-bounds) source parameters; supply it for
         any non-flat prior.
-        :class:`~impulse.birth_death.BirthDeathProductSpace` wires this automatically.
+        :class:`~impulse.experimental.birth_death.BirthDeathProductSpace` wires this automatically.
     prob_schedule : callable, optional
         ``prob_schedule(nmodel, max_sources) -> (p_birth, p_death)``.
 
@@ -237,7 +237,8 @@ class DeathProposal:
     Because kill-last only ever removes the LAST active slot per move,
     trans-dimensional mixing across slots relies on the label-permuting and
     within-model moves in the mixture: ``SourceSwapProposal`` (registered
-    by default in ``from_product_space``) exchanges slot contents so any active
+    by default by :func:`~impulse.experimental.make_product_space_sampler`)
+    exchanges slot contents so any active
     source can reach the last slot, and the within-model moves relocate the
     continuous parameters.  Keep the swap move registered whenever
     birth/death is in use.

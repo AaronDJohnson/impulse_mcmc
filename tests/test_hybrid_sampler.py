@@ -8,8 +8,8 @@ import tempfile
 import numpy as np
 import pytest
 
-from impulse.birth_death import BirthDeathProductSpace
-from impulse.hybrid_sampler import HybridPTSampler, load_hybrid_checkpoint
+from impulse.experimental.birth_death import BirthDeathProductSpace
+from impulse.experimental.hybrid_sampler import HybridPTSampler, load_hybrid_checkpoint
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -1215,8 +1215,8 @@ class TestProductSpaceNUTSActuallyRuns:
         return -0.5 * float(np.sum(m**2)), g
 
     def test_nuts_step_is_actually_called(self, temp_dir, monkeypatch):
-        import impulse.hybrid_sampler as hs
-        from impulse.birth_death import BirthDeathProductSpace
+        import impulse.experimental.hybrid_sampler as hs
+        from impulse.experimental.birth_death import BirthDeathProductSpace
 
         space = BirthDeathProductSpace(
             loglikelihood=self._ll,

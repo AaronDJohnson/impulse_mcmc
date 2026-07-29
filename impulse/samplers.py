@@ -4,16 +4,19 @@
 of AM/SCAM/DE (and user-registered) proposals per temperature chain,
 neighbour swaps with automatic temperature-ladder adaptation, periodic
 chain saving, and bit-exact checkpoint/resume via the no-code-execution
-``.npz`` + ``.json`` format. The
-:meth:`PTSampler.from_product_space` constructor pre-wires a sampler for
-product-space (birth-death) model selection (combined birth/death kernel,
-model-index jump, source swap, min-fill-gated DE). Module-level helpers — :func:`setup_seeds`,
+``.npz`` + ``.json`` format.
+
+This module carries no model-selection knowledge. To wire a ``PTSampler`` for
+product-space (birth-death) model selection, use the experimental
+:func:`impulse.experimental.make_product_space_sampler`.
+
+Module-level helpers — :func:`setup_seeds`,
 :func:`setup_chain_stats`, :func:`setup_standard_jumps`, and
 :func:`setup_initial_position` — build the per-chain RNGs, statistics,
 proposal mixtures, and initial positions, and are shared with
-:class:`impulse.hybrid_sampler.HybridPTSampler`.
+:class:`impulse.experimental.hybrid_sampler.HybridPTSampler`.
 
-The engine shared with :class:`~impulse.hybrid_sampler.HybridPTSampler` lives in
+The engine shared with :class:`~impulse.experimental.hybrid_sampler.HybridPTSampler` lives in
 the internal :mod:`impulse._pt_base` module; the setup helpers are defined
 there and re-exported here to keep their historical public import paths.
 """
@@ -27,9 +30,7 @@ logger = logging.getLogger(__name__)
 
 from impulse._pt_base import (  # noqa: F401  (setup_* re-exported public API)
     _UNSET,
-    _expand_product_space_cov_mean,
     _PTSamplerBase,
-    _register_model_selection_jumps,
     setup_chain_stats,
     setup_initial_position,
     setup_seeds,
@@ -201,121 +202,6 @@ class PTSampler(_PTSamplerBase):
     def _load_checkpoint(self, path: str):
         """Load a PTSampler checkpoint, rebinding the wrapped callables."""
         return load_checkpoint(path, lnlike=self.lnlike, lnprior=self.lnprior)
-
-    @classmethod
-    def from_product_space(
-        cls,
-        product_space,
-        birth_weight: float = 15,
-        death_weight: float = 15,
-        nmodel_weight: float = 10,
-        swap_weight: float = 15,
-        am_weight: float = 15,
-        scam_weight: float = 15,
-        de_weight: float = 15,
-        de_min_fill: int = 100,
-        **kwargs,
-    ):
-        """
-        Construct a PTSampler pre-configured for product-space model selection.
-
-        Parameters
-        ----------
-        product_space : BirthDeathProductSpace
-            Configured birth-death product space object.
-        birth_weight : float
-            Contribution to the combined birth-death kernel's selection
-            weight.  Birth and death are registered as ONE kernel whose
-            selection weight is ``birth_weight + death_weight``; the split
-            between birth and death is governed by the space's
-            ``prob_schedule`` (registering them as separate constant-weight
-            jumps violates detailed balance).
-        death_weight : float
-            Contribution to the combined birth-death kernel's selection
-            weight; see ``birth_weight``.
-        nmodel_weight : float
-            Relative weight for uniform model-index jumps.
-        swap_weight : float
-            Relative weight for source-swap proposals.
-        am_weight : float
-            Relative weight for adaptive Metropolis proposals.
-        scam_weight : float
-            Relative weight for single-component AM proposals.
-        de_weight : float
-            Relative weight for the min-fill-gated differential evolution
-            move (see Notes).
-        de_min_fill : int
-            Minimum per-model buffer fill before the DE difference move
-            activates; see :func:`impulse.proposals.de`.
-        **kwargs
-            Additional keyword arguments passed to ``PTSampler.__init__``
-            (e.g. ``ntemps``, ``seed``, ``outdir``).
-
-        Returns
-        -------
-        PTSampler
-            Sampler with birth-death, nmodel_jump, and source_swap
-            proposals registered on top of the standard continuous jumps
-            (see Notes for when they are skipped).
-
-        Notes
-        -----
-        For a single-model space (``product_space.num_models == 1``) the
-        birth-death kernel, the model-index jump, and the source-swap
-        proposal are all skipped — none is meaningful with one model, and
-        the birth-death kernel itself rejects ``max_sources < 2`` — so
-        only the standard continuous jumps (AM, SCAM, DE) are
-        registered.  The birth-death kernel is also skipped when
-        ``birth_weight + death_weight == 0``.
-
-        The ``de`` move is min-fill-gated: with per-model statistics the
-        run's samples are split across all model indices, so no model's
-        buffer ever fills completely at realistic run lengths, and ``de``
-        instead activates as soon as the current model's buffer holds
-        ``de_min_fill`` samples (returning the current position unchanged
-        below the threshold).  This move is what diffuses along
-        within-model degeneracy ridges (e.g. amplitude-splitting ridges
-        in source-counting problems) that random-walk proposals traverse
-        too slowly, and without it model posteriors can be metastably
-        wrong at realistic run lengths.
-
-        Examples
-        --------
-        >>> from impulse.birth_death import BirthDeathProductSpace
-        >>> space = BirthDeathProductSpace(loglike, logprior, 3, 3, draw_fn)
-        >>> sampler = PTSampler.from_product_space(space, ntemps=15, seed=42)
-        >>> x0 = space.draw_initial_position(np.random.default_rng(42))
-        >>> sampler.sample(x0, num_iterations=50000)
-        """
-        # Expand per-source sample_cov / sample_mean to full product space
-        sample_cov, sample_mean = _expand_product_space_cov_mean(product_space, kwargs)
-
-        sampler = cls(
-            ndim=product_space.ndim,
-            lnlike=product_space.get_loglikelihood,
-            lnprior=product_space.get_logprior,
-            groups=product_space.get_default_groups(),
-            # get_default_groups deliberately omits the model index: it is moved
-            # by the birth/death kernel and nmodel_jump, never by am/scam/de.
-            # Declare that so ChainStats does not warn about an uncovered index.
-            unmanaged_indices=[product_space.ndim - 1],
-            sample_cov=sample_cov,
-            sample_mean=sample_mean,
-            am_weight=am_weight,
-            scam_weight=scam_weight,
-            de_weight=de_weight,
-            de_min_fill=de_min_fill,
-            **kwargs,
-        )
-        _register_model_selection_jumps(
-            sampler,
-            product_space,
-            birth_weight=birth_weight,
-            death_weight=death_weight,
-            nmodel_weight=nmodel_weight,
-            swap_weight=swap_weight,
-        )
-        return sampler
 
     def add_custom_jump(self, proposal, weight):
         """

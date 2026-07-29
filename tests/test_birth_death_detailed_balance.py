@@ -69,15 +69,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from impulse.birth_death import BirthDeathProductSpace
-from impulse.birth_death_proposals import (
+from impulse.chain_stats import ChainStats
+from impulse.experimental.birth_death import BirthDeathProductSpace
+from impulse.experimental.birth_death_proposals import (
     BirthProposal,
     DeathProposal,
     NmodelJump,
     default_birth_death_probs,
     make_birth_death_proposal,
 )
-from impulse.chain_stats import ChainStats
 from impulse.proposals import (
     JumpProposals,
     make_early_de,

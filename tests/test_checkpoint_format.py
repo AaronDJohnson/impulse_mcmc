@@ -22,8 +22,8 @@ import pickle
 import numpy as np
 import pytest
 
-from impulse.birth_death import BirthDeathProductSpace
-from impulse.hybrid_sampler import HybridPTSampler
+from impulse.experimental.birth_death import BirthDeathProductSpace
+from impulse.experimental.hybrid_sampler import HybridPTSampler
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.resume import (
     CHECKPOINT_SCHEMA_VERSION,

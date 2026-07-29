@@ -452,7 +452,7 @@ class TestResumeNumAdaptOverride:
 
     @staticmethod
     def _run_hybrid(outdir, num_adapt=_OMIT, resume=False, num_iterations=25):
-        from impulse.hybrid_sampler import HybridPTSampler
+        from impulse.experimental.hybrid_sampler import HybridPTSampler
 
         kwargs = {} if num_adapt is _OMIT else {"num_adapt": num_adapt}
         sampler = HybridPTSampler(
@@ -512,14 +512,14 @@ class TestResumeNumAdaptOverride:
         self._run_hybrid(temp_dir, num_adapt=None)
         assert check_for_checkpoint(temp_dir) is not None
 
-        with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
+        with caplog.at_level(logging.WARNING, logger="impulse.experimental.hybrid_sampler"):
             resumed = self._run_hybrid(temp_dir, num_adapt=77, resume=True, num_iterations=30)
         assert resumed.num_adapt == 77
         assert any("overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records)
 
     def test_hybrid_default_resume_keeps_checkpointed_freeze(self, temp_dir, caplog):
         self._run_hybrid(temp_dir, num_adapt=15)
-        with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
+        with caplog.at_level(logging.WARNING, logger="impulse.experimental.hybrid_sampler"):
             resumed = self._run_hybrid(temp_dir, resume=True, num_iterations=30)
         assert resumed.num_adapt == 15
         assert not any(
@@ -528,7 +528,7 @@ class TestResumeNumAdaptOverride:
 
     def test_hybrid_explicit_none_unfreezes_with_warning(self, temp_dir, caplog):
         self._run_hybrid(temp_dir, num_adapt=15)
-        with caplog.at_level(logging.WARNING, logger="impulse.hybrid_sampler"):
+        with caplog.at_level(logging.WARNING, logger="impulse.experimental.hybrid_sampler"):
             resumed = self._run_hybrid(temp_dir, num_adapt=None, resume=True, num_iterations=30)
         assert resumed.num_adapt is None
         assert any("overriding checkpointed num_adapt" in r.getMessage() for r in caplog.records)
@@ -560,7 +560,7 @@ class TestResumeNumAdaptOverride:
         assert sampler.num_adapt == 15
 
     def test_hybrid_pre_num_adapt_sampler_resumes_without_attribute_error(self, temp_dir):
-        from impulse.hybrid_sampler import HybridPTSampler
+        from impulse.experimental.hybrid_sampler import HybridPTSampler
 
         self._run_hybrid(temp_dir, num_adapt=15)
         sampler = HybridPTSampler(
@@ -606,7 +606,7 @@ class TestResumeLegacyBirthDeathWarning:
 
     @staticmethod
     def _make_hybrid(outdir, resume=False):
-        from impulse.hybrid_sampler import HybridPTSampler
+        from impulse.experimental.hybrid_sampler import HybridPTSampler
 
         return HybridPTSampler(
             ndim=2,
@@ -665,7 +665,8 @@ class TestResumeLegacyBirthDeathMigration:
     """Automatic migration of resumed pre-fix separate birth/death wiring.
 
     The legacy fixtures are FAITHFUL to the attribute layout at git HEAD
-    (``git show HEAD:impulse/birth_death_proposals.py``): the legacy
+    (``git show <pre-2.0>:impulse/birth_death_proposals.py``, now
+    ``impulse/experimental/birth_death_proposals.py``): the legacy
     ``BirthProposal`` stored ``num_params``, ``max_sources``,
     ``draw_from_prior``, ``log_proposal_density``, ``log_prior_density``
     and ``prob_schedule`` — identical names to today's class — while the
@@ -684,8 +685,9 @@ class TestResumeLegacyBirthDeathMigration:
     FALLBACK_MATCH = "predates the detailed-balance fix"
     STANDALONE_MATCH = "current-code standalone registrations"
 
-    # Attribute layouts at git HEAD (verified against
-    # ``git show HEAD:impulse/birth_death_proposals.py``).
+    # Attribute layouts at the pre-2.0 revision (verified against
+    # ``git show <pre-2.0>:impulse/birth_death_proposals.py``; that module now
+    # lives at impulse/experimental/birth_death_proposals.py).
     HEAD_BIRTH_ATTRS = {
         "num_params",
         "max_sources",
@@ -716,7 +718,7 @@ class TestResumeLegacyBirthDeathMigration:
 
     @staticmethod
     def _make_hybrid(outdir, resume=False):
-        from impulse.hybrid_sampler import HybridPTSampler
+        from impulse.experimental.hybrid_sampler import HybridPTSampler
 
         return HybridPTSampler(
             ndim=2,
@@ -731,7 +733,7 @@ class TestResumeLegacyBirthDeathMigration:
 
     def _legacy_pair(self):
         """Build a HEAD-layout birth/death pair from the current classes."""
-        from impulse.birth_death_proposals import BirthProposal, DeathProposal
+        from impulse.experimental.birth_death_proposals import BirthProposal, DeathProposal
 
         draw = _UnitIntervalDraw()
         birth = BirthProposal(
@@ -765,7 +767,7 @@ class TestResumeLegacyBirthDeathMigration:
         silently assuming a flat one gives wrong acceptance ratios for
         non-flat priors.
         """
-        from impulse.birth_death_proposals import BirthProposal, DeathProposal
+        from impulse.experimental.birth_death_proposals import BirthProposal, DeathProposal
 
         draw = _UnitIntervalDraw()
         birth = BirthProposal(
@@ -793,7 +795,7 @@ class TestResumeLegacyBirthDeathMigration:
         ``draw_from_prior`` (it re-fills the vacated slot), which is what
         distinguishes it from a pre-fix legacy checkpoint.
         """
-        from impulse.birth_death_proposals import (
+        from impulse.experimental.birth_death_proposals import (
             make_birth_proposal,
             make_death_proposal,
         )
@@ -828,7 +830,7 @@ class TestResumeLegacyBirthDeathMigration:
         return pre_weights
 
     def _assert_migrated(self, resumed, pre_weights):
-        from impulse.birth_death_proposals import BirthDeathProposal
+        from impulse.experimental.birth_death_proposals import BirthDeathProposal
 
         combined = None
         for jp, old_weights in zip(resumed.proposal_bundle.jump_proposals, pre_weights):
@@ -1012,7 +1014,7 @@ class TestResumeLegacyBirthDeathMigration:
     def test_pt_post_fix_checkpoint_round_trip_untouched(self, temp_dir):
         """A checkpoint already carrying the combined kernel must resume
         with no migration and no legacy warning."""
-        from impulse.birth_death_proposals import make_birth_death_proposal
+        from impulse.experimental.birth_death_proposals import make_birth_death_proposal
 
         clean = self._make_pt(temp_dir)
         kernel = make_birth_death_proposal(
@@ -1040,7 +1042,7 @@ class TestResumeLegacyBirthDeathMigration:
             assert jp.proposal_weights[names.index("birth_death")] == (pytest.approx(12.0))
 
     def test_hybrid_post_fix_checkpoint_round_trip_untouched(self, temp_dir):
-        from impulse.birth_death_proposals import make_birth_death_proposal
+        from impulse.experimental.birth_death_proposals import make_birth_death_proposal
 
         clean = self._make_hybrid(temp_dir)
         kernel = make_birth_death_proposal(
@@ -1091,7 +1093,7 @@ class TestResumeLegacyNUTSAdapterMigration:
 
     @staticmethod
     def _make_nuts_hybrid(outdir, resume=False):
-        from impulse.hybrid_sampler import HybridPTSampler
+        from impulse.experimental.hybrid_sampler import HybridPTSampler
 
         return HybridPTSampler(
             ndim=2,

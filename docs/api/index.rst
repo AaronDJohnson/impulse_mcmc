@@ -1,17 +1,18 @@
 API reference
 =============
 
-The public API is everything in ``impulse.__all__``, grouped below exactly
-as in ``impulse.__init__``.
+The supported API is everything in ``impulse.__all__``, grouped below exactly
+as in ``impulse.__init__``. It is covered by the 2.x stability policy.
+
+Product-space model selection and the NUTS-interleaved hybrid sampler live in
+:doc:`impulse.experimental <experimental>` and are versioned separately.
 
 .. currentmodule:: impulse
 
 .. autosummary::
 
    PTSampler
-   HybridPTSampler
    NUTSSampler
-   BirthDeathProductSpace
    NestedProductSpace
    model_visitation_stats
    bayes_factor_from_chain
@@ -21,7 +22,7 @@ as in ``impulse.__init__``.
    checkpoint_sampler
    load_checkpoint
    load_nuts_checkpoint
-   load_hybrid_checkpoint
+   CheckpointMismatchError
    check_for_checkpoint
    compose_logp_and_grad
    make_logp_and_grad_numerical
@@ -46,3 +47,4 @@ as in ``impulse.__init__``.
    checkpoint
    nuts-utilities
    validation
+   experimental

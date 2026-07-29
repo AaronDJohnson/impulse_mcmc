@@ -15,9 +15,33 @@ rewrite and shares no API with it.
 
 - Complete rewrite of the 1.0.0 API: the old `base.py`, `mhsampler.py`, and
   `ptsampler.py` modules are removed. The package is now organized around
-  `PTSampler`, `HybridPTSampler`, and `NUTSSampler` with adaptive proposals,
-  product-space (birth-death) model selection, checkpoint/resume, and SBC
-  validation utilities.
+  `PTSampler` and `NUTSSampler` with adaptive proposals, checkpoint/resume, and
+  SBC validation utilities.
+- **The hybrid sampler and product-space model selection moved to
+  `impulse.experimental`.** The supported surface is now `PTSampler` and
+  `NUTSSampler`; everything trans-dimensional is versioned separately and is
+  NOT covered by the 2.x API stability policy. This is a hard break with no
+  compatibility aliases — the old top-level imports raise `ImportError`:
+
+  | Removed | Replacement |
+  |---|---|
+  | `from impulse import HybridPTSampler` | `from impulse.experimental import HybridPTSampler` |
+  | `from impulse import BirthDeathProductSpace` | `from impulse.experimental import BirthDeathProductSpace` |
+  | `from impulse import load_hybrid_checkpoint` | `from impulse.experimental import load_hybrid_checkpoint` |
+  | `impulse.birth_death` / `impulse.birth_death_proposals` / `impulse.hybrid_sampler` | `impulse.experimental.*` |
+  | `PTSampler.from_product_space(space, ...)` | `make_product_space_sampler(space, ...)` |
+
+  `HybridPTSampler.from_product_space` is unchanged — it now lives in
+  experimental alongside the class. `NestedProductSpace`, `NUTSSampler` and the
+  normalizing-flow proposals stay in the supported core.
+
+  The motivation is honesty about maturity rather than any defect: the
+  trans-dimensional kernel is proven exact by finite-state enumeration, but the
+  surrounding integration is where this package's defects have historically
+  concentrated, and pinning it under a 2.x stability promise would have frozen
+  wiring that still needs to change. The split is enforced by
+  `tests/test_layering.py`: core may not import experimental at module level,
+  and `import impulse` loads none of it.
 - `DeathProposal` / `make_death_proposal` now require a `draw_from_prior`
   argument (the vacated slot is refreshed with a fresh prior draw).
 - `MassMatrix.from_covariance` now inverts its argument (builds

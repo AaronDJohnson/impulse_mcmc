@@ -58,7 +58,6 @@ See the examples/ directory for complete usage examples including:
 __version__ = "2.0.0"
 
 # Product-space model selection (birth/death moves)
-from .birth_death import BirthDeathProductSpace
 
 # Diagnostics
 from .diagnostics import (
@@ -68,7 +67,6 @@ from .diagnostics import (
     grubin,
     model_visitation_stats,
 )
-from .hybrid_sampler import HybridPTSampler
 
 # NUTS utilities
 from .nuts import (
@@ -86,7 +84,6 @@ from .resume import (
     check_for_checkpoint,
     checkpoint_sampler,
     load_checkpoint,
-    load_hybrid_checkpoint,
     load_nuts_checkpoint,
 )
 
@@ -109,10 +106,8 @@ from .validation import (
 __all__ = [
     # Samplers
     "PTSampler",
-    "HybridPTSampler",
     "NUTSSampler",
     # Model spaces
-    "BirthDeathProductSpace",
     "NestedProductSpace",
     # Diagnostics
     "model_visitation_stats",
@@ -125,7 +120,6 @@ __all__ = [
     "checkpoint_sampler",
     "load_checkpoint",
     "load_nuts_checkpoint",
-    "load_hybrid_checkpoint",
     "check_for_checkpoint",
     # NUTS utilities
     "compose_logp_and_grad",

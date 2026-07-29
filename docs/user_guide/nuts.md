@@ -4,7 +4,7 @@ Two entry points use gradients:
 
 - {class}`~impulse.NUTSSampler` — a standalone No-U-Turn Sampler with
   Stan-style warmup, for fixed-dimension problems.
-- {class}`~impulse.HybridPTSampler` — parallel tempering that *interleaves*
+- {class}`~impulse.experimental.HybridPTSampler` — parallel tempering that *interleaves*
   NUTS transitions with the Metropolis-Hastings and birth/death model moves,
   when you pass `lnlike_grad`.
 
@@ -111,7 +111,7 @@ covariance as `M` directly). Code that passed a Fisher matrix to
 
 ## Hybrid: HybridPTSampler with `lnlike_grad`
 
-{class}`~impulse.HybridPTSampler` is a peer of `PTSampler` that adds a NUTS
+{class}`~impulse.experimental.HybridPTSampler` is a peer of `PTSampler` that adds a NUTS
 transition after each MH step when `lnlike_grad` is provided. The gradient
 callable has a different signature from the standalone sampler's — it
 receives the **active continuous parameters** (no model index) and returns
@@ -126,7 +126,7 @@ as a plain PT+NUTS sampler):
 
 ```python
 import numpy as np
-from impulse import HybridPTSampler
+from impulse.experimental import HybridPTSampler
 
 def lnlike(x):
     return -0.5 * np.sum(x**2)
