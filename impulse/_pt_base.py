@@ -1000,7 +1000,7 @@ class _PTSamplerBase:
         report["pt_swap"] = swap.tolist() if hasattr(swap, "tolist") else list(swap)
         report["per_proposal"] = self.proposal_acceptance_rates()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as fp:
+        with open(path, "w", encoding="utf-8") as fp:
             json.dump(report, fp, indent=2)
         return path
 

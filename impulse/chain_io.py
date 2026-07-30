@@ -101,7 +101,7 @@ def append_rows(filepath: str, rows: np.ndarray, chain_format: str) -> int:
             # written in memory order rather than row-major order.
             fp.write(np.ascontiguousarray(rows).tobytes())
     else:
-        with open(filepath, "a") as fp:
+        with open(filepath, "a", encoding="ascii") as fp:
             np.savetxt(fp, rows, fmt=_TEXT_FMT, delimiter=" ")
     return int(rows.shape[0])
 
@@ -137,7 +137,7 @@ def count_rows(filepath: str, ncols: int, chain_format: str) -> int:
         return 0
     if chain_format == "binary":
         return os.path.getsize(filepath) // (ncols * ITEMSIZE)
-    with open(filepath, "r") as fp:
+    with open(filepath, "r", encoding="ascii") as fp:
         return sum(1 for _ in fp)
 
 
@@ -155,8 +155,8 @@ def truncate_rows(filepath: str, nrows: int, ncols: int, chain_format: str) -> N
         if os.path.getsize(filepath) > target:
             os.truncate(filepath, target)
         return
-    with open(filepath, "r") as fp:
+    with open(filepath, "r", encoding="ascii") as fp:
         lines = fp.readlines()
     if len(lines) > nrows:
-        with open(filepath, "w") as fp:
+        with open(filepath, "w", encoding="ascii") as fp:
             fp.writelines(lines[:nrows])

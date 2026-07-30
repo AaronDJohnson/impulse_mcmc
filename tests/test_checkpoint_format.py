@@ -638,7 +638,7 @@ class TestTornWriteAndFallback:
         json_path = tmp_path / "sampler_checkpoint.json"
         # Simulate the stale-json half of a torn overwrite: rewrite the JSON
         # with a different write_token than the .npz carries.
-        meta = json.loads(json_path.read_text())
+        meta = json.loads(json_path.read_text(encoding="utf-8"))
         meta["write_token"] = "0" * 32
         json_path.write_text(json.dumps(meta))
         # Both files exist, but check_for_checkpoint rejects the torn pair.

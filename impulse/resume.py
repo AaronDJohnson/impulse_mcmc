@@ -177,7 +177,7 @@ def save_state_checkpoint(sampler: Any, path: Optional[str] = None) -> str:
             # extra bytes on disk are cheap and the checkpoint write stops
             # dominating the run (it was ~41% of wall time at save_freq=1000).
             np.savez(fp, **arrays)
-        with open(tmp_json, "w") as fp:
+        with open(tmp_json, "w", encoding="utf-8") as fp:
             json.dump(meta, fp)
         # Commit: npz first, JSON last (the JSON sidecar is the marker).
         os.replace(tmp_npz, npz_path)
@@ -214,7 +214,7 @@ def load_state_checkpoint(path: str) -> tuple[dict, dict]:
         if base.endswith(ext):
             base = base[: -len(ext)]
             break
-    with open(base + ".json", "r") as fp:
+    with open(base + ".json", "r", encoding="utf-8") as fp:
         meta = json.load(fp)
     with np.load(base + ".npz", allow_pickle=False) as npz:
         arrays = {key: npz[key] for key in npz.files}
@@ -653,7 +653,7 @@ def _tokens_match(json_path: str, npz_path: str) -> bool:
     fallback. Any read error is treated as a non-match (torn/unreadable).
     """
     try:
-        with open(json_path, "r") as fp:
+        with open(json_path, "r", encoding="utf-8") as fp:
             json_token = json.load(fp).get("write_token")
         with np.load(npz_path, allow_pickle=False) as npz:
             if "_write_token" not in npz.files:

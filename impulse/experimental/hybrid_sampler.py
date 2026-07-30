@@ -916,7 +916,7 @@ class HybridPTSampler(_PTSamplerBase):
             return
         path = getattr(self, "_nuts_diag_path", None)
         if path is not None and os.path.exists(path):
-            with open(path, "r") as fp:
+            with open(path, "r", encoding="ascii") as fp:
                 self._nuts_diag_rows_written = sum(1 for _ in fp)
         else:
             self._nuts_diag_rows_written = 0
@@ -941,7 +941,7 @@ class HybridPTSampler(_PTSamplerBase):
                 for d in self._nuts_diag_data
             ]
         )
-        with open(self._nuts_diag_path, "a") as fp:
+        with open(self._nuts_diag_path, "a", encoding="ascii") as fp:
             np.savetxt(fp, rows, fmt="%.18e")
         self._nuts_diag_data = []
         self._nuts_diag_rows_written += len(rows)
@@ -963,10 +963,10 @@ class HybridPTSampler(_PTSamplerBase):
             return
         self._ensure_nuts_diag_rows_written()
         rows = self._nuts_diag_rows_written
-        with open(self._nuts_diag_path, "r") as fp:
+        with open(self._nuts_diag_path, "r", encoding="ascii") as fp:
             lines = fp.readlines()
         if len(lines) > rows:
-            with open(self._nuts_diag_path, "w") as fp:
+            with open(self._nuts_diag_path, "w", encoding="ascii") as fp:
                 fp.writelines(lines[:rows])
 
     # ------------------------------------------------------------------

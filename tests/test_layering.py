@@ -35,7 +35,11 @@ class TestCoreDoesNotImportExperimental:
             "print(','.join(leaked))"
         )
         out = subprocess.run(
-            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",  # not the platform default (cp1252 on Windows)
+            check=True,
         )
         leaked = [m for m in out.stdout.strip().split(",") if m]
         assert leaked == [], f"`import impulse` loaded experimental modules: {leaked}"
@@ -51,7 +55,7 @@ class TestCoreDoesNotImportExperimental:
         """
         offenders = []
         for path in _core_modules():
-            tree = ast.parse(path.read_text(), filename=str(path))
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
             # walk only module-level statements, plus class bodies (which also
             # execute at import time); function bodies are the lazy escape.
