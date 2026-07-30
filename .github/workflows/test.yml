@@ -39,10 +39,10 @@ jobs:
 
     # Coverage ENFORCEMENT is --cov-fail-under above (measured 90% after the
     # dead parallel.py was removed and wrapping/SBC tests were added; 87 leaves
-    # headroom against per-platform drift). Note this job does not install the
-    # [flow] extra, so impulse/flow_proposals.py reports 0% here and is
-    # included in that 90%. The
-    # codecov upload is reporting only: one matrix cell, non-blocking,
+    # headroom against per-platform drift). This job does not install the
+    # [flow] extra, so impulse/flow_proposals.py reports 0% HERE and is
+    # included in that 90% -- it is covered by the slow-tests job, which does
+    # install it. The codecov upload is reporting only: one matrix cell, non-blocking,
     # because tokenless v4 uploads are rate-limit flaky. Set a
     # CODECOV_TOKEN secret and fail_ci_if_error: true to harden it.
     - name: Upload coverage to Codecov
@@ -75,11 +75,20 @@ jobs:
       run: python -c "import impulse; print(impulse.__version__)"
 
     - name: Install test dependencies
-      run: pip install pytest
+      # [flow] pulls coppuccino from PyPI. This is the only job that installs
+      # it, so it is the only place impulse/flow_proposals.py is executed at
+      # all -- everywhere else its tests skip and it reports 0% coverage.
+      run: |
+        pip install pytest
+        pip install -e ".[flow]"
 
     - name: Run slow tests
       run: |
         pytest tests/ -v -m slow
+
+    - name: Run normalizing-flow tests (optional extra installed)
+      run: |
+        pytest tests/test_flow_proposals.py -v
 
   doc-snippets:
     # Every ```python block in README.md and docs/**/*.md is executed. This
@@ -95,10 +104,12 @@ jobs:
       with:
         python-version: '3.12'
 
-    - name: Install package with plotting extras
+    - name: Install package with optional extras
+      # [flow] as well as [plots]: without it the normalizing-flow snippet is
+      # skipped rather than checked, and a break in it would ship unnoticed.
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[plots]"
+        pip install -e ".[plots,flow]"
 
     - name: Execute documentation snippets
       env:
@@ -154,15 +165,15 @@ jobs:
     - name: Lint with flake8
       run: |
         # stop the build if there are Python syntax errors or undefined names
-        flake8 impulse --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 impulse scripts --count --select=E9,F63,F7,F82 --show-source --statistics
 
     - name: Check code formatting with black
       run: |
-        black --check impulse tests
+        black --check impulse tests scripts
 
     - name: Check import sorting with isort
       run: |
-        isort --check-only impulse tests
+        isort --check-only impulse tests scripts
 
     - name: Type check with mypy
       run: |
