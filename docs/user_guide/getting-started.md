@@ -60,6 +60,34 @@ print("posterior mean:", cold[2000:].mean(axis=0))
 print("posterior std: ", cold[2000:].std(axis=0))
 ```
 
+### Chain files on disk
+
+Each temperature writes one file in `outdir`. The default encoding is **raw
+binary** (`chain_0.bin`, `chain_1.bin`, ...): fixed-width `float64` records,
+`ndim + 4` values per row (the parameters, then log-likelihood, log-posterior,
+acceptance flag, temperature). It is the default because formatting floats as
+text dominated chain I/O -- roughly 18% of wall time on a 21-temperature run --
+and the binary files are also ~3x smaller.
+
+`load_chain()` reads either encoding, so most users never need to think about
+it. To read one directly:
+
+```python
+import numpy as np
+
+ndim = 2
+data = np.fromfile("./chains/chain_0.bin").reshape(-1, ndim + 4)
+samples, lnlike, lnprob, accepted, temperature = (
+    data[:, :ndim], data[:, ndim], data[:, ndim+1], data[:, ndim+2], data[:, ndim+3])
+```
+
+Pass `chain_format="text"` to get the historical `chain_<i>.txt` files instead
+(`%.18e` columns, readable with `np.loadtxt`, greppable on a cluster). Both
+encodings store identical values -- `%.18e` round-trips a `float64` exactly --
+so the choice only affects speed, size, and readability. `load_chain()`
+detects whichever is present, so a text run stays readable from a
+default-configured sampler.
+
 Key points:
 
 - `chain["samples"]` has shape `(ntemps, nsamples, ndim)`. Index `0` is the

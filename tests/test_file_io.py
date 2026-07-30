@@ -5,6 +5,7 @@ from unittest.mock import mock_open, patch
 
 import numpy as np
 import pytest
+from conftest import read_chain_file
 
 from impulse.file_io import ShortChain
 from impulse.sampler_state import SamplerState
@@ -49,7 +50,7 @@ class TestShortChain:
         """Test that initialization creates correct filenames"""
         chain = ShortChain(ndim=2, ntemps=3, short_iters=10, outdir=temp_dir)
 
-        expected_filenames = ["chain_0.txt", "chain_1.txt", "chain_2.txt"]
+        expected_filenames = ["chain_0.bin", "chain_1.bin", "chain_2.bin"]
         assert chain.filenames == expected_filenames
 
         expected_paths = [os.path.join(temp_dir, f) for f in expected_filenames]
@@ -159,7 +160,7 @@ class TestShortChain:
             assert os.path.getsize(filepath) > 0
 
             # Check file format (should have 6 columns: 2 params + lnlike + lnprob + accept + temp)
-            data = np.loadtxt(filepath)
+            data = read_chain_file(filepath, chain.ncols)
             assert data.shape == (3, 6)  # 3 iterations, 6 columns
 
     def test_save_chain_with_thinning(self, temp_dir):
@@ -181,7 +182,7 @@ class TestShortChain:
         chain.save_chain()
 
         # With thin=2, should only save every 2nd sample
-        data = np.loadtxt(chain.filepaths[0])
+        data = read_chain_file(chain.filepaths[0], chain.ncols)
         assert data.shape == (
             3,
             5,
@@ -223,7 +224,7 @@ class TestShortChain:
                 chain.save_chain()
         chain.save_chain()
 
-        kept = np.atleast_1d(np.loadtxt(chain.filepaths[0])[..., 0]).astype(int)
+        kept = np.atleast_1d(read_chain_file(chain.filepaths[0], chain.ncols)[..., 0]).astype(int)
         assert kept.tolist() == list(range(0, n_iter, thin))
 
     def test_save_chain_empty_buffer(self, temp_dir):
@@ -272,7 +273,7 @@ class TestShortChain:
         chain.save_chain()
 
         # File should have 4 rows total
-        data = np.loadtxt(chain.filepaths[0])
+        data = read_chain_file(chain.filepaths[0], chain.ncols)
         assert data.shape == (4, 5)  # 1D: 1 param + lnlike + lnprob + accept + temp
 
     def test_save_chain_multiple_temperatures(self, temp_dir):
@@ -297,7 +298,7 @@ class TestShortChain:
 
         for temp_idx, filepath in enumerate(chain.filepaths):
             assert os.path.exists(filepath)
-            data = np.loadtxt(filepath)
+            data = read_chain_file(filepath, chain.ncols)
             assert data.shape == (2, 5)  # 1D: 1 param + lnlike + lnprob + accept + temp
 
             # Check first column contains the right parameter values

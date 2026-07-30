@@ -13,6 +13,24 @@ rewrite and shares no API with it.
 
 ### Breaking Changes
 
+- **Chain files are now raw binary by default.** Each temperature writes
+  `chain_<i>.bin` — fixed-width `float64`, `ndim + 4` values per row, no
+  header or delimiters — instead of `chain_<i>.txt`. `NUTSSampler` likewise
+  writes `chain_nuts.bin`. Decimal formatting was ~18% of wall time on a
+  21-temperature run; the binary files are also ~3x smaller.
+
+  `load_chain()` detects and reads either encoding, so code that goes through
+  it is unaffected. Code that reads the files directly must change:
+
+  ```python
+  data = np.loadtxt("chains/chain_0.txt")                    # before
+  data = np.fromfile("chains/chain_0.bin").reshape(-1, ndim + 4)   # after
+  ```
+
+  Pass `chain_format="text"` to any sampler to keep the previous files. Both
+  encodings store identical values (`%.18e` round-trips a `float64` exactly),
+  so this is purely a speed/size/readability trade.
+
 - Complete rewrite of the 1.0.0 API: the old `base.py`, `mhsampler.py`, and
   `ptsampler.py` modules are removed. The package is now organized around
   `PTSampler` and `NUTSSampler` with adaptive proposals, checkpoint/resume, and
@@ -277,6 +295,10 @@ rewrite and shares no API with it.
   truncate to the checkpointed row count on resume.
 
 ### Added
+
+- `chain_format` keyword on `PTSampler`, `NUTSSampler` and `HybridPTSampler`:
+  `"binary"` (default) or `"text"`. See Breaking Changes. The shared
+  implementation lives in the new `impulse.chain_io` module.
 
 - `verbose` keyword on `PTSampler`, `NUTSSampler` and `HybridPTSampler`
   (default `True`). `verbose=False` suppresses the tqdm progress bars — useful

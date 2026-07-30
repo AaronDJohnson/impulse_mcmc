@@ -667,6 +667,28 @@ class ChainStats:
             self.buffer_full = pm.buffer_full
             self.sample_total = pm.sample_total
 
+    def group_index_arrays(self) -> list:
+        """Parameter groups as integer index arrays, cached.
+
+        ``de`` fancy-indexes with a group on every call (once per iteration
+        per temperature). Materializing that index from a Python list each
+        time -- ``list(self.groups[j])`` -- was measurable at that rate, and
+        the result never changes for a given ``groups`` object.
+
+        The cache is keyed on the identity of ``self.groups``, which
+        :meth:`update_sample` swaps per model in product-space runs. The
+        source list is held alongside the cache, so the identity check cannot
+        be fooled by a freed object's address being reused.
+        """
+        groups = self.groups
+        assert groups is not None  # set by __post_init__ / update_sample
+        cached = getattr(self, "_group_cache", None)
+        if cached is not None and cached[0] is groups:
+            return cached[1]
+        arrays = [np.asarray(g, dtype=np.intp).ravel() for g in groups]
+        self._group_cache = (groups, arrays)
+        return arrays
+
 
 @dataclass
 class MultiChainStats:

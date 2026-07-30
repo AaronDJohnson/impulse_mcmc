@@ -183,7 +183,7 @@ class TestCheckpointResume:
         would silently mix two chains, so this must raise rather than proceed.
         """
         self._sampler(temp_dir, save_freq=10_000).sample(np.zeros(2), num_iterations=40)
-        assert os.path.getsize(os.path.join(temp_dir, "chain_nuts.txt")) > 0
+        assert os.path.getsize(os.path.join(temp_dir, "chain_nuts.bin")) > 0
 
         with pytest.raises(RuntimeError, match="no usable checkpoint"):
             self._sampler(temp_dir, save_freq=10_000, resume=True).sample(

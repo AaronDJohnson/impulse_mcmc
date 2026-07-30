@@ -34,6 +34,7 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
+from impulse import chain_io
 from impulse.chain_stats import ChainStats, MultiChainStats
 from impulse.file_io import ShortChain
 from impulse.input_function_wrapper import _function_wrapper
@@ -354,6 +355,7 @@ class _PTSamplerBase:
         periodic: Optional[PeriodicSpec] = None,
         num_adapt: Optional[int] = _UNSET,
         verbose: bool = True,
+        chain_format: str = "binary",
     ) -> None:
 
         if loglargs is None:
@@ -410,6 +412,7 @@ class _PTSamplerBase:
         self.save_freq = save_freq
         self.outdir = outdir
         self.resume = resume
+        self.chain_format = chain_io.validate_format(chain_format)
         # Presentation only: never checkpointed or verified, and owned by the
         # process that is running now (see the __dict__.update site in
         # sample(), which preserves it across a legacy pickle restore).
@@ -656,6 +659,7 @@ class _PTSamplerBase:
                 outdir=self.outdir,
                 resume=True,
                 thin=int(meta["short_chain"].get("thin", 1)),
+                chain_format=self.chain_format,
             )
         sc_arrays = {k[len("sc.") :]: v for k, v in arrays.items() if k.startswith("sc.")}
         self.short_chain.set_checkpoint_state(sc_arrays, meta["short_chain"])
@@ -751,6 +755,7 @@ class _PTSamplerBase:
             outdir=self.outdir,
             resume=self.resume,
             thin=thin,
+            chain_format=self.chain_format,
         )
         # iteration of the last covariance refresh; kept on the instance so
         # it is pickled into checkpoints (a resume overwrites this fresh
@@ -1013,13 +1018,16 @@ class _PTSamplerBase:
             ``temperature`` arrays with shape ``(ntemps, nsamples, ...)``.
         """
         samples, lnlike, lnprob, accepted, temperature = [], [], [], [], []
+        ncols = self.ndim + 4
         for ii in range(self.ntemps):
-            filepath = os.path.join(self.outdir, f"chain_{ii}.txt")
-            if not os.path.exists(filepath):
-                raise FileNotFoundError(f"Chain file not found: {filepath}")
-            data = np.loadtxt(filepath)
-            if data.ndim == 1:
-                data = data.reshape(1, -1)
+            base = os.path.join(self.outdir, f"chain_{ii}")
+            # Read whatever encoding is actually present, not whatever this
+            # sampler would write: a chain written by a text-format run stays
+            # readable from a default (binary) sampler and vice versa.
+            fmt = chain_io.detect_format(base)
+            if fmt is None:
+                raise FileNotFoundError(f"Chain file not found: {base}.bin or {base}.txt")
+            data = chain_io.read_rows(base + chain_io.chain_suffix(fmt), ncols, fmt)
             samples.append(data[:, : self.ndim])
             lnlike.append(data[:, self.ndim])
             lnprob.append(data[:, self.ndim + 1])

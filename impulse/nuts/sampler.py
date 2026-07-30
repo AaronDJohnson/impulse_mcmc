@@ -11,6 +11,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from tqdm import tqdm
 
+from impulse import chain_io
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
 from impulse.nuts.warmup import DualAveraging, WarmupSchedule, find_reasonable_step_size
@@ -23,7 +24,7 @@ from impulse.resume import (
 )
 from impulse.utils import prepare_files
 
-_CHAIN_NAME = "chain_nuts.txt"
+_CHAIN_STEM = "chain_nuts"
 
 
 class NUTSSampler:
@@ -61,6 +62,9 @@ class NUTSSampler:
         submission and every requeue. See :meth:`sample`.
     save_warmup : bool
         Whether to include warmup samples in saved chain.
+    chain_format : {'binary', 'text'}, default 'binary'
+        On-disk record encoding for ``chain_nuts.*``; see
+        :mod:`impulse.chain_io`.
     verbose : bool, default True
         Show tqdm progress bars for the warmup and sampling phases. Set
         ``False`` to silence them (batch jobs, nested SBC loops, notebooks).
@@ -98,6 +102,7 @@ class NUTSSampler:
         resume: bool = False,
         save_warmup: bool = False,
         verbose: bool = True,
+        chain_format: str = "binary",
     ) -> None:
         self.ndim = ndim
         self.logp_and_grad = logp_and_grad
@@ -111,6 +116,7 @@ class NUTSSampler:
         self.save_warmup = save_warmup
         # Presentation only: not checkpointed, not verified on resume.
         self.verbose = verbose
+        self.chain_format = chain_io.validate_format(chain_format)
 
         # Parse mass matrix type
         if isinstance(mass_matrix_type, str):
@@ -161,7 +167,7 @@ class NUTSSampler:
         once, in the original run; the resumed run restores the adapted step
         size and mass matrix rather than re-adapting them.
         """
-        filepath = os.path.join(self.outdir, _CHAIN_NAME)
+        filepath = self._chain_path()
         resumed = self._maybe_restore(filepath)
 
         if not resumed:
@@ -292,7 +298,7 @@ class NUTSSampler:
             if self.resume and os.path.exists(filepath) and os.path.getsize(filepath) > 0:
                 raise RuntimeError(
                     f"resume=True but no usable checkpoint was found in {self.outdir!r}, "
-                    f"while {_CHAIN_NAME} already holds samples. Continuing would append a "
+                    f"while {os.path.basename(filepath)} already holds samples. Continuing would append a "
                     "fresh, re-warmed-up run to the existing chain, mixing two runs in one "
                     "file. Either restore the checkpoint, or start a fresh run "
                     "(resume=False, or a new outdir)."
@@ -321,13 +327,7 @@ class NUTSSampler:
         those iterations from the restored RNG stream, so leaving them would
         duplicate rows.
         """
-        if not os.path.exists(filepath):
-            return
-        with open(filepath, "r") as fp:
-            lines = fp.readlines()
-        if len(lines) > self._rows_written:
-            with open(filepath, "w") as fp:
-                fp.writelines(lines[: self._rows_written])
+        chain_io.truncate_rows(filepath, self._rows_written, self._ncols, self.chain_format)
 
     def _capture_checkpoint_state(self) -> tuple[dict, dict]:
         """Serialize state for the no-code-execution (``.npz`` + JSON) format.
@@ -396,6 +396,15 @@ class NUTSSampler:
         self._iteration = int(meta["iteration"])
         self._rows_written = int(meta["rows_written"])
 
+    @property
+    def _ncols(self) -> int:
+        """Values per stored row: parameters plus seven diagnostic columns."""
+        return self.ndim + 7
+
+    def _chain_path(self) -> str:
+        """Chain file path for this sampler's encoding."""
+        return os.path.join(self.outdir, _CHAIN_STEM + chain_io.chain_suffix(self.chain_format))
+
     def _state_to_row(self) -> NDArray[np.float64]:
         """Convert current state to a chain row."""
         s = self.state
@@ -424,9 +433,9 @@ class NUTSSampler:
         supposed to discard.
         """
         assert self._chain_data is not None  # allocated in sample()
-        with open(filepath, "a") as fp:
-            np.savetxt(fp, self._chain_data[start:end], fmt="%.18e")
-        self._rows_written += end - start
+        self._rows_written += chain_io.append_rows(
+            filepath, self._chain_data[start:end], self.chain_format
+        )
 
     def load_chain(self) -> dict:
         """Load saved chain from disk.
@@ -437,13 +446,11 @@ class NUTSSampler:
             Dictionary with keys: samples, logp, accepted, tree_depth,
             divergent, energy_error, step_size, mean_accept_prob.
         """
-        filepath = os.path.join(self.outdir, "chain_nuts.txt")
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Chain file not found: {filepath}")
-
-        data = np.loadtxt(filepath)
-        if data.ndim == 1:
-            data = data.reshape(1, -1)
+        base = os.path.join(self.outdir, _CHAIN_STEM)
+        fmt = chain_io.detect_format(base)
+        if fmt is None:
+            raise FileNotFoundError(f"Chain file not found: {base}.bin or {base}.txt")
+        data = chain_io.read_rows(base + chain_io.chain_suffix(fmt), self._ncols, fmt)
 
         return {
             "samples": data[:, : self.ndim],

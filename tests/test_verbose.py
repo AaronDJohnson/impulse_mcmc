@@ -71,12 +71,14 @@ def _run(kind, outdir, verbose):
 
 
 def _chain_bytes(kind, outdir):
-    name = "chain_nuts.txt" if kind == "nuts" else "chain_1.0.txt"
-    path = os.path.join(outdir, name)
-    if not os.path.exists(path):  # PT chain filenames follow the ladder
-        cands = sorted(f for f in os.listdir(outdir) if f.endswith(".txt"))
-        path = os.path.join(outdir, cands[0])
-    with open(path) as fp:
+    """Raw bytes of one chain file. Binary mode: the default encoding is not text."""
+    name = "chain_nuts" if kind == "nuts" else "chain_0"
+    from impulse import chain_io
+
+    base = os.path.join(outdir, name)
+    fmt = chain_io.detect_format(base)
+    assert fmt is not None, f"no chain file under {base}"
+    with open(base + chain_io.chain_suffix(fmt), "rb") as fp:
         return fp.read()
 
 

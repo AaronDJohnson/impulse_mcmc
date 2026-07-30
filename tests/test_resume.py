@@ -7,9 +7,13 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+from conftest import count_chain_rows
 
 from impulse import PTSampler
 from impulse.resume import check_for_checkpoint, checkpoint_sampler, load_checkpoint
+
+# ndim=2 plus the four bookkeeping columns (lnlike, lnprob, accepted, temperature)
+_GUARD_NCOLS = 2 + 4
 
 
 def _force_legacy_pickle_checkpoint(sampler, outdir):
@@ -1293,24 +1297,24 @@ class TestResumeWithoutUsableCheckpoint:
     def test_raises_when_chain_exists_but_checkpoint_does_not(self, tmp_path):
         outdir = str(tmp_path)
         self._sampler(outdir).sample(np.zeros(2), num_iterations=1000)
-        rows_before = sum(1 for _ in open(os.path.join(outdir, "chain_0.txt")))
+        rows_before = count_chain_rows(os.path.join(outdir, "chain_0.bin"), _GUARD_NCOLS)
         os.remove(os.path.join(outdir, "sampler_checkpoint.json"))
 
         with pytest.raises(RuntimeError, match="no usable checkpoint"):
             self._sampler(outdir, resume=True).sample(np.zeros(2), num_iterations=1000)
 
         # and the existing chain is left untouched
-        rows_after = sum(1 for _ in open(os.path.join(outdir, "chain_0.txt")))
+        rows_after = count_chain_rows(os.path.join(outdir, "chain_0.bin"), _GUARD_NCOLS)
         assert rows_after == rows_before
 
     def test_resume_true_on_empty_outdir_still_works(self, tmp_path):
         """The 'continue if possible' idiom must keep working."""
         outdir = str(tmp_path / "fresh")
         self._sampler(outdir, resume=True).sample(np.zeros(2), num_iterations=500)
-        assert sum(1 for _ in open(os.path.join(outdir, "chain_0.txt"))) == 500
+        assert count_chain_rows(os.path.join(outdir, "chain_0.bin"), _GUARD_NCOLS) == 500
 
     def test_normal_resume_still_works(self, tmp_path):
         outdir = str(tmp_path)
         self._sampler(outdir).sample(np.zeros(2), num_iterations=1000)
         self._sampler(outdir, resume=True).sample(np.zeros(2), num_iterations=2000)
-        assert sum(1 for _ in open(os.path.join(outdir, "chain_0.txt"))) == 2000
+        assert count_chain_rows(os.path.join(outdir, "chain_0.bin"), _GUARD_NCOLS) == 2000

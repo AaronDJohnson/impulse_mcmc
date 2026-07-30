@@ -5,8 +5,42 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from impulse import chain_io
 from impulse.chain_stats import ChainStats
 from impulse.sampler_state import PTState, SamplerState
+
+
+def read_chain_file(path, ncols=None):
+    """Read a chain file as a 2-D array, whichever encoding it uses.
+
+    Chain files default to raw binary (``.bin``); ``.txt`` is still supported.
+    Tests should go through this rather than ``np.loadtxt`` so they keep
+    working under either encoding.
+    """
+    path = str(path)
+    for suffix in (".bin", ".txt"):
+        if path.endswith(suffix):
+            base, fmt = path[: -len(suffix)], chain_io.SUFFIXES
+            fmt = "binary" if suffix == ".bin" else "text"
+            break
+    else:
+        base = path
+        fmt = chain_io.detect_format(base)
+        assert fmt is not None, f"no chain file under {base}"
+        path = base + chain_io.chain_suffix(fmt)
+    if ncols is None:
+        # Only the binary reader needs the row width; infer it for text.
+        if fmt == "text":
+            return chain_io.read_rows(path, 0, "text")
+        raise ValueError("ncols is required to read a binary chain file")
+    return chain_io.read_rows(path, ncols, fmt)
+
+
+def count_chain_rows(path, ncols):
+    """Number of rows in a chain file, whichever encoding it uses."""
+    path = str(path)
+    fmt = "binary" if path.endswith(".bin") else "text"
+    return chain_io.count_rows(path, ncols, fmt)
 
 
 @pytest.fixture

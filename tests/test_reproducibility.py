@@ -432,6 +432,11 @@ class TestLegacyCheckpointRowTracking:
             outdir=outdir,
             save_freq=10,
             resume=resume,
+            # Pinned to the text encoding on purpose: this test asserts on
+            # LINE counts of the chain files, and the legacy pickle
+            # checkpoints it reconstructs are from the text-only era. The
+            # re-seeding logic under test is shared by both encodings.
+            chain_format="text",
         )
 
     def test_double_resume_through_pre_row_tracking_checkpoint(self, tmp_path):
@@ -527,10 +532,19 @@ def _nuts_sampler(outdir, resume=False, save_freq=40, save_warmup=False):
     )
 
 
+def _nuts_rows(outdir):
+    """The NUTS chain file as an array, whichever encoding it was written in."""
+    from impulse import chain_io
+
+    base = os.path.join(outdir, "chain_nuts")
+    fmt = chain_io.detect_format(base)
+    assert fmt is not None, f"no chain file under {base}"
+    return chain_io.read_rows(base + chain_io.chain_suffix(fmt), 3 + 7, fmt)
+
+
 def _read_nuts_rows(outdir):
-    """The chain file as raw text lines -- the strictest possible comparison."""
-    with open(os.path.join(outdir, "chain_nuts.txt")) as fp:
-        return fp.readlines()
+    """Rows as a list, for exact element-wise comparison across a resume."""
+    return _nuts_rows(outdir).tolist()
 
 
 class TestNUTSResumeEquivalence:
@@ -615,10 +629,10 @@ class TestNUTSResumeEquivalence:
         outdir = str(tmp_path / "warm")
         _nuts_sampler(outdir).sample(np.zeros(3), 120)
         step_col = 3 + 5  # ndim + offset of step_size in _state_to_row
-        first_step = np.loadtxt(os.path.join(outdir, "chain_nuts.txt"))[-1, step_col]
+        first_step = _nuts_rows(outdir)[-1, step_col]
 
         _nuts_sampler(outdir, resume=True).sample(np.zeros(3), 200)
-        rows = np.loadtxt(os.path.join(outdir, "chain_nuts.txt"))
+        rows = _nuts_rows(outdir)
         assert rows[120, step_col] == first_step, (
             "step size changed across the resume boundary: warmup was re-run "
             f"({rows[120, step_col]} != {first_step})"

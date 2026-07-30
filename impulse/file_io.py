@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from impulse import chain_io
 from impulse.sampler_state import SamplerState
 from impulse.utils import prepare_files
 
@@ -44,6 +45,10 @@ class ShortChain:
         Whether to append to existing files (True) or overwrite (False).
     thin : int, default 1
         Thinning factor - only every thin-th sample is saved to disk.
+    chain_format : {'binary', 'text'}, default 'binary'
+        On-disk record encoding; see :mod:`impulse.chain_io`. ``'binary'``
+        writes raw float64 to ``chain_<i>.bin``; ``'text'`` writes ``%.18e``
+        columns to ``chain_<i>.txt``.
 
     Attributes
     ----------
@@ -81,6 +86,7 @@ class ShortChain:
     outdir: str = "./chains/"
     resume: bool = False
     thin: int = 1
+    chain_format: str = "binary"
 
     def __post_init__(self):
         if self.thin > self.short_iters:
@@ -92,9 +98,21 @@ class ShortChain:
         self.var_temp = np.zeros((self.ntemps, self.short_iters))
         self._unsaved = 0
         self._rows_written = 0
-        self.filenames = [f"chain_{nchain}.txt" for nchain in range(self.ntemps)]
+        chain_io.validate_format(self.chain_format)
+        suffix = chain_io.chain_suffix(self.chain_format)
+        self.filenames = [f"chain_{nchain}{suffix}" for nchain in range(self.ntemps)]
         self.filepaths = [os.path.join(self.outdir, filename) for filename in self.filenames]
         prepare_files(self.filepaths, resume=self.resume)
+
+    @property
+    def ncols(self) -> int:
+        """Values per stored row: the parameters plus four bookkeeping columns.
+
+        The trailing four are lnlike, lnprob, accepted, temperature -- see
+        :meth:`save_chain`. Binary row length depends on this, so it is derived
+        from ``ndim`` rather than stored, and cannot drift out of sync.
+        """
+        return self.ndim + 4
 
     def add_state(self, new_state: SamplerState):
         """
@@ -189,13 +207,10 @@ class ShortChain:
         """
         if hasattr(self, "_rows_written"):
             return
-        counts = []
-        for filepath in self.filepaths:
-            if os.path.exists(filepath):
-                with open(filepath, "r") as fp:
-                    counts.append(sum(1 for _ in fp))
-            else:
-                counts.append(0)
+        counts = [
+            chain_io.count_rows(filepath, self.ncols, self.chain_format)
+            for filepath in self.filepaths
+        ]
         self._rows_written = min(counts) if counts else 0
 
     def save_chain(self):
@@ -261,9 +276,7 @@ class ShortChain:
                     self.var_temp[temp_idx, idx],
                 ]
             )[offset :: self.thin]
-            nrows = len(to_save)
-            with open(filepath, "a") as fp:
-                np.savetxt(fp, to_save, fmt="%.18e", delimiter=" ")
+            nrows = chain_io.append_rows(filepath, to_save, self.chain_format)
         self._unsaved = 0
         self._rows_written += nrows
 
@@ -336,12 +349,5 @@ class ShortChain:
         >>> # chain files now end exactly at the checkpointed row count
         """
         self._ensure_rows_written()
-        rows = self._rows_written
         for filepath in self.filepaths:
-            if not os.path.exists(filepath):
-                continue
-            with open(filepath, "r") as fp:
-                lines = fp.readlines()
-            if len(lines) > rows:
-                with open(filepath, "w") as fp:
-                    fp.writelines(lines[:rows])
+            chain_io.truncate_rows(filepath, self._rows_written, self.ncols, self.chain_format)

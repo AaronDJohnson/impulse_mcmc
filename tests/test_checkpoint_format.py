@@ -21,6 +21,7 @@ import pickle
 
 import numpy as np
 import pytest
+from conftest import count_chain_rows
 
 from impulse.experimental.birth_death import BirthDeathProductSpace
 from impulse.experimental.hybrid_sampler import HybridPTSampler
@@ -524,8 +525,8 @@ class TestMetadataMismatch:
         _pt(str(tmp_path)).sample(np.array([0.3, -0.2]), num_iterations=100)
         _pt(str(tmp_path), resume=True).sample(np.array([0.3, -0.2]), num_iterations=260)
 
-        with open(tmp_path / "chain_0.txt") as fh:
-            assert sum(1 for _ in fh) == 260
+        # Row COUNT, not line count: chain files are raw float64 records.
+        assert count_chain_rows(str(tmp_path / "chain_0.bin"), 2 + 4) == 260
 
     def test_set_checkpoint_state_restores_buffer_size(self):
         """set_checkpoint_state must restore buffer_size alongside the buffer.

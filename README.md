@@ -71,7 +71,10 @@ cold_chain_samples = chain["samples"][0]  # shape (nsamples, ndim)
 ```
 
 Chains, acceptance-rate reports, and checkpoints are written to `outdir`
-(default `./chains`).
+(default `./chains`). Chain files are raw `float64` records (`chain_<i>.bin`,
+`ndim + 4` columns) — ~18% faster to write and ~3x smaller than text. Pass
+`chain_format="text"` for the human-readable `chain_<i>.txt` form; `load_chain()`
+reads either.
 
 ## Vectorized likelihoods
 

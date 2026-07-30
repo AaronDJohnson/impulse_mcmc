@@ -854,3 +854,143 @@ class TestEarlyDE:
         # mode-jump branch fires ~half the time, split evenly across signs
         assert n_fwd + n_rev > 1000
         assert abs(n_fwd - n_rev) / (n_fwd + n_rev) < 0.1
+
+
+class TestProposalSelection:
+    """The inverse-CDF proposal selection must match ``rng.choice(k, p=probs)``.
+
+    ``_select_proposal_index`` replaced ``Generator.choice`` for speed, so the
+    distribution it produces is no longer guaranteed by numpy -- it has to be
+    checked here.
+    """
+
+    @staticmethod
+    def _bundle(weights, chain_stats):
+        jp = JumpProposals(chain_stats)
+        for i, w in enumerate(weights):
+
+            def fn(cs, i=i):
+                return cs.current_sample.copy(), 0.0
+
+            fn.__name__ = f"p{i}"
+            jp.add_jump(fn, w)
+        return jp
+
+    def test_selection_frequencies_match_the_weights(self, chain_stats_2d):
+        """15/30/50 -- the shipped defaults -- within Poisson tolerance."""
+        weights = [15.0, 30.0, 50.0]
+        jp = self._bundle(weights, chain_stats_2d)
+        rng = np.random.default_rng(2024)
+        n = 120_000
+        counts = np.bincount(
+            [jp._select_proposal_index(rng) for _ in range(n)], minlength=len(weights)
+        )
+        expected = np.array(weights) / sum(weights) * n
+        # ~5 sigma on a Poisson count; tight enough to catch a swapped or
+        # off-by-one CDF, loose enough never to flake.
+        assert np.all(np.abs(counts - expected) < 5 * np.sqrt(expected)), (
+            f"counts {counts} incompatible with weights {weights} "
+            f"(expected {expected.round(0)})"
+        )
+
+    def test_zero_weight_proposal_is_never_selected(self, chain_stats_2d):
+        jp = self._bundle([0.0, 5.0, 5.0], chain_stats_2d)
+        rng = np.random.default_rng(5)
+        picks = [jp._select_proposal_index(rng) for _ in range(50_000)]
+        assert 0 not in picks, "a zero-weight proposal was selected"
+
+    def test_index_never_runs_past_the_end(self, chain_stats_2d):
+        """Guards the clamp in ``_select_proposal_index``.
+
+        ``np.cumsum`` can end a few ULP below 1.0, so a ``random()`` draw above
+        that value would land one index past the last proposal and raise
+        IndexError deep in the sampling loop. The condition is far too rare to
+        appear by chance, so it is forced here.
+        """
+        jp = self._bundle([1.0, 1.0, 1.0], chain_stats_2d)
+        jp._proposal_cumprobs = np.array([1 / 3, 2 / 3, 1.0 - 1e-16])
+
+        class _MaxRng:
+            def random(self):
+                return np.nextafter(1.0, 0.0)  # largest double strictly below 1
+
+        idx = jp._select_proposal_index(_MaxRng())
+        assert idx == 2, f"index {idx} is out of range for 3 proposals"
+        assert jp.proposal_list[idx] is not None
+
+    def test_cumprobs_track_reweighting(self, chain_stats_2d):
+        """Re-registering a jump with a new weight must update the cached CDF."""
+        jp = self._bundle([1.0, 1.0], chain_stats_2d)
+        jp.add_jump(jp.proposal_list[0], 99.0)
+        np.testing.assert_allclose(jp._proposal_cumprobs, np.cumsum(jp.proposal_probs))
+        rng = np.random.default_rng(3)
+        picks = np.array([jp._select_proposal_index(rng) for _ in range(20_000)])
+        assert (picks == 0).mean() > 0.9, "reweighting did not take effect"
+
+
+class TestDEGroupSelection:
+    """``de`` must move the group it drew, not always the first one.
+
+    The default configuration has a SINGLE parameter group, so a bug that
+    always used ``groups[0]`` would be invisible everywhere else in the suite.
+    """
+
+    @staticmethod
+    def _stats(groups, seed=0):
+        ndim = 6
+        ptstate = PTState(ndim, 1)
+        cs = ChainStats(
+            ndim=ndim,
+            pt_state=ptstate,
+            chain_index=0,
+            rng=np.random.default_rng(seed),
+            groups=groups,
+            buffer_size=512,
+        )
+        rng = np.random.default_rng(seed + 1)
+        cs._buffer = rng.normal(size=(512, ndim))
+        cs.sample_total = 512
+        cs.buffer_full = True
+        cs.current_sample = np.zeros(ndim)
+        return cs
+
+    def test_every_group_is_used_across_repeated_calls(self):
+        groups = [np.array([0, 1]), np.array([2, 3]), np.array([4, 5])]
+        cs = self._stats(groups)
+        touched = set()
+        for _ in range(600):
+            cs.current_sample = np.zeros(6)
+            q, qxy = de(cs, min_fill=10)
+            assert qxy == 0.0
+            moved = np.flatnonzero(q != 0.0)
+            if moved.size:
+                for gi, g in enumerate(groups):
+                    if set(moved.tolist()) <= set(g.tolist()):
+                        touched.add(gi)
+        assert touched == {0, 1, 2}, (
+            f"de only ever moved groups {sorted(touched)}; it must use the group "
+            "it draws, not a fixed one"
+        )
+
+    def test_de_only_touches_one_group_per_call(self):
+        groups = [np.array([0, 1]), np.array([2, 3]), np.array([4, 5])]
+        cs = self._stats(groups, seed=7)
+        for _ in range(200):
+            cs.current_sample = np.zeros(6)
+            q, _ = de(cs, min_fill=10)
+            moved = set(np.flatnonzero(q != 0.0).tolist())
+            if not moved:
+                continue
+            assert any(
+                moved <= set(g.tolist()) for g in groups
+            ), f"de moved indices {sorted(moved)} spanning more than one group"
+
+    def test_cached_group_arrays_follow_a_groups_swap(self):
+        """Per-model runs swap ``groups`` on the fly; the cache must notice."""
+        cs = self._stats([np.array([0, 1, 2, 3, 4, 5])])
+        first = cs.group_index_arrays()
+        assert len(first) == 1
+        cs.groups = [np.array([0, 1]), np.array([2, 3, 4, 5])]
+        second = cs.group_index_arrays()
+        assert len(second) == 2, "stale group cache survived a groups swap"
+        np.testing.assert_array_equal(second[0], [0, 1])
