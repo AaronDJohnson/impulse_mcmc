@@ -123,10 +123,10 @@ for name, stats in sampler.proposal_acceptance_rates().items():
 ## Freezing adaptation: `num_adapt`
 
 Adaptive proposals and ladder adaptation make the transition kernel
-history-dependent. The adaptation schedule satisfies diminishing adaptation,
-but for strict Markovian guarantees you can freeze *everything* — covariance
-updates, the DE buffer, ladder adaptation, and refits of adaptive custom
-proposals — after a fixed number of iterations:
+history-dependent. `num_adapt` freezes *everything* — covariance updates, the DE
+buffer, ladder adaptation, and refits of adaptive custom proposals — after a
+fixed number of iterations, leaving a transition kernel that is exactly
+Markovian from that point on:
 
 ```python
 sampler = PTSampler(ndim=2, lnlike=log_likelihood, lnprior=log_prior,
@@ -142,10 +142,42 @@ Recommended usage:
 - Treat everything before `num_adapt` as warmup and discard it.
 - A reasonable default is the first 25–50% of the planned run, once
   acceptance rates and the ladder have visibly stabilized.
-- `num_adapt=None` (the default) adapts forever — the historical behavior,
-  fine in practice for well-behaved problems.
+- `num_adapt=None` (the default) adapts for the whole run — the historical
+  behavior, and fine in practice; see the note below for what it does and does
+  not guarantee.
 - `num_adapt` counts *global* iterations and persists across
   checkpoint/resume; see {doc}`checkpointing` for the resume semantics.
+
+### What adapting for the whole run does and does not guarantee
+
+The AM/SCAM covariance and the DE difference vectors come from a **finite**
+history buffer: `buffer_size` rows, one retained per `buffer_thin` iterations,
+spanning the most recent `buffer_size * buffer_thin` iterations — 50,000 at the
+defaults. Older rows are evicted and stop contributing;
+`ChainStats.recursive_update` recomputes the moments from the buffer rather than
+accumulating over all history.
+
+That is intentional. A full-history estimator carries burn-in forever at weight
+`1/n`, while the finite window discards it and keeps the proposal matched to the
+geometry the chain currently occupies.
+
+The consequence is that once the buffer begins evicting, the kernel keeps
+changing by a non-vanishing amount, so the **diminishing-adaptation** condition
+of Roberts & Rosenthal (2007) is not met and their ergodicity theorem does not
+apply. Below `buffer_size * buffer_thin` iterations the window is still growing
+and the condition does hold.
+
+Empirically this has not been observed to bias results. On a unit Gaussian and
+on an equal-weight bimodal target, analysed strictly after eviction begins,
+adapt-forever matched its `num_adapt`-frozen twin to within Monte Carlo error
+(posterior width within 0.1%; mode weights 0.499 against a true 0.500).
+
+Use `num_adapt` when you want a chain that is exactly Markovian by construction
+rather than by that argument — a formal convergence claim, or a target where the
+window could plausibly "forget" a mode it has not visited within its span.
+Raising `buffer_thin` until the window never evicts also restores the condition,
+but readmits burn-in and delays DE activation, so freezing is usually the better
+trade.
 
 ## Periodic parameters
 

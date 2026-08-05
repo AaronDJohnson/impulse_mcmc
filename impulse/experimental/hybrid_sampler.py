@@ -7,14 +7,11 @@ reporting); this module adds the NUTS transition machinery, per-model
 step-size/mass-matrix adaptation, and NUTS diagnostics I/O.
 """
 
-import functools
 import logging
 import os
 from typing import Callable, Optional
 
 import numpy as np
-
-logger = logging.getLogger(__name__)
 
 from impulse._pt_base import _UNSET, _PTSamplerBase
 from impulse.experimental._product_space_setup import (
@@ -29,6 +26,8 @@ from impulse.resume import CheckpointMismatchError, checkpoint_sampler, load_hyb
 from impulse.sampler_state import SamplerState, tempered_lnprobs
 from impulse.utils import prepare_files
 from impulse.wrapping import PeriodicSpec
+
+logger = logging.getLogger(__name__)
 
 
 class _BoundExtraArgs:
@@ -150,12 +149,19 @@ class HybridPTSampler(_PTSamplerBase):
         passed value — including an explicit ``None`` — overrides the
         checkpointed value, with a warning when they differ. Fresh (non
         -resumed) runs treat the default exactly like ``None``.
-    buffer_size, groups, sample_mean, sample_cov, loglargs, loglkwargs,
-    logpargs, logpkwargs, cov_update, save_freq, scam_weight, am_weight,
-    de_weight, de_min_fill, seed, outdir, ntemps, swap_steps, min_temp,
-    max_temp, temp_step, ladder, inf_temp, adapt_t0, adapt_nu, resume,
-    vectorized, verbose
-        Same as :class:`PTSampler`.
+    **kwargs
+        Every remaining argument is accepted with the same meaning and default
+        as :class:`impulse.PTSampler`, and is forwarded to it unchanged:
+        ``buffer_size``, ``buffer_thin``, ``groups``, ``unmanaged_indices``,
+        ``sample_mean``, ``sample_cov``, ``loglargs``, ``loglkwargs``,
+        ``logpargs``, ``logpkwargs``, ``cov_update``, ``save_freq``,
+        ``scam_weight``, ``am_weight``, ``de_weight``, ``de_min_fill``,
+        ``seed``, ``outdir``, ``ntemps``, ``swap_steps``, ``min_temp``,
+        ``max_temp``, ``temp_step``, ``ladder``, ``inf_temp``, ``adapt_t0``,
+        ``adapt_nu``, ``resume``, ``vectorized``, ``jax``, ``threads``,
+        ``periodic``, ``chain_format`` and ``verbose``. They are declared
+        explicitly in the signature rather than collected in ``**kwargs``, so
+        a misspelled name is a ``TypeError`` at construction.
     """
 
     _logger = logger
@@ -211,6 +217,7 @@ class HybridPTSampler(_PTSamplerBase):
         periodic: Optional[PeriodicSpec] = None,
         num_adapt: Optional[int] = _UNSET,
         verbose: bool = True,
+        chain_format: str = "binary",
     ) -> None:
         # Shared PT wiring (function wrappers, RNGs, PT state, chain stats,
         # proposal bundle, num_adapt sentinel handling)
@@ -252,6 +259,7 @@ class HybridPTSampler(_PTSamplerBase):
             periodic=periodic,
             num_adapt=num_adapt,
             verbose=verbose,
+            chain_format=chain_format,
         )
 
         # Keep raw references for NUTS gradient building.

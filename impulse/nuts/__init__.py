@@ -14,3 +14,20 @@ from .gradient_helpers import (
 from .mass_matrix import MassMatrix, MassMatrixType
 from .sampler import NUTSSampler
 from .warmup import DualAveraging, WarmupSchedule, find_reasonable_step_size
+
+#: Re-exported names. Declared explicitly so linters see these imports as the
+#: subpackage's public surface rather than as unused.
+__all__ = [
+    "DualAveraging",
+    "MassMatrix",
+    "MassMatrixType",
+    "NUTSSampler",
+    "NUTSState",
+    "WarmupSchedule",
+    "compose_logp_and_grad",
+    "find_reasonable_step_size",
+    "leapfrog",
+    "make_logp_and_grad_numerical",
+    "nuts_step",
+    "numerical_gradient",
+]

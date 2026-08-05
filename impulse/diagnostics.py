@@ -255,9 +255,14 @@ def grubin(chains: np.ndarray, M=2, threshold=1.01, burn=None):
         arrays, they are concatenated along axis 0 before processing.
 
         This is exactly what :meth:`~impulse.PTSampler.load_chain` returns in
-        ``chain["samples"][k]``. If you are reading a raw ``chain_*.txt`` file
-        instead, slice off its four trailing bookkeeping columns first::
+        ``chain["samples"][k]``. If you are reading a raw chain file instead,
+        slice off its four trailing bookkeeping columns first::
 
+            # default encoding: chain_<i>.bin, ndim + 4 float64 per row
+            data = np.fromfile("chains/chain_0.bin").reshape(-1, ndim + 4)
+            rhat, idx = grubin(data[:, :ndim])
+
+            # chain_format="text" instead writes chain_<i>.txt
             data = np.loadtxt("chains/chain_0.txt")
             rhat, idx = grubin(data[:, :ndim])
     M : int, default 2

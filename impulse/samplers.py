@@ -26,8 +26,6 @@ from typing import Optional
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
 from impulse._pt_base import (  # noqa: F401  (setup_* re-exported public API)
     _UNSET,
     _PTSamplerBase,
@@ -37,6 +35,8 @@ from impulse._pt_base import (  # noqa: F401  (setup_* re-exported public API)
     setup_standard_jumps,
 )
 from impulse.resume import load_checkpoint
+
+logger = logging.getLogger(__name__)
 
 
 class PTSampler(_PTSamplerBase):
@@ -139,13 +139,6 @@ class PTSampler(_PTSamplerBase):
         Markovian; samples drawn before the freeze are warmup and should
         be discarded for strict asymptotic guarantees. ``None`` adapts
         forever, preserving historical behavior.
-    verbose : bool, default True
-        Show the tqdm sampling progress bar. Set ``False`` to silence it
-        (batch/cluster jobs, nested loops such as SBC, notebooks). Presentation
-        only: it does not affect the chain, is never checkpointed, and is not
-        verified on resume -- a run resumed with ``verbose=False`` stays quiet
-        even if the checkpoint came from a verbose run.
-
         Resume semantics: when ``num_adapt`` is not passed (the default),
         resuming keeps the checkpointed value — un-freezing on resume by
         default would produce a half-frozen kernel, because proposals
@@ -154,6 +147,56 @@ class PTSampler(_PTSamplerBase):
         passed value — including an explicit ``None`` — overrides the
         checkpointed value, with a warning when they differ. Fresh (non
         -resumed) runs treat the default exactly like ``None``.
+    verbose : bool, default True
+        Show the tqdm sampling progress bar. Set ``False`` to silence it
+        (batch/cluster jobs, nested loops such as SBC, notebooks). Presentation
+        only: it does not affect the chain, is never checkpointed, and is not
+        verified on resume -- a run resumed with ``verbose=False`` stays quiet
+        even if the checkpoint came from a verbose run.
+    chain_format : {'binary', 'text'}, default 'binary'
+        On-disk encoding for the chain files. ``'binary'`` writes
+        ``chain_<i>.bin``: raw ``float64`` records, ``ndim + 4`` values per row,
+        no header or delimiters. ``'text'`` writes the historical
+        ``chain_<i>.txt`` with ``%.18e`` columns, readable by ``np.loadtxt`` and
+        greppable on a cluster, but slower to write and ~3x larger. Both store
+        identical values (``%.18e`` round-trips a ``float64`` exactly), so the
+        choice affects only speed, size, and readability.
+        :meth:`load_chain` detects and reads either, so code that goes through
+        it is unaffected by the choice. Keep it the same across a resume: the
+        encoding is part of the chain files on disk, not of the checkpoint.
+    periodic : dict, optional
+        Circular parameters, mapping parameter index to either a period
+        (``{2: 2 * np.pi}``) or an explicit ``(low, high)`` interval
+        (``{2: (-np.pi, np.pi)}``). Declared parameters are wrapped back into
+        their interval after every proposal, so a phase cannot random-walk to
+        :math:`\\pm\\infty` and inflate the adaptive covariance. Undeclared
+        parameters are untouched.
+    buffer_thin : int, default 25
+        Retain one sample per ``buffer_thin`` iterations in the history buffer.
+        The buffer therefore spans ``buffer_size * buffer_thin`` iterations
+        (50,000 at the defaults) while holding only ``buffer_size`` rows, which
+        keeps the DE difference vectors spread over a long horizon instead of
+        being packed into the most recent few thousand iterations. Raising it
+        lengthens the horizon; lowering it packs the window tighter. Verified on
+        resume — changing it raises ``CheckpointMismatchError``. See
+        :func:`impulse.proposals.de` for what the finite window does and does
+        not guarantee.
+    unmanaged_indices : list, optional
+        Parameter indices excluded from the default proposal groups, for
+        coordinates moved by a specially registered proposal rather than by
+        ``am``/``scam``/``de``. Used by
+        :func:`impulse.experimental.make_product_space_sampler` to hand the
+        model-index coordinate to the birth/death kernel. Leaving a coordinate
+        unmanaged with nothing else moving it freezes it at its initial value,
+        so the sampler warns when the groups do not cover every index.
+    threads : int, default 1
+        Evaluate a NON-vectorized ``lnlike``/``lnprior`` across the temperature
+        chains on a ``ThreadPoolExecutor`` of this size. Ignored when
+        ``vectorized=True`` (the batched call already covers all rows) and when
+        there is only one row to evaluate. Because the workers are threads,
+        this only helps if the function releases the GIL — NumPy/SciPy-heavy or
+        compiled likelihoods do; pure-Python ones do not. Prefer ``vectorized``
+        where the model supports it.
 
     Attributes
     ----------

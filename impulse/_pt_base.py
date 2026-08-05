@@ -26,13 +26,10 @@ consume random numbers.
 
 import logging
 import os
-import warnings
 from typing import Any, Callable, List, Optional
 
 import numpy as np
 from tqdm import tqdm
-
-logger = logging.getLogger(__name__)
 
 from impulse import chain_io
 from impulse.chain_stats import ChainStats, MultiChainStats
@@ -49,6 +46,8 @@ from impulse.resume import (
 from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
 from impulse.sampler_step import pt_step, vectorized_mh_step
 from impulse.wrapping import PeriodicSpec, WrapSpec
+
+logger = logging.getLogger(__name__)
 
 # Sentinel default for ``num_adapt``: distinguishes "not passed" (keep a
 # checkpointed value on resume) from an explicitly passed value — including
@@ -545,6 +544,11 @@ class _PTSamplerBase:
             "save_freq": int(self.save_freq),
             "buffer_size": int(self.multi_chain_stats.chain_stats[0].buffer_size),
             "buffer_thin": int(self.multi_chain_stats.chain_stats[0].buffer_thin),
+            # Verified on resume: the encoding lives in the chain FILES, not in
+            # the checkpoint, so resuming into the other one appends a second
+            # set of files in the new encoding while load_chain() keeps
+            # returning only the original half.
+            "chain_format": str(self.chain_format),
             "num_adapt": None if self.num_adapt is None else int(self.num_adapt),
             "num_adapt_explicit": bool(getattr(self, "_num_adapt_explicit", False)),
             "last_cov_iter": int(self._last_cov_iter),
@@ -725,28 +729,22 @@ class _PTSamplerBase:
     # sample
     # ------------------------------------------------------------------
 
-    def sample(self, initial_position: np.ndarray, num_iterations: int, thin: int = 1):
-        """Run the parallel-tempering sampling loop.
+    def _open_short_chain(self, thin: int) -> None:
+        """Create the in-memory chain ring and its on-disk files.
 
-        See the public subclasses for full parameter and resume-semantics
-        documentation.
+        The ring serves two consumers with different depth requirements: the
+        disk flush needs ``save_freq``, but the adaptation refresh calls
+        ``get_recent_samples(cov_update)`` every ``cov_update`` iterations.
+        Sizing the ring at ``save_freq`` alone means ``get_recent_samples``
+        silently clamps to ``short_iters`` whenever ``cov_update > save_freq``
+        (file_io.py), so the covariance and DE buffer see only
+        ``save_freq/cov_update`` of the chain and ``sample_total`` advances on a
+        correspondingly slow clock -- at ``save_freq=100, cov_update=2000`` the
+        adaptation observes 3% of the run. Size for the deeper consumer. This
+        does NOT change flush cadence: ``save_chain`` writes ``_unsaved`` rows
+        and the loop still calls it every ``save_freq`` iterations. See GitHub
+        issue #11.
         """
-
-        if self.ptstate.ladder is None:  # this shouldn't happen!
-            raise ValueError("PTState ladder is not initialized")
-        # setup save chains
-        #
-        # The ring serves two consumers with different depth requirements:
-        # the disk flush needs `save_freq`, but the adaptation refresh calls
-        # get_recent_samples(cov_update) every `cov_update` iterations. Sizing
-        # the ring at save_freq alone means get_recent_samples silently clamps
-        # to short_iters whenever cov_update > save_freq (file_io.py), so the
-        # covariance and DE buffer see only save_freq/cov_update of the chain
-        # and `sample_total` advances on a correspondingly slow clock -- at
-        # save_freq=100, cov_update=2000 the adaptation observes 3% of the run.
-        # Size for the deeper consumer. This does NOT change flush cadence:
-        # save_chain writes `_unsaved` rows and the loop still calls it every
-        # save_freq iterations. See GitHub issue #11.
         self.short_chain = ShortChain(
             self.ndim,
             self.ntemps,
@@ -757,26 +755,28 @@ class _PTSamplerBase:
             thin=thin,
             chain_format=self.chain_format,
         )
-        # iteration of the last covariance refresh; kept on the instance so
-        # it is pickled into checkpoints (a resume overwrites this fresh
-        # value with the checkpointed one via __dict__.update below)
+        # iteration of the last covariance refresh; kept on the instance so it
+        # is checkpointed (a resume overwrites this fresh value with the
+        # checkpointed one)
         self._last_cov_iter = self.short_chain.iteration
-        # set up initial state here:
+
+    def _set_initial_state(self, initial_position: np.ndarray) -> None:
+        """Evaluate the starting position and install it as ``self.state``.
+
+        Raises ``ValueError`` if any chain starts at a non-finite likelihood or
+        outside the prior: an unusable start would otherwise be masked by the
+        first accepted proposal.
+        """
+        ladder = self.ptstate.ladder
+        assert ladder is not None  # sample() rejects an uninitialized ladder first
+
         initial_position = setup_initial_position(initial_position, self.ntemps)
         if self.wrap is not None:
             initial_position = self.wrap.apply(initial_position)
 
         lnlike0 = self.lnlike(initial_position)
         lnprior0 = self.lnprior(initial_position)
-        lnprob0 = tempered_lnprobs(lnlike0, lnprior0, self.ptstate.ladder)
-        initial_state = SamplerState(
-            initial_position,
-            lnlike0,
-            lnprior0,
-            lnprob0,
-            accepted=np.ones(self.ntemps),
-            temps=self.ptstate.ladder,
-        )
+        lnprob0 = tempered_lnprobs(lnlike0, lnprior0, ladder)
 
         # check for bad initial samples
         if np.any(~np.isfinite(lnlike0)):
@@ -784,10 +784,22 @@ class _PTSamplerBase:
         if np.any(~np.isfinite(lnprior0)):
             raise ValueError("An initial value falls outside the prior bounds.")
 
-        self.state = initial_state
+        self.state = SamplerState(
+            initial_position,
+            lnlike0,
+            lnprior0,
+            lnprob0,
+            accepted=np.ones(self.ntemps),
+            temps=ladder,
+        )
 
-        # look for checkpoint in outdir
-        _resumed_from_checkpoint = False
+    def _restore_from_checkpoint(self) -> bool:
+        """Resume from a checkpoint in ``outdir`` if one is wanted and present.
+
+        Returns whether state was actually restored. Leaves ``self`` untouched
+        (returning False) for a fresh run, and raises rather than silently cold
+        -starting when ``resume=True`` but the checkpoint is missing.
+        """
         self.checkpoint_path = check_for_checkpoint(self.outdir)
         if self.resume and self.checkpoint_path is None:
             # resume=True with no usable checkpoint used to fall through to a
@@ -813,73 +825,94 @@ class _PTSamplerBase:
                     "resume=False or a new outdir (note resume=False DELETES the "
                     "existing chain files in that directory)."
                 )
-        if self.resume and self.checkpoint_path is not None:
-            _resumed_from_checkpoint = True
-            self._logger.info("Resuming from checkpoint: %s", self.checkpoint_path)
-            # num_adapt resume semantics: an EXPLICITLY passed constructor
-            # value (including an explicit None) wins over the checkpointed
-            # value, with a warning when they differ; the default keeps the
-            # checkpointed value — silently un-freezing a checkpointed
-            # freeze would resume a half-frozen kernel (proposals whose
-            # frozen state is pickled, e.g. a frozen normalizing flow, stay
-            # frozen while everything else adapts again).  getattr guards
-            # the public checkpoint-loader->sample() path (legacy pickle),
-            # where unpickling bypasses __init__ (pre-num_adapt checkpoints
-            # lack both attributes).
-            constructor_num_adapt = getattr(self, "num_adapt", None)
-            num_adapt_explicit = getattr(self, "_num_adapt_explicit", False)
-            if str(self.checkpoint_path).endswith(".json"):
-                # New no-code-execution format: verify the reconstructed
-                # sampler matches the checkpoint, then restore STATE into it
-                # in place (the reconstruct-then-restore contract). The
-                # sampler's callables, proposal objects, and product space are
-                # kept; only mutable state is overwritten.
-                meta = restore_state_checkpoint(self, self.checkpoint_path)
-                checkpoint_num_adapt = meta.get("num_adapt", None)
-            else:
-                # Legacy pickle fallback (loud security/deprecation warning
-                # emitted by the loader). Replaces state via __dict__.update
-                # exactly as before, keeping this run's resume flag and
-                # checkpoint path (the checkpoint carries the ORIGINAL run's
-                # values — often resume=False and checkpoint_path=None —
-                # which would otherwise truncate instead of append). Future
-                # checkpoints of a pickle-resumed run stay on the .pkl path.
-                loaded = self._load_checkpoint(self.checkpoint_path)
-                constructor_resume = self.resume
-                constructor_checkpoint_path = self.checkpoint_path
-                # verbose is presentation-only and belongs to THIS process: a
-                # run resumed with verbose=False must stay quiet even if the
-                # checkpoint was written by a verbose run.
-                constructor_verbose = getattr(self, "verbose", True)
-                self.__dict__.update(loaded.__dict__)
-                self.resume = constructor_resume
-                self.checkpoint_path = constructor_checkpoint_path
-                self.verbose = constructor_verbose
-                checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
-            if num_adapt_explicit:
-                if checkpoint_num_adapt != constructor_num_adapt:
-                    self._logger.warning(
-                        "Resume: overriding checkpointed num_adapt=%s with "
-                        "the resuming constructor's explicitly passed "
-                        "num_adapt=%s. Proposals whose frozen state is "
-                        "serialized (e.g. normalizing flows frozen by "
-                        "freeze_adaptation) remain frozen regardless: their "
-                        "freeze is irreversible and survives the "
-                        "checkpoint, so removing or extending the freeze "
-                        "only re-enables the other adaptive components.",
-                        checkpoint_num_adapt,
-                        constructor_num_adapt,
-                    )
-                self.num_adapt = constructor_num_adapt
-            else:
-                self.num_adapt = checkpoint_num_adapt
-            self._num_adapt_explicit = num_adapt_explicit
-            self._migrate_or_warn_legacy_birth_death()
-            # drop chain-file rows written after the checkpoint (e.g. by the
-            # final flush of a run that completed normally): the loop below
-            # re-generates those iterations bit-identically from the
-            # checkpointed RNG streams, so stale rows would be duplicates
-            self.short_chain.truncate_files_to_saved()
+        if not (self.resume and self.checkpoint_path is not None):
+            return False
+
+        self._logger.info("Resuming from checkpoint: %s", self.checkpoint_path)
+        # num_adapt resume semantics: an EXPLICITLY passed constructor value
+        # (including an explicit None) wins over the checkpointed value, with a
+        # warning when they differ; the default keeps the checkpointed value —
+        # silently un-freezing a checkpointed freeze would resume a half-frozen
+        # kernel (proposals whose frozen state is serialized, e.g. a frozen
+        # normalizing flow, stay frozen while everything else adapts again).
+        # getattr guards the public checkpoint-loader->sample() path (legacy
+        # pickle), where unpickling bypasses __init__ (pre-num_adapt
+        # checkpoints lack both attributes).
+        constructor_num_adapt = getattr(self, "num_adapt", None)
+        num_adapt_explicit = getattr(self, "_num_adapt_explicit", False)
+        if str(self.checkpoint_path).endswith(".json"):
+            # New no-code-execution format: verify the reconstructed sampler
+            # matches the checkpoint, then restore STATE into it in place (the
+            # reconstruct-then-restore contract). The sampler's callables,
+            # proposal objects, and product space are kept; only mutable state
+            # is overwritten.
+            meta = restore_state_checkpoint(self, self.checkpoint_path)
+            checkpoint_num_adapt = meta.get("num_adapt", None)
+        else:
+            # Legacy pickle fallback (loud security/deprecation warning emitted
+            # by the loader). Replaces state via __dict__.update exactly as
+            # before, keeping this run's resume flag and checkpoint path (the
+            # checkpoint carries the ORIGINAL run's values — often resume=False
+            # and checkpoint_path=None — which would otherwise truncate instead
+            # of append). Future checkpoints of a pickle-resumed run stay on the
+            # .pkl path.
+            loaded = self._load_checkpoint(self.checkpoint_path)
+            constructor_resume = self.resume
+            constructor_checkpoint_path = self.checkpoint_path
+            # verbose is presentation-only and belongs to THIS process: a run
+            # resumed with verbose=False must stay quiet even if the checkpoint
+            # was written by a verbose run.
+            constructor_verbose = getattr(self, "verbose", True)
+            self.__dict__.update(loaded.__dict__)
+            self.resume = constructor_resume
+            self.checkpoint_path = constructor_checkpoint_path
+            self.verbose = constructor_verbose
+            checkpoint_num_adapt = getattr(loaded, "num_adapt", None)
+        if num_adapt_explicit:
+            if checkpoint_num_adapt != constructor_num_adapt:
+                self._logger.warning(
+                    "Resume: overriding checkpointed num_adapt=%s with "
+                    "the resuming constructor's explicitly passed "
+                    "num_adapt=%s. Proposals whose frozen state is "
+                    "serialized (e.g. normalizing flows frozen by "
+                    "freeze_adaptation) remain frozen regardless: their "
+                    "freeze is irreversible and survives the "
+                    "checkpoint, so removing or extending the freeze "
+                    "only re-enables the other adaptive components.",
+                    checkpoint_num_adapt,
+                    constructor_num_adapt,
+                )
+            self.num_adapt = constructor_num_adapt
+        else:
+            self.num_adapt = checkpoint_num_adapt
+        self._num_adapt_explicit = num_adapt_explicit
+        self._migrate_or_warn_legacy_birth_death()
+        # drop chain-file rows written after the checkpoint (e.g. by the final
+        # flush of a run that completed normally): the loop re-generates those
+        # iterations bit-identically from the checkpointed RNG streams, so stale
+        # rows would be duplicates
+        self.short_chain.truncate_files_to_saved()
+        return True
+
+    def sample(self, initial_position: np.ndarray, num_iterations: int, thin: int = 1):
+        """Run the parallel-tempering sampling loop.
+
+        See the public subclasses for full parameter and resume-semantics
+        documentation.
+
+        The phases are split into ``_open_short_chain``, ``_set_initial_state``
+        and ``_restore_from_checkpoint`` so that the loop below reads as the
+        sampling algorithm rather than as setup interleaved with it. All three
+        mutate ``self`` in the same order as before; none of them may be
+        reordered without changing the RNG draw sequence.
+        """
+
+        if self.ptstate.ladder is None:  # this shouldn't happen!
+            raise ValueError("PTState ladder is not initialized")
+        self._open_short_chain(thin)
+        self._set_initial_state(initial_position)
+
+        _resumed_from_checkpoint = self._restore_from_checkpoint()
 
         self._prepare_run(_resumed_from_checkpoint)
 
@@ -931,7 +964,7 @@ class _PTSamplerBase:
                 new_count = self.short_chain.iteration - self._last_cov_iter
                 if new_count > 0:
                     new_samples = self.short_chain.get_recent_samples(new_count)
-                    self.multi_chain_stats.recursive_update(new_samples)
+                    self.multi_chain_stats.update_from_window(new_samples)
                 self._last_cov_iter = self.short_chain.iteration
             # checkpoint at the END of the iteration: the pickle then
             # captures a fully completed iteration (post PT-swap, post

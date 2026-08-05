@@ -4,7 +4,7 @@ Implements the multinomial NUTS variant from Betancourt (2017) with
 U-turn detection and divergence tracking.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Tuple
 
 import numpy as np

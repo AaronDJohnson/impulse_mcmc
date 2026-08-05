@@ -186,8 +186,10 @@ def sbc_ecdf_plot(
         plt = _require_matplotlib()
         _, ax = plt.subplots()
 
-    # DKW confidence band
-    epsilon = np.sqrt(np.log(2.0 / alpha) / (2 * n_sim))
+    # DKW confidence band. n_sim == 0 would divide by zero and emit a
+    # RuntimeWarning before producing a nan-width band; an empty input has no
+    # band to draw, so widen it to the whole unit square instead.
+    epsilon = np.sqrt(np.log(2.0 / alpha) / (2 * n_sim)) if n_sim > 0 else 1.0
     t = np.linspace(0, 1, 200)
     ax.fill_between(
         t,
@@ -217,6 +219,7 @@ def coverage_plot(
     quantiles: ArrayLike,
     nominal_levels: Optional[ArrayLike] = None,
     ax: Optional[Any] = None,
+    param_names: Optional[Sequence[str]] = None,
 ) -> Any:
     """
     Actual vs nominal coverage of credible intervals.
@@ -232,6 +235,10 @@ def coverage_plot(
         Nominal coverage levels to evaluate. Defaults to np.arange(0.1, 1.0, 0.1).
     ax : matplotlib.axes.Axes, optional
         Axes to plot on. Created if not provided.
+    param_names : list of str, optional
+        Parameter names for the legend, matching
+        :func:`sbc_ecdf_plot` and :func:`rank_histogram`. Defaults to
+        ``"param 0"``, ``"param 1"``, ...
 
     Returns
     -------
@@ -253,13 +260,22 @@ def coverage_plot(
     ax.plot([0, 1], [0, 1], "k--", lw=0.8)
 
     for j in range(ndim):
-        actual = np.array([np.mean(np.abs(quantiles[:, j] - 0.5) < p / 2) for p in nominal_levels])
-        ax.plot(nominal_levels, actual, "o-", markersize=4, label=f"param {j}")
+        # np.mean of an empty slice warns and returns nan; an empty input has
+        # no coverage to report, so plot nothing for it.
+        if n_sim > 0:
+            actual = np.array(
+                [np.mean(np.abs(quantiles[:, j] - 0.5) < p / 2) for p in nominal_levels]
+            )
+        else:
+            actual = np.full(nominal_levels.shape, np.nan)
+        name = param_names[j] if param_names is not None else f"param {j}"
+        ax.plot(nominal_levels, actual, "o-", markersize=4, label=name)
 
-    # Binomial 95% CI for the diagonal
-    for p in nominal_levels:
-        se = 1.96 * np.sqrt(p * (1 - p) / n_sim)
-        ax.plot([p, p], [p - se, p + se], color="gray", lw=0.8, alpha=0.5)
+    # Binomial 95% CI for the diagonal. Undefined without simulations.
+    if n_sim > 0:
+        for p in nominal_levels:
+            se = 1.96 * np.sqrt(p * (1 - p) / n_sim)
+            ax.plot([p, p], [p - se, p + se], color="gray", lw=0.8, alpha=0.5)
 
     ax.set_xlabel("Nominal coverage")
     ax.set_ylabel("Actual coverage")

@@ -31,17 +31,24 @@ jobs:
       run: python -c "import impulse; print(impulse.__version__)"
 
     - name: Install test dependencies
-      run: pip install pytest pytest-cov
+      # matplotlib (the [plots] extra) is installed AFTER the smoke test above,
+      # so that test still proves the package imports on declared deps alone.
+      # Without it here the impulse.validation plotting helpers -- three of the
+      # supported exports -- skip their tests everywhere and report 0% covered.
+      run: pip install pytest pytest-cov matplotlib
 
     - name: Run tests (fast suite)
+      env:
+        MPLBACKEND: Agg
       run: |
-        pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=87
+        pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=89
 
-    # Coverage ENFORCEMENT is --cov-fail-under above (measured 90% after the
-    # dead parallel.py was removed and wrapping/SBC tests were added; 87 leaves
-    # headroom against per-platform drift). This job does not install the
-    # [flow] extra, so impulse/flow_proposals.py reports 0% HERE and is
-    # included in that 90% -- it is covered by the slow-tests job, which does
+    # Coverage ENFORCEMENT is --cov-fail-under above (measured 92% once
+    # matplotlib was installed here and the impulse.validation plotting helpers
+    # went from 55% to 96%; 89 leaves headroom against per-platform drift).
+    # This job does not install the [flow] extra, so
+    # impulse/flow_proposals.py reports 0% HERE and is
+    # included in that 92% -- it is covered by the slow-tests job, which does
     # install it. The codecov upload is reporting only: one matrix cell, non-blocking,
     # because tokenless v4 uploads are rate-limit flaky. Set a
     # CODECOV_TOKEN secret and fail_ci_if_error: true to harden it.

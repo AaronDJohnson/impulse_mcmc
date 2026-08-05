@@ -14,7 +14,7 @@ from tqdm import tqdm
 from impulse import chain_io
 from impulse.nuts.core import NUTSState, nuts_step
 from impulse.nuts.mass_matrix import MassMatrix, MassMatrixType
-from impulse.nuts.warmup import DualAveraging, WarmupSchedule, find_reasonable_step_size
+from impulse.nuts.warmup import WarmupSchedule, find_reasonable_step_size
 from impulse.resume import (
     _jsonable_rng_state,
     _rng_state_from_json,

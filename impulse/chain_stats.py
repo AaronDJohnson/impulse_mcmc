@@ -12,7 +12,7 @@ across the ladder.
 """
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
@@ -306,12 +306,23 @@ class ChainStats:
             if self.sample_total > self.buffer_size:
                 self.buffer_full = True
 
-    def recursive_update(self, sample_num: int, new_samples: np.ndarray) -> None:
+    def update_from_window(self, sample_num: int, new_samples: np.ndarray) -> None:
         """
-        Update all statistics with new samples using online algorithms.
+        Append new samples to the history buffer and re-derive the statistics.
 
-        Performs comprehensive update of sample count, buffer, mean, covariance,
-        and SVD decompositions using numerically stable online methods.
+        Despite the historical name of its alias (``recursive_update``), this
+        does NOT accumulate over the whole run. The buffer is a fixed-capacity
+        ring holding ``buffer_size`` rows, one retained per ``buffer_thin``
+        iterations; the mean, covariance and per-group SVD are then RECOMPUTED
+        from the rows currently in it. Once the ring is full, evicted rows stop
+        contributing entirely -- ``sample_cov`` is a function of the current
+        window alone, not of every sample ever seen.
+
+        That is deliberate: a full-history estimator would carry burn-in
+        forever at weight ``1/n``, while the finite window discards it and
+        keeps the proposal matched to the geometry the chain currently
+        occupies. See :func:`impulse.proposals.de` for what the finite window
+        does and does not guarantee about ergodicity.
 
         When per-model statistics are active, samples are partitioned by
         their model index and each model's statistics are updated
@@ -366,12 +377,14 @@ class ChainStats:
 
         if self.sample_cov is None or self.sample_mean is None:
             raise ValueError(
-                "sample_cov and sample_mean must be initialized before calling recursive_update"
+                "sample_cov and sample_mean must be initialized before calling update_from_window"
             )
         if self.svd_U is None or self.svd_S is None:
-            raise ValueError("svd_U and svd_S must be initialized before calling recursive_update")
+            raise ValueError(
+                "svd_U and svd_S must be initialized before calling update_from_window"
+            )
         if self.groups is None:
-            raise ValueError("groups must be initialized before calling recursive_update")
+            raise ValueError("groups must be initialized before calling update_from_window")
 
         # update buffer
         # Retain every buffer_thin-th state. sample_total counts STORED rows, not
@@ -403,6 +416,15 @@ class ChainStats:
             self.proposal_L,
             ridge=self._cov_ridge,
         )
+
+    #: Historical name for :meth:`update_from_window`, kept so existing callers
+    #: keep working. The new name is preferred because nothing here recurses --
+    #: the moments are recomputed from the buffer on every call.
+    #:
+    #: CAVEAT for monkeypatching: the sampler calls ``update_from_window``, so
+    #: replacing ``recursive_update`` on an instance (a test spy, a profiling
+    #: wrapper) will silently never fire. Patch ``update_from_window`` instead.
+    recursive_update = update_from_window
 
     def get_group_U(self, group_idx: int) -> np.ndarray:
         """Return U for group `group_idx` (shape (k, k))."""
@@ -743,9 +765,14 @@ class MultiChainStats:
     def sample_total(self) -> int:
         return self.chain_stats[0].sample_total
 
-    def recursive_update(self, new_samples: np.ndarray) -> None:
+    def update_from_window(self, new_samples: np.ndarray) -> None:
         """
         Update statistics for all temperature chains simultaneously.
+
+        Delegates to :meth:`ChainStats.update_from_window` per chain: the
+        samples are appended to each chain's fixed-capacity history buffer and
+        the moments are then recomputed from that window, not accumulated over
+        the whole run.
 
         Parameters
         ----------
@@ -756,11 +783,15 @@ class MultiChainStats:
         --------
         >>> import numpy as np
         >>> new_samples = np.random.randn(5, 100, 3)  # 5 chains, 100 new samples, 3 dimensions
-        >>> multi_stats.recursive_update(new_samples)
+        >>> multi_stats.update_from_window(new_samples)
         >>> # All chain statistics updated with new samples
         """
         for i, cs in enumerate(self.chain_stats):
-            cs.recursive_update(cs.sample_total, new_samples[i])
+            cs.update_from_window(cs.sample_total, new_samples[i])
+
+    #: Historical name for :meth:`update_from_window`; see
+    #: :attr:`ChainStats.recursive_update`.
+    recursive_update = update_from_window
 
     def get_group_U(self, chain_idx: int, group_idx: int) -> np.ndarray:
         """Return U for chain `chain_idx` and group `group_idx` (shape (k, k))."""

@@ -4,7 +4,7 @@ Implements Nesterov dual averaging for step size adaptation and
 a windowed scheme for mass matrix estimation.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np

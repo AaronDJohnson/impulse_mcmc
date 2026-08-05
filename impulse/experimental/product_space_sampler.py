@@ -5,8 +5,6 @@ product-space machinery became experimental, so that the supported
 :class:`impulse.PTSampler` carries no knowledge of model-selection proposals.
 """
 
-from typing import Optional
-
 from impulse.experimental._product_space_setup import (
     _expand_product_space_cov_mean,
     _register_model_selection_jumps,

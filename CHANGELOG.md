@@ -184,6 +184,41 @@ rewrite and shares no API with it.
 
 ### Fixed
 
+- **Resuming with a different `chain_format` silently split the run across two
+  files.** The encoding lives in the chain files on disk, not in the
+  checkpoint, and it was not among the verified run-shaping fields. Resuming a
+  `chain_format="binary"` run with `chain_format="text"` raised nothing, wrote
+  a second set of `chain_<i>.txt` files, and left `load_chain()` returning only
+  the original `.bin` half — so the resumed iterations were invisible.
+  `chain_format` is now checkpointed and verified, raising
+  `CheckpointMismatchError` on a mismatch.
+
+- **The adaptive proposals were documented as satisfying diminishing
+  adaptation. They do not.** The AM/SCAM covariance and the DE difference
+  vectors come from a finite history buffer spanning
+  `buffer_size * buffer_thin` iterations (50,000 at the defaults); once it
+  begins evicting, the kernel keeps changing by a non-vanishing amount and the
+  Roberts & Rosenthal (2007) ergodicity theorem no longer applies. Below that
+  length the window is still growing and the condition does hold. The claim has
+  been removed from `impulse.proposals.de`, the README, and the parallel
+  tempering guide, each of which now states the buffer span, why the window is
+  deliberately finite (a full-history estimator carries burn-in forever at
+  weight `1/n`), and that `num_adapt` is how to obtain an exactly Markovian
+  kernel. No bias was detectable in testing: on a unit Gaussian and an
+  equal-weight bimodal target, analysed strictly after eviction begins,
+  adapt-forever matched its `num_adapt`-frozen twin to within Monte Carlo error.
+
+- **The `impulse.validation` plotting helpers were executed by no CI job.**
+  `sbc_ecdf_plot`, `coverage_plot` and `rank_histogram` are three of the
+  supported exports, but the only test naming them asserted they raise *without*
+  matplotlib; their bodies never ran. The fast CI matrix now installs
+  matplotlib and 13 tests exercise the real drawing path, taking
+  `impulse/validation.py` from 55% to 96% covered and the total from 90% to
+  92%. Two latent defects surfaced and are fixed: both helpers emitted
+  divide-by-zero / mean-of-empty-slice `RuntimeWarning`s on empty input, and
+  `coverage_plot` had no `param_names` argument despite its two siblings
+  accepting one.
+
 - **`NUTSSampler(resume=True)` did not resume.** `self.resume` reached exactly
   one line — `prepare_files(..., resume=...)`, which only chooses
   append-vs-truncate — so the checkpoint it wrote was never read back. Warmup
@@ -299,6 +334,21 @@ rewrite and shares no API with it.
 - `chain_format` keyword on `PTSampler`, `NUTSSampler` and `HybridPTSampler`:
   `"binary"` (default) or `"text"`. See Breaking Changes. The shared
   implementation lives in the new `impulse.chain_io` module.
+
+- `param_names` on `coverage_plot`, matching `sbc_ecdf_plot` and
+  `rank_histogram`.
+
+- `ChainStats.update_from_window` / `MultiChainStats.update_from_window`, the
+  accurate name for what was called `recursive_update`: the method recomputes
+  the mean, covariance and per-group SVD from the current history window rather
+  than accumulating over the whole run. `recursive_update` remains as an alias.
+  Note that code monkeypatching the alias on an instance (a test spy, a
+  profiling wrapper) will no longer intercept the sampler's calls — patch
+  `update_from_window` instead.
+
+- `PTSampler`'s previously undocumented constructor arguments now appear in the
+  API reference: `chain_format`, `periodic`, `buffer_thin`, `unmanaged_indices`
+  and `threads`. `HybridPTSampler` enumerates the arguments it forwards.
 
 - `verbose` keyword on `PTSampler`, `NUTSSampler` and `HybridPTSampler`
   (default `True`). `verbose=False` suppresses the tqdm progress bars — useful

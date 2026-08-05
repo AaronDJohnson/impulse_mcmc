@@ -10,7 +10,6 @@ import warnings
 import numpy as np
 
 from impulse.experimental.birth_death_proposals import migrate_legacy_birth_death
-from impulse.proposals import DE_MIN_FILL
 
 
 def _expand_product_space_cov_mean(product_space, kwargs: dict) -> tuple:

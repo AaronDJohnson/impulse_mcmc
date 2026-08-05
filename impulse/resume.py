@@ -252,11 +252,12 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
     """Verify the reconstructed sampler matches the checkpoint; raise on mismatch.
 
     Checks (first mismatch reported): sampler class; the run-shaping scalars
-    ``ndim``, ``ntemps``, ``swap_steps``, ``cov_update``, ``save_freq`` and
-    ``buffer_size``; and — per chain — the ordered proposal names and their
-    weights. This is the guardrail behind the reconstruct-then-restore
-    contract: callables are not serialized, so the caller must rebuild the
-    sampler exactly as the original run did.
+    ``ndim``, ``ntemps``, ``swap_steps``, ``cov_update``, ``save_freq``,
+    ``buffer_size`` and ``buffer_thin``; the on-disk ``chain_format``; and —
+    per chain — the ordered proposal names and their weights. This is the
+    guardrail behind the reconstruct-then-restore contract: callables are not
+    serialized, so the caller must rebuild the sampler exactly as the original
+    run did.
 
     Every scalar checked here is one that :meth:`_capture_checkpoint_state`
     already writes. They are verified rather than silently accepted because a
@@ -318,6 +319,19 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
                 f"reconstructed sampler has {actual_ta}; rebuild with "
                 f"target_accept={expected_ta} to resume this run, or start a "
                 "fresh run (resume=False, or a new outdir) to change it."
+            )
+    if meta.get("chain_format") is not None:
+        expected_cf = str(meta["chain_format"])
+        actual_cf = str(getattr(sampler, "chain_format", expected_cf))
+        if expected_cf != actual_cf:
+            raise CheckpointMismatchError(
+                f"chain_format mismatch: checkpoint has {expected_cf!r} but the "
+                f"reconstructed sampler has {actual_cf!r}. The encoding lives in "
+                "the chain files on disk, not in the checkpoint, so resuming into "
+                "the other one writes a SECOND set of files in the new encoding "
+                "and leaves load_chain() returning only the original half. "
+                f"Rebuild with chain_format={expected_cf!r} to resume this run, or "
+                "start a fresh run (resume=False, or a new outdir) to change it."
             )
     if meta.get("mass_matrix_type") is not None:
         expected_mm = str(meta["mass_matrix_type"])

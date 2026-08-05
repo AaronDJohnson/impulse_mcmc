@@ -128,7 +128,9 @@ cache is reused instead of recompiling.
   iteration counter reaches `num_adapt`. The transition kernel is fixed from then
   on, so post-freeze samples are exactly Markovian. Recommended usage: set
   `num_adapt` to your intended warmup length and discard all pre-freeze samples as
-  warmup. The default `None` adapts forever (diminishing adaptation).
+  warmup. The default `None` adapts for the whole run — see
+  [Adaptation and ergodicity](#adaptation-and-ergodicity) for what that does and
+  does not guarantee.
 
 ```python
 sampler = PTSampler(
@@ -141,6 +143,44 @@ sampler = PTSampler(
 )
 sampler.sample(np.zeros(2), num_iterations=8000)  # discard the first 5000 as warmup
 ```
+
+### Adaptation and ergodicity
+
+The AM/SCAM covariance and the DE difference vectors are estimated from a
+**finite** history buffer: `buffer_size` rows, one retained per `buffer_thin`
+iterations, spanning the most recent
+
+```
+buffer_size × buffer_thin  =  2000 × 25  =  50,000 iterations
+```
+
+at the defaults. Older rows are evicted and stop contributing — the moments are
+recomputed from the buffer each time, not accumulated over the whole run.
+
+This is deliberate. A full-history estimator keeps burn-in forever at weight
+`1/n`; the finite window throws it away, so the proposal stays matched to the
+geometry the chain currently occupies. On a run started far from the mode, the
+windowed covariance is accurate while the full-chain covariance is still visibly
+inflated by the approach.
+
+The trade-off is theoretical. Once the buffer starts evicting, the kernel keeps
+changing by a non-vanishing amount, so the **diminishing-adaptation** condition
+of Roberts & Rosenthal (2007) is not satisfied and their ergodicity theorem does
+not apply. Below `buffer_size × buffer_thin` iterations the window is still
+growing and the condition does hold.
+
+In practice this has not been observed to bias results: on a unit Gaussian and on
+an equal-weight bimodal target, both analysed strictly after eviction begins,
+adapt-forever matched its `num_adapt`-frozen twin to within Monte Carlo error
+(posterior width within 0.1%, mode weights 0.499 vs 0.500). Adapting for the
+whole run is the default and is a reasonable choice.
+
+When you need a chain that is exactly Markovian by construction rather than by
+that argument — a formal convergence claim, or a target where the window may
+"forget" a mode it has not visited in 50,000 iterations — set `num_adapt` and
+discard the pre-freeze samples. Raising `buffer_thin` so the window never evicts
+also restores the condition, but at the cost of readmitting burn-in and delaying
+DE activation, so `num_adapt` is usually the better trade.
 
 ## Product-space model selection
 

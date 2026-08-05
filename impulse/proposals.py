@@ -533,9 +533,28 @@ def de(chain_stats: ChainStats, min_fill: int = DE_MIN_FILL) -> tuple[np.ndarray
     ``ChainStats.update_sample``), so ``nmodel`` is never touched and the
     trans-dimensional birth/death kernel's exactness is unaffected.
 
-    Using the chain's own history makes this an adaptive proposal; the
-    buffer update cadence satisfies diminishing adaptation in the usual
-    way.
+    Using the chain's own history makes this an adaptive proposal.  The
+    history buffer is deliberately FINITE: it holds ``buffer_size`` rows,
+    one retained per ``buffer_thin`` iterations, so it spans the most
+    recent ``buffer_size * buffer_thin`` iterations (50,000 at the
+    defaults).  Rows older than that are evicted and stop contributing --
+    ``ChainStats.recursive_update`` recomputes the moments from the buffer
+    rather than accumulating over all history, so the estimate is a
+    function of the current window alone.
+
+    That is the intended design: the difference vectors track the geometry
+    the chain currently occupies instead of averaging in burn-in it has
+    long left behind.  The cost is that the adaptation does NOT vanish --
+    once the buffer starts evicting, the kernel keeps changing by a
+    non-vanishing amount, so the diminishing-adaptation condition of
+    Roberts & Rosenthal (2007) is not satisfied and their ergodicity
+    argument does not apply.  Below ``buffer_size * buffer_thin``
+    iterations the window is still growing and the condition does hold.
+
+    For a chain that is exactly Markovian by construction rather than by
+    that argument, set the samplers' ``num_adapt``: it freezes the buffer
+    (and every other adaptive component), after which the transition
+    kernel is fixed.  Discard the pre-freeze samples as warmup.
     """
     rng = chain_stats.rng
     # ChainStats.__post_init__ / update_sample guarantee these are set

@@ -869,7 +869,10 @@ class TestNumAdapt:
         ``adapt_ladder`` call.
         """
         cov_calls, ladder_calls = [], []
-        orig_update = sampler.multi_chain_stats.recursive_update
+        # Patch the PRIMARY name. `recursive_update` is only an alias, and the
+        # sampler calls `update_from_window`, so patching the alias on the
+        # instance would silently never fire.
+        orig_update = sampler.multi_chain_stats.update_from_window
 
         def spy_update(new_samples):
             orig_update(new_samples)
@@ -883,7 +886,7 @@ class TestNumAdapt:
                 )
             )
 
-        sampler.multi_chain_stats.recursive_update = spy_update
+        sampler.multi_chain_stats.update_from_window = spy_update
         orig_adapt = sampler.ptstate.adapt_ladder
 
         def spy_adapt():

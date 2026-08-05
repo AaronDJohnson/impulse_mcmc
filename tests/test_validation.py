@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -299,3 +300,137 @@ print(impulse.__version__)
         )
         assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         assert result.stdout.strip() == impulse.__version__
+
+
+# ---------------------------------------------------------------------------
+# Plotting helpers
+#
+# These three are part of the supported API and are rendered in the docs, but
+# until now the ONLY test that named them asserted they raise without
+# matplotlib -- their bodies never executed in any CI job. These exercise the
+# real drawing path (Agg backend, no display required).
+# ---------------------------------------------------------------------------
+
+# Guarded import, NOT pytest.importorskip: importorskip at module scope raises
+# Skipped for the WHOLE file, which would silently skip the numeric SBC tests
+# above wherever matplotlib is absent (the floor-versions CI job, any bare
+# install). Only the plotting class depends on it.
+try:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    HAS_MPL = True
+except ImportError:  # pragma: no cover - exercised only without the extra
+    HAS_MPL = False
+
+
+@pytest.mark.skipif(
+    not HAS_MPL, reason="matplotlib not installed (pip install impulse-mcmc[plots])"
+)
+class TestPlottingHelpers:
+    """Each helper must draw without raising and return usable axes."""
+
+    @pytest.fixture(autouse=True)
+    def _close_figures(self):
+        yield
+        plt.close("all")
+
+    @staticmethod
+    def _quantiles(rng, n=200, d=1):
+        return rng.uniform(size=n) if d == 1 else rng.uniform(size=(n, d))
+
+    def test_sbc_ecdf_plot_1d_returns_axes(self):
+        rng = np.random.default_rng(0)
+        ax = impulse.sbc_ecdf_plot(self._quantiles(rng))
+        assert isinstance(ax, matplotlib.axes.Axes)
+        # DKW band + diagonal + one step per parameter
+        assert len(ax.lines) >= 2
+        assert ax.get_xlim() == (0.0, 1.0)
+        plt.close(ax.figure)
+
+    def test_sbc_ecdf_plot_2d_labels_every_parameter(self):
+        rng = np.random.default_rng(1)
+        ax = impulse.sbc_ecdf_plot(self._quantiles(rng, d=3))
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert "param 0" in labels and "param 2" in labels
+        plt.close(ax.figure)
+
+    def test_sbc_ecdf_plot_honours_param_names(self):
+        rng = np.random.default_rng(2)
+        ax = impulse.sbc_ecdf_plot(self._quantiles(rng, d=2), param_names=["alpha", "beta"])
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert "alpha" in labels and "beta" in labels
+        plt.close(ax.figure)
+
+    def test_sbc_ecdf_plot_draws_on_supplied_axes(self):
+        rng = np.random.default_rng(3)
+        fig, ax = plt.subplots()
+        out = impulse.sbc_ecdf_plot(self._quantiles(rng), ax=ax)
+        assert out is ax
+        plt.close(fig)
+
+    def test_coverage_plot_returns_axes(self):
+        rng = np.random.default_rng(4)
+        ax = impulse.coverage_plot(self._quantiles(rng))
+        assert isinstance(ax, matplotlib.axes.Axes)
+        plt.close(ax.figure)
+
+    def test_coverage_plot_honours_param_names(self):
+        rng = np.random.default_rng(5)
+        ax = impulse.coverage_plot(self._quantiles(rng, d=2), param_names=["alpha", "beta"])
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        assert "alpha" in labels and "beta" in labels
+        plt.close(ax.figure)
+
+    def test_coverage_plot_recovers_nominal_coverage_for_uniform_ranks(self):
+        # Uniform quantiles => actual coverage tracks the nominal diagonal.
+        rng = np.random.default_rng(6)
+        q = rng.uniform(size=20_000)
+        levels = np.array([0.2, 0.5, 0.8])
+        ax = impulse.coverage_plot(q, nominal_levels=levels)
+        drawn = ax.lines[1].get_ydata()  # lines[0] is the diagonal reference
+        assert np.allclose(drawn, levels, atol=0.02), drawn
+        plt.close(ax.figure)
+
+    def test_rank_histogram_returns_one_axes_per_parameter(self):
+        rng = np.random.default_rng(7)
+        axes = impulse.rank_histogram(rng.integers(0, 21, size=(200, 3)), 20)
+        assert len(axes) == 3
+        plt.close(axes[0].figure)
+
+    def test_rank_histogram_honours_param_names(self):
+        rng = np.random.default_rng(8)
+        axes = impulse.rank_histogram(
+            rng.integers(0, 21, size=(50, 2)), 20, param_names=["alpha", "beta"]
+        )
+        assert [a.get_title() for a in axes] == ["alpha", "beta"]
+        plt.close(axes[0].figure)
+
+    def test_rank_histogram_1d_input_is_promoted(self):
+        rng = np.random.default_rng(9)
+        axes = impulse.rank_histogram(rng.integers(0, 21, size=100), 20)
+        assert len(axes) == 1
+        plt.close(axes[0].figure)
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(lambda: impulse.sbc_ecdf_plot(np.array([])), id="ecdf-empty"),
+            pytest.param(lambda: impulse.coverage_plot(np.array([])), id="coverage-empty"),
+            pytest.param(
+                lambda: impulse.rank_histogram(np.array([], dtype=int), 20), id="rank-empty"
+            ),
+            pytest.param(lambda: impulse.sbc_ecdf_plot(np.array([0.5])), id="ecdf-single"),
+            pytest.param(lambda: impulse.coverage_plot(np.array([0.5])), id="coverage-single"),
+            pytest.param(lambda: impulse.rank_histogram(np.array([0, 1, 0]), 1), id="rank-one-bin"),
+        ],
+    )
+    def test_degenerate_input_neither_raises_nor_warns(self, call):
+        """Empty/singleton input must not raise, and must not emit numpy
+        divide-by-zero or mean-of-empty-slice RuntimeWarnings."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            call()
+        plt.close("all")
