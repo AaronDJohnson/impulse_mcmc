@@ -55,7 +55,7 @@ qxy = log[q(x|y) / q(y|x)] = log(y_i) - log(x_i) = eps
 ```
 
 Forgetting the Jacobian (returning `qxy = 0`) would bias the chain toward
-small values. As a picklable callable class:
+small values. As a callable class:
 
 ```python
 import numpy as np
@@ -124,8 +124,7 @@ format stores no code at all (see {doc}`checkpointing`); resume works by
 ```{note}
 Versions before 2.0.0 pickled the whole sampler, so proposals had to be
 picklable and lambdas genuinely broke the first checkpoint write. That
-restriction is gone with the `.npz` + `.json` format. Pickle checkpoints are
-still readable but deprecated; see {doc}`checkpointing`.
+restriction is gone with the `.npz` + `.json` format; see {doc}`checkpointing`.
 ```
 
 ## Adaptive custom proposals
@@ -170,11 +169,29 @@ freeze. The freeze should be idempotent, and the frozen flag should be part of
 the state returned by `get_checkpoint_state()` — a frozen proposal must stay
 frozen across checkpoint/resume.
 
-## Trans-dimensional proposals
+## The normalizing-flow proposal
 
-Custom moves that change the model index of a product-space model-selection run must
-supply exact Hastings terms, including the probability of *selecting* the
-forward and reverse moves. This is why birth and death ship as one
-combined kernel ({meth}`~impulse.BirthDeathProductSpace.get_birth_death_proposal`)
-rather than two registrable pieces — read {doc}`model-selection` before writing
-your own.
+{class}`~impulse.NormalizingFlowProposal` is a built-in adaptive proposal of
+exactly this kind. It needs the optional `coppuccino` package
+(`pip install "impulse-mcmc[flow]"`, Python 3.11+). It fits a normalizing
+flow to the cold chain's history buffer once the buffer holds `min_samples`
+rows, refits every `refit_interval` cold-chain calls, and uses the flow as an
+independence proposal on every chain. Until the first fit it returns the
+current position unchanged, so register it alongside the default proposals:
+
+```python
+from impulse import NormalizingFlowProposal
+
+sampler.add_custom_jump(NormalizingFlowProposal(min_samples=1000), weight=10)
+```
+
+`min_samples` counts buffer *rows*, and the buffer keeps one row every
+`buffer_thin` iterations (default 25): the first fit above happens after about
+25,000 iterations, and a `min_samples` larger than `buffer_size` never fits.
+Pass `buffer_thin=1` to the sampler for short runs.
+
+Pass `flow=` a pre-fitted `coppuccino` flow to skip fitting entirely. The
+flow object itself is not stored in the checkpoint. After a resume, an
+adaptive proposal refits on its next cold-chain call; one built with `flow=`,
+or already frozen by `num_adapt`, has no flow until you call `set_flow(flow)`
+again, and until then returns the current position unchanged.

@@ -12,8 +12,7 @@ pip install impulse-mcmc
 Optional extras:
 
 ```bash
-pip install "impulse-mcmc[plots]"   # matplotlib, for the SBC plotting helpers
-pip install "impulse-mcmc[flow]"    # coppuccino, for normalizing-flow proposals
+pip install "impulse-mcmc[flow]"    # coppuccino, for normalizing-flow proposals (Python 3.11+)
 pip install "impulse-mcmc[dev]"     # pytest, black, isort, ... for development
 ```
 
@@ -95,7 +94,7 @@ Key points:
   other chains sample tempered versions of it and exist to improve mixing.
 - `chain` also carries `"lnlike"`, `"lnprob"`, `"accepted"`, and
   `"temperature"` arrays of shape `(ntemps, nsamples)`.
-- Chains are streamed to `<outdir>/chain_<i>.txt` during the run, and a
+- Chains are streamed to `<outdir>/chain_<i>.bin` (or `.txt`) during the run, and a
   checkpoint is written to `<outdir>/sampler_checkpoint.npz` plus
   `<outdir>/sampler_checkpoint.json` every `save_freq` iterations. Loading one
   executes no code (see {doc}`checkpointing`).
@@ -158,8 +157,5 @@ out-of-prior rows can genuinely be skipped.
 
 - {doc}`parallel-tempering` — the temperature ladder, adaptive proposals,
   and when to freeze adaptation.
-- {doc}`model-selection` — trans-dimensional sampling and model selection.
-- {doc}`nuts` — gradient-based sampling with `NUTSSampler` and
-  `HybridPTSampler`.
 - {doc}`checkpointing` — resuming long runs bit-exactly.
 - {doc}`custom-proposals` — registering your own proposal distributions.

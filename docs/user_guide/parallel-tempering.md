@@ -95,14 +95,13 @@ Each chain draws its Metropolis-Hastings move from a weighted mixture:
 | `scam`   | `scam_weight=30` | Single-Component AM: jump along one eigendirection of the covariance. |
 | `de`     | `de_weight=50` | Differential evolution: difference of two random history samples; excellent along ridges and between modes. |
 
-All three adapt: AM/SCAM from the recursively updated sample covariance
-(refreshed every `cov_update` iterations), DE from a rolling history buffer
-(`buffer_size`, default 50 000). `de` is min-fill-gated: the difference move
-activates once the history buffer holds `min_fill` samples (default 100;
-configurable via the sampler's `de_min_fill` argument), and before that the
-proposal returns the current position unchanged. `EarlyDE` /
-`make_early_de` are backward-compatibility aliases for the same
-implementation (see {doc}`model-selection`).
+All three adapt from the same per-chain history buffer: `buffer_size` rows
+(default 2 000), one retained every `buffer_thin` iterations (default 25).
+AM/SCAM use the buffer's covariance, recomputed every `cov_update` iterations;
+DE takes differences of two buffer rows. `de` is min-fill-gated: the
+difference move activates once the buffer holds `de_min_fill` rows (default
+100, so about 2 500 iterations at the default thinning), and before that the
+proposal returns the current position unchanged.
 
 Weights are relative, not percentages:
 
@@ -154,8 +153,8 @@ The AM/SCAM covariance and the DE difference vectors come from a **finite**
 history buffer: `buffer_size` rows, one retained per `buffer_thin` iterations,
 spanning the most recent `buffer_size * buffer_thin` iterations — 50,000 at the
 defaults. Older rows are evicted and stop contributing;
-`ChainStats.recursive_update` recomputes the moments from the buffer rather than
-accumulating over all history.
+`ChainStats.update_from_window` recomputes the moments from the buffer rather
+than accumulating over all history.
 
 That is intentional. A full-history estimator carries burn-in forever at weight
 `1/n`, while the finite window discards it and keeps the proposal matched to the

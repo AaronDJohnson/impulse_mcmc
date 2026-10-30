@@ -1,11 +1,10 @@
 # Checkpointing and resuming
 
-Long runs should never be lost to a wall-clock limit or a crash. Every sampler
-— `PTSampler`, `NUTSSampler`, and the experimental `HybridPTSampler` —
-checkpoints alongside its chain files and resumes from the checkpoint
-**bit-exactly**.
+Long runs should never be lost to a wall-clock limit or a crash.
+`PTSampler` checkpoints alongside its chain files and resumes from the
+checkpoint **bit-exactly**.
 
-The default checkpoint format is a **no-code-execution** pair of files —
+The checkpoint is a **no-code-execution** pair of files —
 `sampler_checkpoint.npz` (array state) and `sampler_checkpoint.json`
 (metadata) — so loading a checkpoint is as safe as reading a data file (see
 [Loading is safe](#loading-is-safe-the-no-code-execution-format) below).
@@ -50,63 +49,58 @@ The semantics to remember:
   `jj > 0 and jj % save_freq == 0`, capturing the sampler after that
   iteration fully completed (post PT-swap, post adaptation), including
   every RNG stream.
-- `resume=True` with no checkpoint present simply starts fresh — so the
-  same script works for both the first submission and every requeue.
+- `resume=True` with no checkpoint and empty chain files simply starts
+  fresh — so the same script works for both the first submission and every
+  requeue. `resume=True` with **no** usable checkpoint but chain files that
+  already hold data raises `RuntimeError` instead of appending a cold-start
+  run onto the existing chain.
 
 ## The resume contract: reconstruct, then restore
 
 The checkpoint does **not** contain your likelihood, prior, or any proposal
-code — callables cannot be stored in a data file, and the product space and
-custom proposals are code. Resume therefore works in two steps:
+code — callables cannot be stored in a data file. Resume therefore works in
+two steps:
 
 1. **Reconstruct** the sampler exactly as the original run did — the same
-   constructor arguments, the same product-space construction, and the same
-   `add_custom_jump` registrations, in the same order.
+   constructor arguments and the same `add_custom_jump` registrations, in the
+   same order.
 2. **Restore** the saved state into that reconstructed sampler (`resume=True`
    does this for you).
 
 Before restoring, the loader **verifies** the reconstruction matches the
 checkpoint metadata — sampler class; the run-shaping scalars `ndim`, `ntemps`,
-`swap_steps`, `cov_update`, `save_freq`, `buffer_size` and `buffer_thin`; and the ordered
-proposal names *and* weights on every chain. If anything differs it raises a
-clear error naming the first mismatch (e.g. a missing custom jump, a changed
-weight, or a changed `save_freq`), rather than silently restoring into the wrong
-sampler:
+`swap_steps`, `cov_update`, `save_freq`, `buffer_size` and `buffer_thin`;
+`chain_format`; and the ordered proposal names *and* weights on every chain.
+If anything differs it raises `CheckpointMismatchError` naming the first
+mismatch (a missing custom jump, a changed weight, a changed `save_freq`),
+rather than silently restoring into the wrong sampler:
 
 ```python
-import numpy as np
-from impulse.experimental import BirthDeathProductSpace, HybridPTSampler
+from impulse import CheckpointMismatchError
 
-NUM_PARAMS, NUM_SOURCES = 2, 3
-LO, HI = np.array([0.0, 0.0]), np.array([5.0, 3.0])
-data = np.zeros(32)
+class StepJump:
+    __name__ = "step_jump"
 
-def loglike(params):
-    return -0.5 * float(np.sum(data**2))
+    def __call__(self, chain_stats):
+        x = chain_stats.current_sample.copy()
+        x += chain_stats.rng.normal(0.0, 0.5, size=x.shape)
+        return x, 0.0
 
-def logprior(params):
-    p = np.asarray(params).reshape(-1, NUM_PARAMS)
-    return 0.0 if np.all((p >= LO) & (p <= HI)) else -np.inf
+def make_custom_sampler(weight):
+    sampler = PTSampler(ndim=2, lnlike=log_likelihood, lnprior=log_prior,
+                        ntemps=4, seed=1, outdir="./chains_custom_resume",
+                        resume=True)
+    sampler.add_custom_jump(StepJump(), weight)   # same jump, same order
+    return sampler
 
-def draw(rng):
-    return rng.uniform(LO, HI)
+make_custom_sampler(10).sample(np.zeros(2), num_iterations=2_000)   # first run
+make_custom_sampler(10).sample(np.zeros(2), num_iterations=4_000)   # resume
 
-space = BirthDeathProductSpace(loglike, logprior, num_sources=NUM_SOURCES,
-                               num_params=NUM_PARAMS, source_prior_draw=draw)
-
-def make_rj_sampler():
-    # Same space, same weights, and the same custom jumps as the original run:
-    return HybridPTSampler.from_product_space(space, ntemps=8, seed=1,
-                                              outdir="./chains_rj", resume=True)
-
-x0 = space.draw_initial_position(np.random.default_rng(1))
-make_rj_sampler().sample(x0, num_iterations=2_000)   # first run
-make_rj_sampler().sample(x0, num_iterations=4_000)   # resume — same wiring
+try:
+    make_custom_sampler(20).sample(np.zeros(2), num_iterations=6_000)
+except CheckpointMismatchError as err:
+    print(err)   # names 'step_jump' and both weights
 ```
-
-This is how resume always worked in practice — the pickle format stored
-functions *by reference*, so you always needed the same importable
-definitions. The new format just makes the requirement explicit and checked.
 
 ## The bit-exact guarantee
 
@@ -115,7 +109,7 @@ total iterations produces chain files *bit-identical* to a single
 uninterrupted `N`-iteration run. On resume the chain files are truncated back
 to the checkpointed row count and every subsequent iteration is regenerated
 from the checkpointed RNG streams. This is enforced by the test suite
-(`tests/test_reproducibility.py`) — the format swap is invisible to it.
+(`tests/test_reproducibility.py`).
 
 Bit-exactness holds because the JSON sidecar stores every generator's
 `bit_generator.state` (exact integers) and the `.npz` stores all floating-point
@@ -139,11 +133,11 @@ Boundary conditions — the guarantee holds only if:
 The checkpoint is two files in `outdir`:
 
 - `sampler_checkpoint.npz` — all array state (positions, log-densities, the
-  temperature ladder, per-chain and per-model adaptive statistics, DE history
-  buffers, NUTS mass matrices and sample buffers), written with
-  `numpy.savez`. It is deliberately UNCOMPRESSED: compression measured 80x
-  slower on a realistic payload and made checkpoint writes ~41% of wall
-  time, so the files are larger but the writes are cheap.
+  temperature ladder, per-chain adaptive statistics, DE history buffers, and
+  the in-memory chain buffer), written with `numpy.savez`. It is deliberately
+  UNCOMPRESSED: compression measured 80x slower on a realistic payload and
+  made checkpoint writes ~41% of wall time, so the files are larger but the
+  writes are cheap.
 - `sampler_checkpoint.json` — a schema-versioned metadata sidecar: the
   `schema_version`, the impulse version, the sampler class and constructor
   echo, every RNG bit-generator state, the ordered proposal names and weights,
@@ -153,11 +147,13 @@ Loading uses `numpy.load(..., allow_pickle=False)` and `json.load` — **no
 pickle is involved**, so a tampered or corrupted checkpoint cannot execute
 code. The worst a bad checkpoint can do is fail to load. This matters because
 `resume=True` auto-loads from `outdir`, which is often shared cluster scratch;
-with the new format that auto-load is as safe as reading a data file.
+that auto-load is as safe as reading a data file.
 
 The two files are written atomically: both go to temp files and are renamed
-into place with the JSON sidecar committed **last**, so an interrupted write
-(a `.npz` with no `.json`) is detected as torn and ignored on the next resume.
+into place with the JSON sidecar committed **last**. Each write stamps both
+files with the same token, so a crash between the two renames (a fresh `.npz`
+beside a stale `.json`) is detected as torn and the checkpoint is ignored on
+the next resume.
 
 ## Schema versioning and compatibility
 
@@ -170,40 +166,10 @@ because resume is reconstruct-then-restore, a refactor of constructor wiring
 or of a component's serialized state can break old checkpoints, so don't rely
 on resuming a long run across an upgrade.
 
-## Legacy pickle checkpoints
-
-Older checkpoints are a single `sampler_checkpoint.pkl` — a Python pickle of
-the whole sampler. **Unpickling can execute arbitrary code.** `resume=True`
-falls back to a `.pkl` only when no new-format checkpoint is present, and
-`load_checkpoint` / `load_hybrid_checkpoint` / `load_nuts_checkpoint` emit a loud
-security/deprecation warning when they read one:
-
-- Only resume from pickle checkpoints you (or a pipeline you trust) wrote.
-- Keep `outdir` somewhere only you can write. A run resumed from a `.pkl`
-  keeps writing `.pkl` for the rest of that run; to move fully to the new
-  format, start a fresh run (`resume=False`, or a new `outdir`).
-- `NUTSSampler` used to checkpoint via pickle. It now writes the same
-  `.npz` + `.json` format as the PT samplers, so nothing in the package
-  writes pickles any more. Pre-2.0 NUTS pickles cannot be resumed from —
-  they were written but never read back, so they record neither the
-  iteration count nor the flushed-row count a resume needs, and
-  `resume=True` reports that rather than guessing.
-
-The pickle format is deprecated and slated for removal in a future 2.x
-release. See the project's
-[security policy](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/SECURITY.md)
-for the full trust boundary.
-
-### Legacy birth-death checkpoints (pre-2.0 detailed-balance fix)
-
-Birth-death *pickle* checkpoints written before the 2.0 detailed-balance
-fix registered birth and death as two separate constant-weight jumps — wiring
-that biases the model posterior toward fewer sources. On resume from such a
-pickle, impulse-mcmc detects this and either **migrates** it automatically to
-the combined `birth_death` kernel (with a `UserWarning` telling you that
-*pre-resume* samples remain biased and should be discarded) or, when it cannot
-migrate safely, warns loudly and leaves the checkpoint untouched — in which
-case start a fresh run for correct model posteriors.
+Pickle checkpoints (`sampler_checkpoint.pkl`, written by older versions) are
+neither written nor read. If `resume=True` finds one
+next to existing chain data, the `RuntimeError` above says so; finish that run
+with the version that wrote it.
 
 ## Manual load (advanced)
 
@@ -212,19 +178,16 @@ truncation for you, and is the recommended path. If you need the pieces
 directly:
 
 ```python
-from impulse.resume import restore_state_checkpoint, check_for_checkpoint
+from impulse import check_for_checkpoint, restore_state_checkpoint
 
-path = check_for_checkpoint("./chains_resume")   # None if no checkpoint
-if path is not None and path.endswith(".json"):
-    sampler = make_sampler()          # reconstruct with the SAME wiring
-    restore_state_checkpoint(sampler, path)   # verifies + restores in place
+path = check_for_checkpoint("./chains_resume")   # None if no usable checkpoint
+if path is not None:
+    sampler = make_sampler()                     # reconstruct with the SAME wiring
+    restore_state_checkpoint(sampler, path)      # verifies + restores in place
     print("checkpointed iteration:", sampler.short_chain.iteration)
 ```
 
 `restore_state_checkpoint` verifies the reconstructed sampler against the
-metadata (raising `impulse.resume.CheckpointMismatchError` on a mismatch) and
-restores state into it. The legacy pickle loaders
-(`load_checkpoint` / `load_hybrid_checkpoint` / `load_nuts_checkpoint`) return
-the restored sampler object directly and rebind the stripped callables, but
-they unpickle — only use them on checkpoints you trust.
-```
+metadata (raising `CheckpointMismatchError` on a mismatch) and restores state
+into it. It does not truncate the chain files; `resume=True` does that before
+sampling continues.

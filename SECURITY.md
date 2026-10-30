@@ -7,8 +7,8 @@ pre-rewrite package and is unsupported.
 
 ## Checkpoints: the default format executes no code on load
 
-`PTSampler` and `HybridPTSampler` checkpoint to a **no-code-execution format** by
-default: `sampler_checkpoint.npz` (array state) plus `sampler_checkpoint.json`
+`PTSampler` checkpoints to a **no-code-execution format**:
+`sampler_checkpoint.npz` (array state) plus `sampler_checkpoint.json`
 (metadata). Loading uses `numpy.load(..., allow_pickle=False)` and
 `json.load` (`impulse/resume.py`), so **loading a checkpoint is as safe as
 reading a data file** — a tampered checkpoint cannot execute code. The most a
@@ -20,33 +20,15 @@ The format carries an explicit `schema_version` (in the JSON sidecar). The
 loader accepts the current schema and refuses a newer one with a clear error,
 rather than misreading it.
 
-## Legacy pickle checkpoints — treat them as executable code
+## Pickle checkpoints are not loaded
 
-Older checkpoints (`sampler_checkpoint.pkl`) are Python pickles of whole
-sampler objects. **Unpickling a file can execute arbitrary code**, so loading
-a legacy pickle checkpoint is equivalent to running a script from the same
-source. This trust boundary applies **only** to the legacy pickle format:
-
-- Only resume from pickle checkpoints that you, or a pipeline you trust, wrote.
-- `resume=True` falls back to `sampler_checkpoint.pkl` **only** when no
-  new-format checkpoint is present, and emits a loud security/deprecation
-  warning when it does. If `outdir` is on shared or world-writable storage
-  (cluster scratch, group project space) and holds a pickle checkpoint,
-  anyone who can write there can run code as you on your next resume. Keep
-  `outdir` somewhere only you (or your pipeline) can write. To move off the
-  pickle format, start a fresh run (`resume=False`, or a new `outdir`): a run
-  resumed from a `.pkl` keeps writing `.pkl` for the rest of that run.
-- Nothing in the package **writes** pickle checkpoints any more:
-  `NUTSSampler` was the last one and now writes the `.npz` + `.json` format
-  like the PT samplers. The pickle readers are retained only so existing
-  checkpoints stay loadable, and the caution above applies to those.
-- Never load pickle checkpoints downloaded from the internet or attached to
-  bug reports.
-
-This is inherent to the pickle format, not a bug; a maliciously crafted pickle
-checkpoint is out of scope as a vulnerability, but sandbox escapes or code
-execution that does *not* require loading untrusted input are in scope. The
-pickle format is deprecated and slated for removal in a future 2.x release.
+Older versions wrote `sampler_checkpoint.pkl`, a Python pickle of the whole
+sampler. Unpickling can execute arbitrary code, so 2.0.0 neither writes nor
+reads pickle checkpoints: `resume=True` ignores a `.pkl` file. (With no usable
+checkpoint beside existing chain data it raises, and the message points out the
+pickle so you can finish that run with the version that wrote it.) Never
+unpickle checkpoint files downloaded from the internet or attached to bug
+reports.
 
 ## Reporting a vulnerability
 

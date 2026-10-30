@@ -5,8 +5,7 @@ import numpy as np
 import pytest
 
 from impulse.proposals import ProposalBundle
-from impulse.sampler_state import PTState, SamplerState
-from impulse.sampler_step import pt_step, vectorized_mh_step
+from impulse.samplers import PTState, SamplerState, pt_step, vectorized_mh_step
 
 
 class TestVectorizedMhStep:
@@ -382,3 +381,51 @@ class TestPtStep:
         # Should have some swaps due to large temperature difference
         # This is probabilistic, but with large temp difference should see some swaps
         assert ptstate.nswaps > 100  # Should have attempted swaps
+
+
+class TestStepRegressions:
+    def test_vectorized_functions_always_get_the_full_batch(self, tmp_path):
+        """Chains whose proposal did not move are still evaluated, in one ntemps-row batch."""
+        from impulse import PTSampler
+
+        sizes = {"like": [], "prior": []}
+
+        def lnlike(X):
+            sizes["like"].append(len(X))
+            return -0.5 * np.sum(X**2, axis=1)
+
+        def lnprior(X):
+            sizes["prior"].append(len(X))
+            return np.zeros(len(X))
+
+        # am moves; the DE move is gated (buffer far below min_fill) and returns
+        # the current point, so roughly half the rows are unmoved each step.
+        sampler = PTSampler(
+            2,
+            lnlike,
+            lnprior,
+            ntemps=4,
+            seed=0,
+            outdir=str(tmp_path),
+            vectorized=True,
+            verbose=False,
+            am_weight=1,
+            scam_weight=0,
+            de_weight=1,
+        )
+        n = 50
+        sampler.sample(np.zeros(2), n)
+        for key in ("like", "prior"):
+            assert sizes[key] == [4] * (n + 1), key
+
+    def test_zero_uniform_draw_accepts_the_swap(self, sample_state_2d, ptstate_2d):
+        """log(0) must be -inf (always accept), not a ValueError."""
+
+        class _ZeroRNG:
+            def random(self, size=None):
+                return np.zeros(size)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            pt_step(sample_state_2d, ptstate_2d, _ZeroRNG())
+        np.testing.assert_array_equal(ptstate_2d.swap_accept, [1, 1])

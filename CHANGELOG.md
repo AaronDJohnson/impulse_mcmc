@@ -5,19 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2026-07-26
+## [2.0.0] - Unreleased
 
 Version 1.0.0 on PyPI is the pre-rewrite package (the old `base.py` /
 `mhsampler.py` / `ptsampler.py` API, since removed). 2.0.0 is a complete
 rewrite and shares no API with it.
 
+2.0.0 ships one sampler, `PTSampler`. The development builds on the `v2`
+branch also carried NUTS, product-space model selection and SBC validation
+tools; those are not part of this release (see *Removed*). Entries below that
+compare against "earlier 2.0.0-dev builds" matter only if you ran that branch.
+
 ### Breaking Changes
 
 - **Chain files are now raw binary by default.** Each temperature writes
   `chain_<i>.bin` — fixed-width `float64`, `ndim + 4` values per row, no
-  header or delimiters — instead of `chain_<i>.txt`. `NUTSSampler` likewise
-  writes `chain_nuts.bin`. Decimal formatting was ~18% of wall time on a
-  21-temperature run; the binary files are also ~3x smaller.
+  header or delimiters — instead of `chain_<i>.txt`. Decimal formatting was
+  ~18% of wall time on a 21-temperature run; the binary files are also ~3x
+  smaller.
 
   `load_chain()` detects and reads either encoding, so code that goes through
   it is unaffected. Code that reads the files directly must change:
@@ -27,50 +32,18 @@ rewrite and shares no API with it.
   data = np.fromfile("chains/chain_0.bin").reshape(-1, ndim + 4)   # after
   ```
 
-  Pass `chain_format="text"` to any sampler to keep the previous files. Both
-  encodings store identical values (`%.18e` round-trips a `float64` exactly),
-  so this is purely a speed/size/readability trade.
+  Pass `chain_format="text"` to keep the previous files. Both encodings store
+  identical values (`%.18e` round-trips a `float64` exactly), so this is purely
+  a speed/size/readability trade.
 
 - Complete rewrite of the 1.0.0 API: the old `base.py`, `mhsampler.py`, and
   `ptsampler.py` modules are removed. The package is now organized around
-  `PTSampler` and `NUTSSampler` with adaptive proposals, checkpoint/resume, and
-  SBC validation utilities.
-- **The hybrid sampler and product-space model selection moved to
-  `impulse.experimental`.** The supported surface is now `PTSampler` and
-  `NUTSSampler`; everything trans-dimensional is versioned separately and is
-  NOT covered by the 2.x API stability policy. This is a hard break with no
-  compatibility aliases — the old top-level imports raise `ImportError`:
-
-  | Removed | Replacement |
-  |---|---|
-  | `from impulse import HybridPTSampler` | `from impulse.experimental import HybridPTSampler` |
-  | `from impulse import BirthDeathProductSpace` | `from impulse.experimental import BirthDeathProductSpace` |
-  | `from impulse import load_hybrid_checkpoint` | `from impulse.experimental import load_hybrid_checkpoint` |
-  | `impulse.birth_death` / `impulse.birth_death_proposals` / `impulse.hybrid_sampler` | `impulse.experimental.*` |
-  | `PTSampler.from_product_space(space, ...)` | `make_product_space_sampler(space, ...)` |
-
-  `HybridPTSampler.from_product_space` is unchanged — it now lives in
-  experimental alongside the class. `NestedProductSpace`, `NUTSSampler` and the
-  normalizing-flow proposals stay in the supported core.
-
-  The motivation is honesty about maturity rather than any defect: the
-  trans-dimensional kernel is proven exact by finite-state enumeration, but the
-  surrounding integration is where this package's defects have historically
-  concentrated, and pinning it under a 2.x stability promise would have frozen
-  wiring that still needs to change. The split is enforced by
-  `tests/test_layering.py`: core may not import experimental at module level,
-  and `import impulse` loads none of it.
-- `DeathProposal` / `make_death_proposal` now require a `draw_from_prior`
-  argument (the vacated slot is refreshed with a fresh prior draw).
-- `MassMatrix.from_covariance` now inverts its argument (builds
-  `M = cov^-1`, matching Stan's convention). Use `MassMatrix.from_precision`
-  when supplying Fisher/precision matrices directly.
+  `PTSampler` with adaptive proposals and checkpoint/resume.
 - The history-buffer defaults changed from `buffer_size=50_000, buffer_thin=1`
   to `buffer_size=2_000, buffer_thin=25`. The retained HORIZON is unchanged —
   both span 50,000 iterations — but only every 25th state is stored, because
   consecutive MCMC states are highly autocorrelated (measured ~89% redundancy
-  at ACT≈9). Memory drops ~25x: 2100 MB → 84 MB at the documented
-  product-space defaults (`num_models=5, num_params=10, ntemps=21`).
+  at ACT≈9). History-buffer memory drops ~25x.
 
   Verified that this does NOT introduce adaptation bias, which is the reason
   thinning is used instead of simply shrinking the buffer. Eigen-whitened
@@ -95,16 +68,9 @@ rewrite and shares no API with it.
   cost, most of it spent deflating the zero padding in the history buffers —
   and checkpoint writes were ~41% of wall time at the default `save_freq`. A
   20,000-iteration run at `ntemps=8, ndim=10` went from 10.12 s to 4.68 s.
-  Checkpoint files are correspondingly larger and an uncompressed `.npz` can
-  now exceed the equivalent pickle; with the thinned buffers the absolute size
-  is small (2.2 MB at the defaults above).
-- `CHECKPOINT_SCHEMA_VERSION` is now 2. When per-model statistics are active,
-  `update_sample` makes the chain's `_buffer` the *same object* as the current
-  model's buffer, and the checkpoint was writing it under both `"buffer"` and
-  `"m{k}.buffer"` — storing the dominant array twice (measured 25% of the
-  buffer payload). The duplicate is dropped and the alias recorded in metadata.
-  Version 1 checkpoints still load; version 2 checkpoints will not load on
-  older impulse, which is what the version gate is for.
+  Checkpoint files are correspondingly larger, but small in absolute terms with
+  the thinned buffers (5.8 MB at `ntemps=21, ndim=10` and the default
+  `save_freq`).
 - `grubin` now takes parameters **only**, shape `(T, D)` — the same contract as
   `effective_sample_size`, and exactly what `load_chain()` returns in
   `chain["samples"][k]`. It previously dropped the last two columns of its
@@ -113,74 +79,54 @@ rewrite and shares no API with it.
   `load_chain` returns none, so R-hat was computed either on two too few
   parameters or on lnlike/lnprob promoted to parameters — silently, with no
   warning. Passing a non-2-D array now raises `ValueError`. If you read a raw
-  `chain_*.txt`, slice it yourself: `grubin(data[:, :ndim])`.
-- `PTSampler.from_product_space` / `HybridPTSampler.from_product_space` register one combined
-  `birth_death` jump instead of separate birth and death jumps; the
-  `birth_proposal` / `death_proposal` keys in acceptance-rate reports are
-  replaced by a single `birth_death` key.
-- The "RJMCMC"/"reversible-jump" misnomer is gone from the public API: this
-  package does product-space (composite-model-space) model selection with
-  birth/death moves, not dimension-changing reversible jump in the Green
-  (1995) sense. The 2.0.0-dev names are renamed and **removed with no
-  aliases** (nothing has shipped — 1.0.0 on PyPI is the unrelated pre-rewrite
-  package): `RJMCMCProductSpace` → `BirthDeathProductSpace`, `RJPTSampler` →
-  `HybridPTSampler`, `PTSampler.from_rjmcmc` / `HybridPTSampler.from_rjmcmc` →
-  `from_product_space`, and `load_rjpt_checkpoint` → `load_hybrid_checkpoint`.
-- The internal module files were renamed to match: `impulse.rjmcmc` →
-  `impulse.birth_death`, `impulse.rjmcmc_proposals` →
-  `impulse.birth_death_proposals`, and `impulse.rjpt_sampler` →
-  `impulse.hybrid_sampler`. There are no import-path shims; import the public
-  classes and functions from the top-level `impulse` package.
-- Chains are bit-different from 1.x runs at the same seed (RNG stream
-  changes from the combined birth/death kernel and the min-fill-gated
-  `de` move). Default-configuration chains also differ from earlier
-  2.0.0-dev builds at the same seed: `de` now actually runs once its
-  history buffer holds `de_min_fill` samples (default 100), where
-  earlier builds silently substituted a plain Gaussian for every `de`
-  selection until the buffer was completely full (more than
-  `buffer_size` samples, 50,000 by default — never reached at realistic
-  run lengths).
-- `impulse.sampler_step.pt_step` drops its unused `lnlike_fn` /
-  `lnprior_fn` parameters (PT swaps only permute cached values; nothing
-  was ever recomputed), and the never-used `ChainStats.proposals_ready`
-  property is removed.
-- matplotlib is no longer a hard dependency. The plotting helpers in
-  `impulse.validation` now require the `plots` extra
-  (`pip install impulse-mcmc[plots]`); the numeric SBC functions remain
-  matplotlib-free.
-- The default checkpoint format changed from a pickle
-  (`sampler_checkpoint.pkl`) to the no-code-execution `sampler_checkpoint.npz`
-  + `sampler_checkpoint.json` pair (see Added). `PTSampler` / `HybridPTSampler`
-  now write the new format; `resume=True` prefers it and falls back to a
-  legacy `.pkl` only when no new-format checkpoint is present. Sampling
-  behavior is unchanged and resume stays bit-exact, but the on-disk files
-  differ, and the reconstruct-then-restore contract now *requires* the same
+  chain file, slice it yourself: `grubin(data[:, :ndim])`.
+- Chains are bit-different from 1.x runs at the same seed. Default-configuration
+  chains also differ from earlier 2.0.0-dev builds at the same seed: `de` now
+  actually runs once its history buffer holds `de_min_fill` samples (default
+  100), where earlier builds silently substituted a plain Gaussian for every
+  `de` selection until the buffer was completely full.
+- matplotlib is no longer a dependency.
+- Checkpoints are no longer pickles. `PTSampler` writes the no-code-execution
+  `sampler_checkpoint.npz` + `sampler_checkpoint.json` pair (see Added), and
+  `sampler_checkpoint.pkl` files are neither written nor read. Resume stays
+  bit-exact, but the reconstruct-then-restore contract now *requires* the same
   proposals to be re-registered before resuming (previously the pickle
   restored them for you).
 
-### Deprecated
-
-- The pickle checkpoint format (`sampler_checkpoint.pkl`) is deprecated in
-  favor of the no-code-execution `.npz` + `.json` format and is slated for
-  removal in a future 2.x release. `load_checkpoint`, `load_hybrid_checkpoint`,
-  and `load_nuts_checkpoint` still read pickles but now emit a loud
-  security/deprecation warning (unpickling can execute arbitrary code; see
-  [SECURITY.md](SECURITY.md)). **Nothing in the package writes pickle
-  checkpoints any more** — `NUTSSampler` was the last one, and it now writes
-  `.npz` + `.json` like the PT samplers (see Fixed). The pickle readers remain
-  only so existing checkpoints stay loadable.
-
 ### Removed
 
+- **Everything outside `PTSampler` that the 2.0.0-dev builds carried.** None
+  of it is in 2.0.0, and there are no compatibility aliases:
+  - `NUTSSampler`, `compose_logp_and_grad`, `make_logp_and_grad_numerical`,
+    `MassMatrix` and `MassMatrixType` (the `impulse.nuts` package).
+  - `impulse.experimental`: `HybridPTSampler`, `BirthDeathProductSpace`,
+    `make_product_space_sampler` and `load_hybrid_checkpoint`; and from the
+    core, `NestedProductSpace`, `model_visitation_stats` and
+    `bayes_factor_from_chain`.
+  - `impulse.validation`: the SBC functions (`run_sbc_continuous`,
+    `run_sbc_model_selection`, `compute_sbc_rank`, `compute_sbc_quantile`,
+    `compute_model_pit`, `ecdf`) and plots (`sbc_ecdf_plot`, `coverage_plot`,
+    `rank_histogram`), along with the `[plots]` extra.
+  - The pickle checkpoint readers `load_checkpoint` and `load_nuts_checkpoint`.
+  - `EarlyDE` / `make_early_de`; use `DEProposal(min_fill)` or the sampler's
+    `de_min_fill` argument.
+  - The `unmanaged_indices` constructor argument, which existed for the
+    product-space model index.
+- The internal modules were consolidated into `impulse.samplers`,
+  `impulse.proposals`, `impulse.chain_stats`, `impulse.chain_io`,
+  `impulse.resume` and `impulse.diagnostics`. `impulse.flow_proposals`,
+  `impulse.sampler_state`, `impulse.sampler_step`, `impulse.online_updates`,
+  `impulse.file_io`, `impulse.utils`, `impulse.wrapping` and
+  `impulse.input_function_wrapper` no longer exist; import public names from
+  the top-level `impulse` package (`from impulse import NormalizingFlowProposal`).
 - `impulse/parallel.py` and its `ParallelLikelihood` class are removed. They
   were never exported from `impulse`, never used by any sampler, never
   documented, and carried 0% test coverage; the shared-memory worker pool also
   deadlocked reliably, which is why the suite had to be run with
   `--ignore=tests/test_parallel.py` in every CI job. The parallelism the
-  samplers actually expose is unaffected: pass `threads=` to use the
+  sampler actually exposes is unaffected: pass `threads=` to use the
   `ThreadPoolExecutor` path in the likelihood wrapper, or `vectorized=True` to
-  evaluate a batch yourself. Removing the module lifted measured coverage from
-  84% to 87% and let CI drop its exclusions.
+  evaluate a batch yourself.
 
 ### Fixed
 
@@ -200,50 +146,14 @@ rewrite and shares no API with it.
   begins evicting, the kernel keeps changing by a non-vanishing amount and the
   Roberts & Rosenthal (2007) ergodicity theorem no longer applies. Below that
   length the window is still growing and the condition does hold. The claim has
-  been removed from `impulse.proposals.de`, the README, and the parallel
-  tempering guide, each of which now states the buffer span, why the window is
-  deliberately finite (a full-history estimator carries burn-in forever at
-  weight `1/n`), and that `num_adapt` is how to obtain an exactly Markovian
-  kernel. No bias was detectable in testing: on a unit Gaussian and an
-  equal-weight bimodal target, analysed strictly after eviction begins,
-  adapt-forever matched its `num_adapt`-frozen twin to within Monte Carlo error.
+  been removed; the README and the parallel tempering guide now state the
+  buffer span, why the window is deliberately finite (a full-history estimator
+  carries burn-in forever at weight `1/n`), and that `num_adapt` is how to
+  obtain an exactly Markovian kernel. No bias was detectable in testing: on a
+  unit Gaussian and an equal-weight bimodal target, analysed strictly after
+  eviction begins, adapt-forever matched its `num_adapt`-frozen twin to within
+  Monte Carlo error.
 
-- **The `impulse.validation` plotting helpers were executed by no CI job.**
-  `sbc_ecdf_plot`, `coverage_plot` and `rank_histogram` are three of the
-  supported exports, but the only test naming them asserted they raise *without*
-  matplotlib; their bodies never ran. The fast CI matrix now installs
-  matplotlib and 13 tests exercise the real drawing path, taking
-  `impulse/validation.py` from 55% to 96% covered and the total from 90% to
-  92%. Two latent defects surfaced and are fixed: both helpers emitted
-  divide-by-zero / mean-of-empty-slice `RuntimeWarning`s on empty input, and
-  `coverage_plot` had no `param_names` argument despite its two siblings
-  accepting one.
-
-- **`NUTSSampler(resume=True)` did not resume.** `self.resume` reached exactly
-  one line — `prepare_files(..., resume=...)`, which only chooses
-  append-vs-truncate — so the checkpoint it wrote was never read back. Warmup
-  re-ran unconditionally and `num_iterations` acted as an increment, meaning
-  `resume=True` appended a fresh, re-warmed-up run to the existing chain file:
-  300 iterations then a resume to 500 produced 800 rows with a re-adapted
-  transient spliced in, invisibly. The README's claim of "bit-exact
-  checkpoint/resume" covering NUTS, and the `resume` docstring, were both
-  false.
-
-  `NUTSSampler` now implements the same reconstruct-then-restore contract as
-  `PTSampler`: it restores position, gradient, log-density, the adapted step
-  size, the exact mass-matrix factorization and the RNG stream; **skips
-  warmup** on resume; treats `num_iterations` as a **global target**; and
-  truncates chain rows written after the last checkpoint before regenerating
-  them. Resume is bit-exact, pinned by
-  `tests/test_reproducibility.py::TestNUTSResumeEquivalence` (interrupted on a
-  checkpoint boundary, past the last checkpoint, and with `save_warmup=True`).
-
-  Two cases now raise instead of proceeding: `resume=True` with chain rows but
-  no checkpoint, and `resume=True` onto a pre-2.0 NUTS pickle (those record
-  neither the iteration count nor the row count a resume needs). Changing any
-  run-shaping argument on resume (`ndim`, `num_warmup`, `save_freq`,
-  `max_tree_depth`, `target_accept`, `mass_matrix_type`, `save_warmup`) raises
-  `CheckpointMismatchError`.
 - `resume=True` with no usable checkpoint no longer silently appends a fresh
   cold-start run onto an existing chain (a completed 3000-row chain became 6000
   rows with an unconverged transient spliced into the middle, with no warning).
@@ -267,18 +177,10 @@ rewrite and shares no API with it.
   uniform 3 — a periodic artifact of period `save_freq` in any autocorrelation
   or ESS estimate computed from the saved file. **Changes on-disk chain contents
   for any `thin > 1` run.**
-- `loglargs`/`loglkwargs`/`logpargs`/`logpkwargs` were dropped on the NUTS path
-  of `HybridPTSampler`: the NUTS transition called the raw user callables, so
-  the MH step targeted the intended density while NUTS targeted the function's
-  defaults. With a defaulted extra argument this silently sampled the wrong
-  distribution (measured sd 5.05 against a true 4.0); with a required one the
-  run died mid-sampling with a `TypeError`.
 - Parameter `groups` that do not cover every index now warn at construction:
   `am`/`scam`/`de` only propose within a group, so an uncovered coordinate stays
   frozen and the chain samples a *conditional* of the posterior rather than the
-  marginal. The new `unmanaged_indices` argument declares indices that another
-  proposal moves (the product-space model index, moved by birth/death).
-
+  marginal.
 - Resuming a run with a different `save_freq`, `buffer_size`, `cov_update` or
   `swap_steps` was silently accepted even though the checkpoint recorded all
   four. A changed `save_freq` discarded chain rows (600 of 2000 in a measured
@@ -289,36 +191,17 @@ rewrite and shares no API with it.
   `ChainStats.set_checkpoint_state` restores `buffer_size` alongside the buffer.
 - 1-parameter models (`ndim=1`) crashed at the first covariance update with
   `IndexError: too many indices for array: array is 0-dimensional`, because
-  `np.cov` returns a scalar rather than a 1x1 matrix for a single column. Both
-  the global and per-model covariance paths now promote with `np.atleast_2d`.
+  `np.cov` returns a scalar rather than a 1x1 matrix for a single column. The
+  covariance update now always produces an `(ndim, ndim)` matrix.
 - Differential evolution never ran at realistic run lengths: the stock
   `de` was gated on a completely full history buffer (more than
-  `buffer_size` samples, 50,000 by default) and the jump selector
-  silently substituted a plain Gaussian for every `de` selection — the
-  substitution is what hid the dead move. `de` is now min-fill-gated
-  (the difference move activates once the buffer holds `de_min_fill`
-  samples, default 100, and the proposal returns the current position
-  unchanged below the threshold), the hidden Gaussian substitution is
-  removed entirely (the selected proposal always runs as registered),
-  and `from_product_space` no longer registers a weight-0 stock `de`
-  placeholder — the unified `de` carries `de_weight` directly.
-- Birth-death detailed balance: the default birth/death configuration biased
-  model posteriors toward boundary models and fewer sources. Birth and
-  death are now a single combined kernel with exact Hastings terms for the
-  move schedule; death removes the last active slot and refreshes it from
-  the prior with the matching proposal-ratio term; the death-side
-  correction for non-prior source proposals is restored. The production
-  proposal mixture is verified pi-invariant by finite-state enumeration of
-  the real kernels, guarded by regression tests.
-- Product-space configuration validation: per-source prior fallbacks are probed at
-  construction (provably wrong setups raise), schedules are validated, and
-  single-model spaces skip trans-dimensional registration. Legacy
-  checkpoints with the old separate birth/death wiring are migrated on
-  resume when reconstruction is safe.
-- NUTS mass-matrix adaptation used the inverse of Stan's convention, making
-  adaptation harmful on anisotropic targets; the dense path no longer
-  double-inverts, and constructors copy caller arrays. The `energy_error`
-  diagnostic now reports the true Delta-H at the selected leaf.
+  `buffer_size` samples) and the jump selector silently substituted a plain
+  Gaussian for every `de` selection — the substitution is what hid the dead
+  move. `de` is now min-fill-gated (the difference move activates once the
+  buffer holds `de_min_fill` samples, default 100, and the proposal returns the
+  current position unchanged below the threshold), and the hidden Gaussian
+  substitution is removed entirely (the selected proposal always runs as
+  registered).
 - Parallel-tempering log-probabilities were stale for one acceptance step
   after temperature-ladder adaptation; the infinite-temperature chain no
   longer produces `0 * (-inf) = NaN` silent rejections.
@@ -331,12 +214,9 @@ rewrite and shares no API with it.
 
 ### Added
 
-- `chain_format` keyword on `PTSampler`, `NUTSSampler` and `HybridPTSampler`:
-  `"binary"` (default) or `"text"`. See Breaking Changes. The shared
-  implementation lives in the new `impulse.chain_io` module.
-
-- `param_names` on `coverage_plot`, matching `sbc_ecdf_plot` and
-  `rank_histogram`.
+- `chain_format` keyword on `PTSampler`: `"binary"` (default) or `"text"`. See
+  Breaking Changes. The implementation lives in the new `impulse.chain_io`
+  module.
 
 - `ChainStats.update_from_window` / `MultiChainStats.update_from_window`, the
   accurate name for what was called `recursive_update`: the method recomputes
@@ -347,56 +227,45 @@ rewrite and shares no API with it.
   `update_from_window` instead.
 
 - `PTSampler`'s previously undocumented constructor arguments now appear in the
-  API reference: `chain_format`, `periodic`, `buffer_thin`, `unmanaged_indices`
-  and `threads`. `HybridPTSampler` enumerates the arguments it forwards.
+  API reference: `chain_format`, `periodic`, `buffer_thin` and `threads`.
 
-- `verbose` keyword on `PTSampler`, `NUTSSampler` and `HybridPTSampler`
-  (default `True`). `verbose=False` suppresses the tqdm progress bars — useful
-  for batch/cluster jobs, notebooks, and nested loops such as SBC.
-  `run_sbc_continuous` and `run_sbc_model_selection` take the same flag for
-  their own simulation-level bar. It is presentation-only: it is never
-  checkpointed or verified on resume, and a run resumed with `verbose=False`
-  stays quiet even when the checkpoint came from a verbose run. Pinned by
+- `verbose` keyword on `PTSampler` (default `True`). `verbose=False`
+  suppresses the tqdm progress bar — useful for batch/cluster jobs, notebooks,
+  and nested loops. It is presentation-only: it is never checkpointed or
+  verified on resume, and a run resumed with `verbose=False` stays quiet even
+  when the checkpoint came from a verbose run. Pinned by
   `tests/test_verbose.py`, which also asserts the chain is byte-identical with
   and without it.
 
-- No-code-execution checkpoint format (now the default for `PTSampler` /
-  `HybridPTSampler`): array state in `sampler_checkpoint.npz`
-  (`numpy.savez`) plus a schema-versioned `sampler_checkpoint.json`
-  metadata sidecar (`schema_version` starts at 1). Loading uses
-  `numpy.load(..., allow_pickle=False)` and `json.load`, so resuming a
-  checkpoint executes no code — it is as safe as reading a data file, including
-  the automatic `resume=True` load from a shared `outdir`. The format is
-  written uncompressed for write speed (see above) and carries an explicit
-  schema version in place of implicit pickle-layout compatibility. Resume is
-  *reconstruct then restore*: rebuild the sampler exactly as the original run
-  did (same constructor / `from_product_space` / `add_custom_jump` calls), then
-  `resume=True` verifies the reconstruction matches the checkpoint (class,
-  `ndim`, `ntemps`, and the ordered proposal names and weights) and restores
-  state into it. Bit-exact resume is preserved. New helpers in
-  `impulse.resume`: `save_state_checkpoint`, `restore_state_checkpoint`,
-  `load_state_checkpoint`, and `CHECKPOINT_SCHEMA_VERSION`; a `format` keyword
-  on `checkpoint_sampler` (default new format).
-- `MassMatrix.from_precision` for injecting Fisher/precision matrices.
-- `num_adapt` sampler option: freezes covariance updates, temperature-ladder
-  adaptation, mass-matrix and dual-averaging updates (finalized to the
-  smoothed step size), and flow refits after the given iteration. Default
-  `None` preserves the historical adapt-forever behavior; resume keeps the
-  checkpointed value unless `num_adapt` is passed explicitly.
-- Min-fill-gated differential evolution: `de` draws from the filled tail
-  of the (per-model, in RJ configurations) history buffer and activates
-  once it holds `min_fill` samples, configurable per sampler via the new
-  `de_min_fill` constructor argument on `PTSampler` / `HybridPTSampler` and
-  their `from_product_space` constructors. This gives product-space model-selection runs a
-  ridge-following move at realistic run lengths and fixes metastable
-  continuous mixing. `EarlyDE` / `make_early_de` remain as
-  backward-compatibility aliases for the same implementation
-  (`impulse.proposals.DEProposal` is the configurable carrier class).
+- No-code-execution checkpoint format: array state in `sampler_checkpoint.npz`
+  (`numpy.savez`) plus a metadata sidecar `sampler_checkpoint.json` carrying
+  `schema_version` 2. Loading uses `numpy.load(..., allow_pickle=False)` and
+  `json.load`, so resuming a checkpoint executes no code — it is as safe as
+  reading a data file, including the automatic `resume=True` load from a shared
+  `outdir`. The format is written uncompressed for write speed (see above).
+  Resume is *reconstruct then restore*: rebuild the sampler exactly as the
+  original run did (same constructor and `add_custom_jump` calls), then
+  `resume=True` verifies the reconstruction matches the checkpoint (class, the
+  seven run-shaping scalars, `chain_format`, and the ordered proposal names and
+  weights on every chain) and restores state into it. Both files carry a shared
+  write token, so a pair torn by a crash between the two writes is detected and
+  ignored. Helpers exported from `impulse`: `save_state_checkpoint`,
+  `restore_state_checkpoint`, `load_state_checkpoint`, `checkpoint_sampler`,
+  `check_for_checkpoint`, `CheckpointMismatchError` and `TornCheckpointError`.
+- `num_adapt` sampler option: freezes covariance updates, the DE history
+  buffer, temperature-ladder adaptation, and flow refits after the given
+  iteration. Default `None` preserves the historical adapt-forever behavior;
+  resume keeps the checkpointed value unless `num_adapt` is passed explicitly.
+- Min-fill-gated differential evolution: `de` draws from the filled tail of the
+  history buffer and activates once it holds `min_fill` samples, configurable
+  per sampler via the `de_min_fill` constructor argument
+  (`impulse.DEProposal` is the configurable carrier class).
+- The proposal building blocks are exported from `impulse`: `am`, `scam`, `de`,
+  `gaussian`, `DEProposal`, `NormalizingFlowProposal`, `JumpProposals` and
+  `ProposalBundle`.
 - Reproducibility guarantees, enforced by tests: identical seeds produce
   bit-identical chains, and an interrupted-then-resumed run matches an
-  uninterrupted one bit-exactly for both samplers.
-- `plots` optional-dependency extra providing matplotlib for the
-  `impulse.validation` plotting helpers.
+  uninterrupted one bit-exactly.
 - `pytest-timeout` in the `dev` extra, so a local run can bound a hanging
   test with `--timeout=N`. (The specific hang it was originally added for
   lived in `tests/test_parallel.py`, which this release removes; see
@@ -406,6 +275,25 @@ rewrite and shares no API with it.
   `pypi`) and test.pypi.org (environment `testpypi`) for this repository's
   `deploy.yml` workflow — publishing fails until then.
 - This changelog.
+
+### Changed (performance)
+
+- 1.5-1.8x faster than the 2.0.0-dev builds on cheap targets, with
+  bit-identical chains at the same seed. The gain comes from consolidating the
+  modules plus a bit-exact pass (no random-bit draw for single-group proposals,
+  one batched draw for the swap uniforms, one mean pass in the covariance
+  update). Wall time on a 10-D Gaussian, default settings, median of three
+  interleaved runs:
+
+  | Run | 2.0.0-dev | 2.0.0 | Speedup |
+  |---|---|---|---|
+  | per-row, 21 temperatures, 20k iterations | 6.16 s | 3.99 s | 1.54x |
+  | vectorized, 21 temperatures, 20k iterations | 4.84 s | 2.74 s | 1.77x |
+  | per-row, 4 temperatures, 40k iterations | 3.68 s | 2.50 s | 1.47x |
+
+  The gain matters only when the likelihood is cheap: at 21 temperatures a
+  whole step, likelihood included, now costs ~9.5 µs per chain per-row and
+  ~140 µs per iteration vectorized.
 
 ### Changed (packaging)
 
@@ -426,9 +314,11 @@ rewrite and shares no API with it.
   `CONTRIBUTING.md`, `SECURITY.md`, and the documentation sources. Note this
   defect is invisible when building in a working tree that contains a stale
   `*.egg-info/SOURCES.txt`; verify sdist contents from a clean clone.
-- The project description and `CITATION.cff` no longer say "reversible-jump".
-  This string becomes immutable PyPI metadata per version, and the term was
-  retired from the API in this same release.
+- The `[flow]` extra (coppuccino) carries a `python_version >= '3.11'` marker,
+  matching coppuccino's own requirement, so `pip install "impulse-mcmc[flow]"`
+  still resolves on 3.10 (without the flow proposal).
+- The project description and `CITATION.cff` describe the `PTSampler`-only
+  scope. The description becomes immutable PyPI metadata per version.
 
 ### Changed (documentation)
 

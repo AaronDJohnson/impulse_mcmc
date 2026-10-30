@@ -90,7 +90,6 @@ nbsphinx_prolog = """
 _NOTEBOOKS = {
     # filename -> title to inject when the notebook lacks a leading "# ..."
     "sinusoidal_model.ipynb": "Sinusoid fitting with parallel tempering",
-    "rjmcmc_sinusoids.ipynb": "Product-space model selection: counting sinusoids",
     # high_dimensional_test.ipynb is deliberately NOT rendered: its stored
     # outputs were produced by pre-2.0.0 code and had to be cleared (they
     # reported sigma 2.718 against a true value of 0.800 -- exp() of the old
@@ -148,47 +147,6 @@ def _stage_notebooks() -> None:
 
 
 _stage_notebooks()
-
-
-# -- Docstring fix-ups ---------------------------------------------------------
-# A few upstream docstrings contain constructs that docutils misparses
-# (|...| looks like a substitution reference; one numpydoc parameter entry
-# wraps its comma-separated name list over several lines, which napoleon
-# cannot parse). Repair them here, BEFORE napoleon runs (priority < 500),
-# so the build stays warning-clean without patching the source tree.
-
-
-def _escape_pipes(app, what, name, obj, options, lines):
-    targets = ("|z - median(z)|", "|quantile - 0.5|")
-    for i, line in enumerate(lines):
-        for target in targets:
-            if target in line:
-                lines[i] = line.replace(target, "\\" + target[:-1] + "\\|")
-
-
-def _join_wrapped_param_names(app, what, name, obj, options, lines):
-    """Merge numpydoc parameter-name lines that wrap across multiple lines.
-
-    ``HybridPTSampler``'s docstring lists ~26 parameter names in one entry,
-    wrapped over four lines; napoleon needs them on a single line.
-    """
-    if name != "impulse.experimental.HybridPTSampler":
-        return
-    i = 0
-    while i < len(lines):
-        if lines[i].startswith("buffer_size, groups"):
-            j = i
-            while j < len(lines) and lines[j].rstrip().endswith(","):
-                j += 1
-            if j < len(lines) and j > i:
-                merged = " ".join(line.strip() for line in lines[i : j + 1])
-                lines[i : j + 1] = [merged]
-        i += 1
-
-
-def setup(app):
-    app.connect("autodoc-process-docstring", _escape_pipes, priority=400)
-    app.connect("autodoc-process-docstring", _join_wrapped_param_names, priority=400)
 
 # -- HTML output ---------------------------------------------------------------
 

@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 from conftest import read_chain_file
 
-from impulse.file_io import ShortChain
-from impulse.sampler_state import SamplerState
+from impulse.chain_io import ShortChain
+from impulse.samplers import SamplerState
 
 
 class TestShortChain:

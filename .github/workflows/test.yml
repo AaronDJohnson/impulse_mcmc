@@ -31,25 +31,18 @@ jobs:
       run: python -c "import impulse; print(impulse.__version__)"
 
     - name: Install test dependencies
-      # matplotlib (the [plots] extra) is installed AFTER the smoke test above,
-      # so that test still proves the package imports on declared deps alone.
-      # Without it here the impulse.validation plotting helpers -- three of the
-      # supported exports -- skip their tests everywhere and report 0% covered.
-      run: pip install pytest pytest-cov matplotlib
+      run: pip install pytest pytest-cov
 
     - name: Run tests (fast suite)
-      env:
-        MPLBACKEND: Agg
       run: |
         pytest tests/ -v -m "not slow" --cov=impulse --cov-report=xml --cov-report=term --cov-fail-under=89
 
-    # Coverage ENFORCEMENT is --cov-fail-under above (measured 92% once
-    # matplotlib was installed here and the impulse.validation plotting helpers
-    # went from 55% to 96%; 89 leaves headroom against per-platform drift).
-    # This job does not install the [flow] extra, so
-    # impulse/flow_proposals.py reports 0% HERE and is
-    # included in that 92% -- it is covered by the slow-tests job, which does
-    # install it. The codecov upload is reporting only: one matrix cell, non-blocking,
+    # Coverage ENFORCEMENT is --cov-fail-under above (measured 94% locally
+    # without the [flow] extra; 89 leaves headroom against per-platform drift).
+    # This job does not install [flow], so NormalizingFlowProposal's fitting
+    # and sampling paths in impulse/proposals.py are not executed HERE and that
+    # 94% counts them as uncovered -- they are covered by the slow-tests job,
+    # which does install it. The codecov upload is reporting only: one matrix cell, non-blocking,
     # because tokenless v4 uploads are rate-limit flaky. Set a
     # CODECOV_TOKEN secret and fail_ci_if_error: true to harden it.
     - name: Upload coverage to Codecov
@@ -82,9 +75,9 @@ jobs:
       run: python -c "import impulse; print(impulse.__version__)"
 
     - name: Install test dependencies
-      # [flow] pulls coppuccino from PyPI. This is the only job that installs
-      # it, so it is the only place impulse/flow_proposals.py is executed at
-      # all -- everywhere else its tests skip and it reports 0% coverage.
+      # [flow] pulls coppuccino from PyPI. This is the only test job that
+      # installs it, so it is the only place NormalizingFlowProposal is
+      # executed at all -- everywhere else its tests skip.
       run: |
         pip install pytest
         pip install -e ".[flow]"
@@ -112,15 +105,13 @@ jobs:
         python-version: '3.12'
 
     - name: Install package with optional extras
-      # [flow] as well as [plots]: without it the normalizing-flow snippet is
-      # skipped rather than checked, and a break in it would ship unnoticed.
+      # Without [flow] the normalizing-flow snippets are skipped rather than
+      # checked, and a break in them would ship unnoticed.
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[plots,flow]"
+        pip install -e ".[flow]"
 
     - name: Execute documentation snippets
-      env:
-        MPLBACKEND: Agg
       run: python scripts/check_doc_snippets.py
 
   floor-versions:

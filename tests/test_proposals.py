@@ -7,16 +7,14 @@ from impulse.chain_stats import ChainStats
 from impulse.proposals import (
     DE_MIN_FILL,
     DEProposal,
-    EarlyDE,
     JumpProposals,
     ProposalBundle,
     am,
     de,
     gaussian,
-    make_early_de,
     scam,
 )
-from impulse.sampler_state import PTState, SamplerState
+from impulse.samplers import PTState, SamplerState
 
 
 class TestJumpProposals:
@@ -550,28 +548,6 @@ class TestProposalAcceptanceTracking:
         np.testing.assert_array_equal(jp2._proposal_accepts, jp._proposal_accepts)
         assert jp2._last_proposal_idx == jp._last_proposal_idx
 
-    def test_setstate_handles_old_checkpoint(self, chain_stats_2d):
-        jp = JumpProposals(chain_stats_2d)
-        jp.add_jump(am, 15)
-        jp.add_jump(scam, 30)
-
-        # Simulate an old checkpoint missing counter attrs
-        state = jp.__dict__.copy()
-        del state["_last_proposal_idx"]
-        del state["_proposal_calls"]
-        del state["_proposal_accepts"]
-
-        jp2 = JumpProposals.__new__(JumpProposals)
-        jp2.__setstate__(state)
-
-        assert jp2._last_proposal_idx == -1
-        np.testing.assert_array_equal(jp2._proposal_calls, [0, 0])
-        np.testing.assert_array_equal(jp2._proposal_accepts, [0, 0])
-        # Should be usable immediately after restore
-        rates = jp2.acceptance_rates()
-        assert rates["am"]["calls"] == 0
-        assert rates["scam"]["calls"] == 0
-
 
 class TestProposalBundleAcceptanceReport:
     """Test ProposalBundle.report_accepts and acceptance_report."""
@@ -724,7 +700,7 @@ class TestProposalBundleAcceptanceReport:
             assert set(ch["per_proposal"].keys()) == {"am", "scam"}
 
 
-class TestEarlyDE:
+class TestDEProposalDetailed:
     """Test cases for the min-fill-gated differential evolution proposal."""
 
     def _stats(self, buffer_size=100, ndim=2, seed=42):
@@ -738,25 +714,12 @@ class TestEarlyDE:
             buffer_size=buffer_size,
         )
 
-    def test_name_is_early_de(self):
-        """The compat alias keeps its historical reporting name.
-
-        Old RJ configurations register both a weight-0 'de' and an
-        'early_de'; keeping the names distinct avoids colliding
-        acceptance-report keys when such checkpoints are resumed.  (The
-        old gaussian substitution keyed on the name 'de' is gone.)
-        """
-        prop = make_early_de()
-        assert prop.__name__ == "early_de"
-        # thin alias: same implementation as the unified DE carrier class
-        assert isinstance(prop, DEProposal)
-
     def test_identity_below_min_fill(self):
         """Below min_fill the proposal is the identity kernel with qxy=0."""
         cs = self._stats()
         cs.current_sample = np.array([1.0, 2.0])
         cs.sample_total = 5  # < min_fill
-        prop = make_early_de(min_fill=10)
+        prop = DEProposal(min_fill=10)
 
         new_sample, qxy = prop(cs)
 
@@ -765,20 +728,14 @@ class TestEarlyDE:
         assert qxy == 0.0
 
     def test_difference_move_from_partial_buffer_tail(self):
-        """Above min_fill the move is a difference of two TAIL buffer rows.
-
-        The circular buffer fills from the tail, so the head of a partially
-        filled buffer is zero padding; drawing from the head (as the stock
-        de indexes it) would produce degenerate near-zero jumps.
-        """
+        """Above min_fill the move is a difference of two TAIL buffer rows."""
         cs = self._stats(buffer_size=100)
         rng_fill = np.random.default_rng(7)
         n_filled = 20
-        # head of buffer left as zero padding; tail holds the history
         cs._buffer[-n_filled:] = 5.0 + rng_fill.random((n_filled, 2))
         cs.sample_total = n_filled
         cs.current_sample = np.array([1.0, 2.0])
-        prop = make_early_de(min_fill=10)
+        prop = DEProposal(min_fill=10)
 
         moved = 0
         for _ in range(50):
@@ -787,17 +744,13 @@ class TestEarlyDE:
             delta = new_sample - cs.current_sample
             if np.any(delta != 0.0):
                 moved += 1
-                # every delta must be a scaled difference of tail rows:
-                # tail values are in [5, 6], so |row_i - row_j| < 1 per
-                # coordinate and scale <= 1  =>  |delta| < 1.  A head
-                # (zero-padding) row would give |delta| >= 4.
                 assert np.max(np.abs(delta)) < 1.0
         assert moved > 0
 
     def test_min_fill_validation(self):
         """min_fill < 2 cannot produce two distinct rows and must raise."""
         with pytest.raises(ValueError, match="min_fill"):
-            make_early_de(min_fill=1)
+            DEProposal(min_fill=1)
 
     def test_respects_groups(self):
         """Only the chosen group's parameters move; others are untouched."""
@@ -810,36 +763,27 @@ class TestEarlyDE:
         cs._buffer[-20:] = np.random.default_rng(4).random((20, 4))
         cs.sample_total = 20
         cs.current_sample = np.zeros(4)
-        prop = make_early_de(min_fill=10)
+        prop = DEProposal(min_fill=10)
 
         for _ in range(50):
             new_sample, _ = prop(cs)
             delta = new_sample != 0.0
-            # a single group per call: never parameters from both groups
             assert not (np.any(delta[:2]) and np.any(delta[2:]))
 
     def test_pickle_roundtrip(self):
-        """Checkpointing pickles every registered proposal."""
-        prop = make_early_de(min_fill=37)
+        prop = DEProposal(min_fill=37)
         restored = pickle.loads(pickle.dumps(prop))
-        assert isinstance(restored, EarlyDE)
+        assert isinstance(restored, DEProposal)
         assert restored.min_fill == 37
-        assert restored.__name__ == "early_de"
+        assert restored.__name__ == "de"
 
     def test_symmetry_forward_reverse_rates(self):
-        """Empirical check of q(y|x) = q(x|y) (the qxy = 0 claim).
-
-        With a frozen two-row buffer and scale fixed to the mode-jump
-        branch (prob > 0.5 -> scale = 1), the only proposable moves from x
-        are x + (b0 - b1) and x + (b1 - b0), each with probability 1/2 (of
-        the mode-jump branch): the forward and reverse displacement are
-        proposed at identical rates from any point.
-        """
+        """Empirical check of q(y|x) = q(x|y) (the qxy = 0 claim)."""
         cs = self._stats(buffer_size=10, seed=11)
         cs._buffer[-2:] = np.array([[0.3, 0.1], [0.1, 0.4]])
         cs.sample_total = 2
         cs.current_sample = np.array([0.0, 0.0])
-        prop = make_early_de(min_fill=2)
+        prop = DEProposal(min_fill=2)
 
         diff = cs._buffer[-2] - cs._buffer[-1]
         n_fwd = n_rev = 0
@@ -851,7 +795,6 @@ class TestEarlyDE:
                 n_fwd += 1
             elif np.allclose(delta, -diff):
                 n_rev += 1
-        # mode-jump branch fires ~half the time, split evenly across signs
         assert n_fwd + n_rev > 1000
         assert abs(n_fwd - n_rev) / (n_fwd + n_rev) < 0.1
 
@@ -994,3 +937,126 @@ class TestDEGroupSelection:
         second = cs.group_index_arrays()
         assert len(second) == 2, "stale group cache survived a groups swap"
         np.testing.assert_array_equal(second[0], [0, 1])
+
+
+def _stay(chain_stats):
+    return chain_stats.current_sample.copy(), 0.0
+
+
+def _stay_too(chain_stats):
+    return chain_stats.current_sample.copy(), 0.0
+
+
+class TestSelectionAndCounting:
+    def test_constructor_weights_without_probs_select_by_weight(self, chain_stats_2d):
+        """Used to leave cumprobs empty: index -1 on every draw, accepts never counted."""
+        jp = JumpProposals(
+            chain_stats_2d, proposal_list=[_stay, _stay_too], proposal_weights=[1.0, 3.0]
+        )
+        np.testing.assert_allclose(jp.proposal_probs, [0.25, 0.75])
+        rng = np.random.default_rng(0)
+        idx = [jp._select_proposal_index(rng) for _ in range(4000)]
+        assert set(idx) == {0, 1}
+        assert abs(np.mean(idx) - 0.75) < 0.03
+
+    def test_constructor_list_without_weights_is_uniform(self, chain_stats_2d):
+        jp = JumpProposals(chain_stats_2d, proposal_list=[_stay, _stay_too])
+        np.testing.assert_allclose(jp.proposal_probs, [0.5, 0.5])
+
+    def test_constructor_weight_length_mismatch_raises(self, chain_stats_2d):
+        with pytest.raises(ValueError, match="proposal_weights"):
+            JumpProposals(chain_stats_2d, proposal_list=[_stay, _stay_too], proposal_weights=[1])
+
+    def test_draw_past_cumsum_end_selects_last_proposal(self, chain_stats_2d):
+        """cumsum can end a few ULP below 1.0; a draw above it must clamp, not overflow."""
+
+        class _Fixed:
+            def __init__(self, u):
+                self.u = u
+
+            def random(self):
+                return self.u
+
+        for n in (2, 3, 4):
+            jp = JumpProposals(chain_stats_2d)
+            for k in range(n):
+                jp.add_jump(lambda cs, k=k: (cs.current_sample, 0.0), 1.0)
+            jp._proposal_cumprobs = np.linspace(1.0 / n, 1.0, n) * 0.9
+            assert jp._select_proposal_index(_Fixed(0.95)) == n - 1
+            assert jp._select_proposal_index(_Fixed(0.0)) == 0
+
+    def test_counters_are_writable_arrays(self, chain_stats_2d):
+        jp = JumpProposals(chain_stats_2d)
+        jp.add_jump(_stay, 1.0)
+        jp._proposal_calls[0] += 5
+        jp._proposal_accepts[0] += 2
+        assert jp.acceptance_rates()["_stay"] == {"calls": 5, "accepts": 2, "rate": 0.4}
+
+    def test_report_accepts_takes_lists_and_uses_report_accept(self, chain_stats_2d):
+        seen = []
+
+        class Recording(JumpProposals):
+            def report_accept(self, accepted):
+                seen.append(accepted)
+                super().report_accept(accepted)
+
+        jps = [Recording(chain_stats_2d), Recording(chain_stats_2d)]
+        for jp in jps:
+            jp.add_jump(_stay, 1.0)
+            jp._last_proposal_idx = 0
+        ProposalBundle(jps).report_accepts([1, 0])
+        assert seen == [True, False]
+        assert [int(jp._proposal_accepts[0]) for jp in jps] == [1, 0]
+
+    def test_call_routes_through_update_sample(self, chain_stats_2d, sample_state_2d):
+        seen = []
+        original = chain_stats_2d.update_sample
+
+        def spy(position):
+            seen.append(np.array(position))
+            original(position)
+
+        chain_stats_2d.update_sample = spy
+        jp = JumpProposals(chain_stats_2d)
+        jp.add_jump(_stay, 1.0)
+        jp(sample_state_2d)
+        assert len(seen) == 1
+        np.testing.assert_array_equal(seen[0], sample_state_2d.positions[0])
+
+
+def test_flow_fit_gets_a_copy_of_the_history_buffer(monkeypatch, chain_stats_2d):
+    """The buffer shifts in place; a fit that keeps its input must not see it change."""
+    import impulse.proposals as proposals_mod
+
+    captured = {}
+
+    def fake_fit(buf, **kwargs):
+        captured["buf"] = buf
+        captured["snapshot"] = buf.copy()
+        return object()
+
+    monkeypatch.setattr(proposals_mod, "_require_coppuccino", lambda: (fake_fit, None, None))
+    prop = proposals_mod.NormalizingFlowProposal(min_samples=5, refit_interval=1)
+    cs = chain_stats_2d
+    rng = np.random.default_rng(3)
+    cs.update_buffer(rng.standard_normal((10, 2)))
+    cs.sample_total = 10
+    prop._maybe_fit(cs)
+    cs.update_buffer(rng.standard_normal((3, 2)))
+    assert not np.shares_memory(captured["buf"], cs._buffer)
+    np.testing.assert_array_equal(captured["buf"], captured["snapshot"])
+
+
+@pytest.mark.parametrize("buffered_half", [False, True])
+def test_single_group_index_draw_consumes_no_random_bits(buffered_half):
+    """am/scam/de/gaussian skip ``rng.integers(0, 1)`` when there is one group.
+
+    That keeps the stream identical only because ``integers(0, 1)`` draws no bits;
+    pin it so a numpy change cannot silently shift every chain.
+    """
+    rng = np.random.default_rng(3)
+    if buffered_half:
+        rng.integers(0, 7)  # leaves a buffered 32-bit half in the generator state
+    before = rng.bit_generator.state
+    assert rng.integers(0, 1) == 0
+    assert rng.bit_generator.state == before

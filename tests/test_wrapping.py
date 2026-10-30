@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from impulse import PTSampler
-from impulse.wrapping import WrapSpec
+from impulse.samplers import WrapSpec
 
 # ---------------------------------------------------------------------------
 # WrapSpec.from_dict

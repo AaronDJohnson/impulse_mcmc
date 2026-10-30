@@ -9,25 +9,11 @@ A modular and efficient implementation of parallel tempering MCMC with adaptive 
 ## Overview
 
 **impulse-mcmc** is a parallel tempering MCMC sampler for production-scale Bayesian
-inference. It combines adaptive proposals (AM, SCAM, differential evolution,
-normalizing flows), automatic temperature-ladder adaptation, product-space (birth-death) model
-selection, and gradient-based NUTS transitions. Every sampler checkpoints and
-resumes bit-exactly, in a format that executes no code on load.
-
-Two supported samplers share one interface:
-
-- **`PTSampler`** — parallel tempering with adaptive Metropolis-Hastings proposals
-- **`NUTSSampler`** — standalone No-U-Turn Sampler for gradient-based problems
-
-Product-space (birth-death) model selection and the NUTS-interleaved
-**`HybridPTSampler`** live in **`impulse.experimental`**. They work and they are
-tested — the trans-dimensional kernel is proven exact by finite-state
-enumeration — but they are not covered by the 2.x API stability policy, so their
-names and signatures may change in a minor release. Import them explicitly:
-
-```python
-from impulse.experimental import HybridPTSampler, BirthDeathProductSpace
-```
+inference. **`PTSampler`** combines adaptive Metropolis-Hastings proposals (AM,
+SCAM, differential evolution, optional normalizing flows), automatic
+temperature-ladder adaptation, and batched (vectorized or JAX-jitted)
+likelihood evaluation. Every run checkpoints and resumes bit-exactly, in a
+format that executes no code on load.
 
 ## Installation
 
@@ -35,8 +21,7 @@ Requires Python ≥ 3.10. Core dependencies are just NumPy, SciPy, and tqdm.
 
 ```bash
 pip install impulse-mcmc              # core
-pip install "impulse-mcmc[plots]"     # + matplotlib for the impulse.validation SBC plots
-pip install "impulse-mcmc[flow]"      # + coppuccino for normalizing-flow proposals
+pip install "impulse-mcmc[flow]"      # + coppuccino for normalizing-flow proposals (Python 3.11+)
 pip install "impulse-mcmc[dev]"       # + test and lint tooling
 ```
 
@@ -45,7 +30,7 @@ Or from source:
 ```bash
 git clone https://github.com/AaronDJohnson/impulse_mcmc.git
 cd impulse_mcmc
-pip install -e ".[plots,flow,dev]"
+pip install -e ".[flow,dev]"
 ```
 
 ## Quick start
@@ -109,22 +94,19 @@ cache is reused instead of recompiling.
 - **Adaptive proposals** — a weighted mixture of adaptive Metropolis (`am_weight`),
   single-component adaptive Metropolis (`scam_weight`), and differential evolution
   (`de_weight`) that learn the target's covariance and history as sampling proceeds.
-- **Min-fill-gated DE** — the `de` move activates once the sample history buffer
-  holds `min_fill` samples (default 100, configurable via the sampler's
-  `de_min_fill` argument) instead of waiting for a completely full buffer. This
-  keeps the history-based, ridge-following DE move available at realistic run
-  lengths — essential in product-space model-selection runs, where per-model buffers never
-  fill. Below the threshold `de` returns the current position unchanged (no
-  hidden substitution). `EarlyDE` / `make_early_de` are backward-compatibility
-  aliases for the same implementation:
-  `sampler.add_custom_jump(make_early_de(min_fill), weight)` still works.
+- **Min-fill-gated DE** — the `de` move activates once the history buffer
+  holds `de_min_fill` rows (default 100, about 2,500 iterations at the default
+  `buffer_thin=25`) instead of waiting for a completely full buffer, which keeps
+  the history-based, ridge-following DE move available at realistic run
+  lengths. Below the threshold `de` returns the current position unchanged (no
+  hidden substitution).
 - **Temperature-ladder adaptation** — the geometric ladder adapts toward uniform
   swap acceptance between neighbours (`adapt_t0`, `adapt_nu` control the schedule).
 - **`inf_temp=True`** — replaces the hottest rung with a T = ∞ chain that samples
   the prior (`ntemps` total chains, `ntemps - 1` finite), improving hot-chain
   mixing and enabling prior-dominated moves to propagate down the ladder.
 - **`num_adapt`** — freezes **all** adaptation (proposal covariances, DE buffers,
-  ladder adaptation, NUTS step sizes/mass matrices, flow refits) once the global
+  ladder adaptation, flow refits) once the global
   iteration counter reaches `num_adapt`. The transition kernel is fixed from then
   on, so post-freeze samples are exactly Markovian. Recommended usage: set
   `num_adapt` to your intended warmup length and discard all pre-freeze samples as
@@ -182,133 +164,21 @@ discard the pre-freeze samples. Raising `buffer_thin` so the window never evicts
 also restores the condition, but at the cost of readmitting burn-in and delaying
 DE activation, so `num_adapt` is usually the better trade.
 
-## Product-space model selection
-
-> **Experimental.** Everything in this section lives in `impulse.experimental`
-> and is not covered by the 2.x API stability policy.
-
-
-`BirthDeathProductSpace` embeds up to `num_sources` identical "source" slots (each with
-`num_params` parameters) plus a model index in one product space, and
-`make_product_space_sampler` wires up the trans-dimensional kernels: one **combined
-birth/death kernel** (separate birth and death jumps would violate detailed
-balance), a uniform model-index jump, a source-swap (label-switching) move, and
-the min-fill-gated `de` move (`de_min_fill`).
-
-The prior contract differs from the likelihood contract:
-
-- `loglikelihood(active_params)` receives only the **active** sources' parameters,
-  shape `((nmodel + 1) * num_params,)`.
-- `logprior(all_params)` receives **ALL** source slots — active and inactive —
-  shape `(num_sources * num_params,)`. It must bound-check every slot, and (unless
-  you pass `source_prior_logpdf` explicitly) it must be additive across slots,
-  i.e. a product of independent per-source priors.
-
-```python
-import numpy as np
-from impulse import bayes_factor_from_chain, model_visitation_stats
-from impulse.experimental import (
-    BirthDeathProductSpace, make_product_space_sampler)
-
-# Data generated by ONE source of amplitude ~1
-rng = np.random.default_rng(0)
-data = 1.0 + 0.1 * rng.standard_normal(50)
-
-MAX_SOURCES, NUM_PARAMS = 3, 1  # up to 3 sources, 1 parameter (amplitude) each
-
-def rj_log_likelihood(active_params):
-    # only the ACTIVE sources' parameters: shape ((nmodel + 1) * NUM_PARAMS,)
-    return -0.5 * np.sum((data - active_params.sum()) ** 2) / 0.1**2
-
-def rj_log_prior(all_params):
-    # ALL source slots, active and inactive: shape (MAX_SOURCES * NUM_PARAMS,)
-    if np.all((all_params >= 0.0) & (all_params <= 2.0)):
-        return -all_params.size * np.log(2.0)  # independent Uniform(0, 2) per slot
-    return -np.inf
-
-def draw_source(rng):
-    return rng.uniform(0.0, 2.0, size=NUM_PARAMS)  # one source's params from the prior
-
-space = BirthDeathProductSpace(
-    loglikelihood=rj_log_likelihood,
-    logprior=rj_log_prior,
-    num_sources=MAX_SOURCES,
-    num_params=NUM_PARAMS,
-    source_prior_draw=draw_source,
-)
-
-sampler = make_product_space_sampler(space, ntemps=8, seed=42, outdir="./chains_rj")
-x0 = space.draw_initial_position(np.random.default_rng(42))
-sampler.sample(x0, num_iterations=5000)
-
-cold = sampler.load_chain()["samples"][0]      # model index is the last column
-stats = model_visitation_stats(cold, num_models=MAX_SOURCES, burn=1000)
-print("P(k+1 sources):", stats["posterior_probs"])
-print("B(1 source vs 2):", bayes_factor_from_chain(cold, model_i=0, model_j=1, burn=1000))
-```
-
-`model_visitation_stats` also returns visit counts, the model transition matrix,
-and mean dwell times — useful for judging how well the chain mixes across models.
-
-## NUTS and HybridPTSampler
-
-> `NUTSSampler` is supported. `HybridPTSampler` is **experimental**
-> (`impulse.experimental`) and not covered by the 2.x API stability policy.
-
-
-`NUTSSampler` is a standalone No-U-Turn Sampler driven by a single
-`logp_and_grad(x) -> (logp, grad)` callable; `compose_logp_and_grad` builds one
-from separate likelihood/prior (falling back to numerical gradients for any piece
-you don't supply):
-
-```python
-import numpy as np
-from impulse import NUTSSampler, compose_logp_and_grad
-
-def nuts_lnlike(x):
-    return -0.5 * np.sum(x**2)
-
-def nuts_lnlike_grad(x):
-    return -x
-
-def nuts_lnprior(x):
-    return 0.0
-
-logp_and_grad = compose_logp_and_grad(nuts_lnlike, nuts_lnprior, nuts_lnlike_grad)
-nuts = NUTSSampler(ndim=2, logp_and_grad=logp_and_grad, seed=42, outdir="./chains_nuts")
-nuts.sample(np.zeros(2), num_iterations=1000)
-```
-
-`HybridPTSampler` interleaves MH proposals (including birth/death model moves), NUTS
-transitions on the active continuous parameters, and PT swaps. Pass `lnlike_grad`
-with signature `(active_params) -> (loglike, gradient)`; continuing the product-space model-selection
-example above:
-
-```python
-from impulse.experimental import HybridPTSampler
-
-def rj_log_likelihood_grad(active_params):
-    resid = data - active_params.sum()
-    return -0.5 * np.sum(resid**2) / 0.1**2, np.full(active_params.size, resid.sum() / 0.1**2)
-
-hybrid = HybridPTSampler.from_product_space(
-    space, lnlike_grad=rj_log_likelihood_grad, ntemps=4, seed=7, outdir="./chains_hybrid"
-)
-hybrid.sample(x0, num_iterations=1000)
-```
-
-Without `lnlike_grad`, `HybridPTSampler` skips NUTS and behaves like `PTSampler`.
-
 ## Normalizing-flow proposals
 
 With the `[flow]` extra installed, add a flow-based independence proposal that fits
 itself to the cold chain's recent history (or wrap a pre-fitted `coppuccino` flow):
 
 ```python
-from impulse.flow_proposals import NormalizingFlowProposal  # pip install "impulse-mcmc[flow]"
+from impulse import NormalizingFlowProposal  # needs the [flow] extra
 
 sampler.add_custom_jump(NormalizingFlowProposal(min_samples=1000), weight=10)
 ```
+
+`min_samples` counts rows in the history buffer, which keeps one row every
+`buffer_thin` iterations (default 25), so the first fit above happens after
+about 25,000 iterations, and a `min_samples` larger than `buffer_size` never
+fits. Pass `buffer_thin=1` to the sampler for short runs.
 
 ## Custom proposals
 
@@ -370,7 +240,7 @@ print(sampler.proposal_acceptance_rates()["scale_jump"]["rate"])
 ## Checkpoint and resume
 
 Checkpoints are written automatically every `save_freq` iterations. Resuming is
-**bit-exact** for checkpoints written by 2.0: an interrupted run resumed to `N`
+**bit-exact**: an interrupted run resumed to `N`
 total iterations produces chain files identical to a single uninterrupted
 `N`-iteration run (every RNG stream is captured at an iteration boundary, and stale
 chain-file rows are truncated on resume). `num_iterations` is a *global* target —
@@ -386,29 +256,25 @@ sampler.sample([0.0, 0.0], num_iterations=20000)
 Checkpoints use a **no-code-execution format** by default — `sampler_checkpoint.npz`
 (arrays) plus a schema-versioned `sampler_checkpoint.json` — so loading one is as
 safe as reading a data file. Resume is *reconstruct then restore*: rebuild the
-sampler the same way (same constructor / product-space / `add_custom_jump` calls),
-then `resume=True` restores state into it. Legacy `sampler_checkpoint.pkl`
-checkpoints still load (with a security/deprecation warning), but unpickling one can
-execute arbitrary code — see [SECURITY.md](SECURITY.md) and the
-[checkpointing guide](docs/user_guide/checkpointing.md) for the full trust boundary.
-
-`NUTSSampler` follows the same contract, skipping warmup on resume and restoring
-the adapted step size and mass matrix rather than re-adapting them.
+sampler the same way (same constructor and `add_custom_jump` calls), then
+`resume=True` verifies the reconstruction against the checkpoint and restores
+state into it. See the [checkpointing guide](docs/user_guide/checkpointing.md)
+for what is verified, and [SECURITY.md](SECURITY.md) for the trust boundary.
 
 ## Migrating from 1.x
 
 - 2.0.0 is a complete rewrite: the old `base.py` / `mhsampler.py` / `ptsampler.py`
-  API is removed and replaced by `PTSampler`, `HybridPTSampler`, and `NUTSSampler`.
-- Chains are bit-different from 1.x at the same seed; matplotlib moved behind the
-  `[plots]` extra; `MassMatrix.from_covariance` now inverts its argument (Stan
-  convention) — use `MassMatrix.from_precision` for Fisher matrices.
+  API is removed and replaced by `PTSampler`.
+- Chains are bit-different from 1.x at the same seed, chain files are binary by
+  default (`chain_format="text"` restores text), and matplotlib is no longer a
+  dependency.
 - See the full breaking-changes list in [CHANGELOG.md](CHANGELOG.md) under 2.0.0.
 
 ## Documentation and links
 
 - **Documentation**: <https://aarondjohnson.github.io/impulse_mcmc/>
 - **Examples**: complete notebooks in [`examples/`](examples/) (sinusoid fitting,
-  high-dimensional sampling, product-space model selection, hybrid model selection + NUTS)
+  high-dimensional sampling, normalizing-flow proposals)
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Security policy**: [SECURITY.md](SECURITY.md)
 - **Changelog**: [CHANGELOG.md](CHANGELOG.md)
