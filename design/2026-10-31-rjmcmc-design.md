@@ -200,14 +200,18 @@ current state.
   identity; checkpointed, since it stays in use for rarely visited slots).
   The matrix is then made positive semi-definite by clipping eigenvalues at
   the existing ridge (`COV_RIDGE_REL × initial scale`).
-- Per-model covariance: for model `k`, `Σ_k` is the sample covariance of the
-  stored rows whose model is exactly `k`, on the model's active coordinates,
-  when there are at least `max(10, 2·d_k)` of them (`d_k = n_shared + k·p`);
-  otherwise `Σ_k` is the pooled matrix's active block. (Amended during
-  implementation: a pooled matrix mixes models, can be indefinite when a
-  parameter's scale differs between models, and clipping it can leave a
-  near-zero proposal direction; the model's own rows give a PSD estimate of
-  the model-`k` posterior covariance.)
+- Per-model covariance: for model `k`, with `n_k` stored rows whose model is
+  exactly `k`, `Σ̂_k` their sample covariance on the model's active
+  coordinates, `P_k` the pooled matrix's active block and
+  `n0 = max(10, 2·d_k)` (`d_k = n_shared + k·p`):
+  `Σ_k = (n_k·Σ̂_k + n0·P_k) / (n_k + n0)` when `n_k ≥ 2`, else `P_k`.
+  (Amended during implementation: a pooled matrix mixes models, can be
+  indefinite when a parameter's scale differs between models, and clipping it
+  can leave a near-zero proposal direction. The model's own rows estimate the
+  model-`k` posterior covariance; shrinking toward the pooled block keeps a
+  stuck chain's repeated rows from producing a rank-deficient block, is
+  continuous in `n_k`, and tends to the model's own covariance as `n_k`
+  grows.)
 - Per-k factors: for group `g` at model `k`, the factor of
   `Σ_k[active, active]` (active = `g ∩ active_mask(k)`) via `svd_groups`,
   computed on first use and cached until the next covariance update.
@@ -298,9 +302,9 @@ fast suite):
 Unit:
 
 - Masked covariance equals brute-force `np.cov` on co-active rows; fallback
-  below 10 rows; PSD after repair. Per-model covariance from exact-k rows,
-  PD where the pooled matrix is indefinite; pooled fallback when a model has
-  too few rows. `rj_de` difference symmetry; `n_eff` uses the active count.
+  below 10 rows; PSD after repair. Per-model covariance from exact-k rows
+  shrunk toward the pooled block: PD where the pooled matrix is indefinite,
+  not rank-deficient for repeated rows, pooled block when `n_k < 2`. `rj_de` difference symmetry; `n_eff` uses the active count.
 - `RJLayout.insert` / `remove` are inverses; `active_mask`.
 - Every construction-time and run-time check raises, naming the jump where
   applicable; the `logpdf = −inf` warning fires once.
