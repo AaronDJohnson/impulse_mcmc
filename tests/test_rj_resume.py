@@ -166,3 +166,17 @@ def test_component_proposal_state_and_freeze(tmp_path):
     )
     assert again.draws == full.draws
     assert again.freezes == 1
+
+
+def test_resume_restores_fallback_covariance_over_constructor_argument(tmp_path):
+    """The checkpointed fallback covariance wins over a different ``sample_cov`` on resume."""
+    d = 7
+    full = _make(tmp_path / "full")
+    full.sample(X0, TOTAL, initial_k=1)
+    _make(tmp_path / "split").sample(X0, N_FIRST, initial_k=1)
+    resumed = _make(
+        tmp_path / "split", resume=True, sample_cov=4.0 * np.eye(d), sample_mean=np.zeros(d)
+    )
+    resumed.sample(X0, TOTAL, initial_k=1)
+    assert_rj_chains_identical(full.load_chain(), resumed.load_chain())
+    assert resumed.proposal_acceptance_rates() == full.proposal_acceptance_rates()
