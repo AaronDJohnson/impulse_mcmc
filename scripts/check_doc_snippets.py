@@ -29,15 +29,15 @@ FENCE = re.compile(r"^```python\n(.*?)^```", re.M | re.S)
 #: Optional third-party packages a snippet may legitimately require. A missing
 #: one is a skip; anything else missing is a genuine failure (a real import
 #: typo in the docs must not be excused).
-OPTIONAL_DEPS = {"coppuccino", "matplotlib"}
+OPTIONAL_DEPS = {"coppuccino"}
 
 
 def _missing_optional(exc: BaseException) -> str | None:
     """Name of the missing optional package this exception is about, if any.
 
     Matches both a bare ``ModuleNotFoundError`` and the package's own guarded
-    ``ImportError`` (``flow_proposals`` raises a friendly message naming
-    coppuccino rather than letting the import escape).
+    ``ImportError`` (``NormalizingFlowProposal`` raises a friendly message
+    naming coppuccino rather than letting the import escape).
     """
     if isinstance(exc, ModuleNotFoundError) and exc.name in OPTIONAL_DEPS:
         return exc.name

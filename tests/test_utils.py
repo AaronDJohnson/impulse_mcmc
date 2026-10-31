@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from impulse.utils import prepare_files, shift_array
+from impulse.chain_io import prepare_files, shift_array
 
 
 class TestPrepareFiles:

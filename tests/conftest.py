@@ -7,7 +7,7 @@ import pytest
 
 from impulse import chain_io
 from impulse.chain_stats import ChainStats
-from impulse.sampler_state import PTState, SamplerState
+from impulse.samplers import PTState, SamplerState
 
 
 def read_chain_file(path, ncols=None):

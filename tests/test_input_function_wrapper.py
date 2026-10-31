@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from impulse.input_function_wrapper import _function_wrapper
+from impulse.samplers import _function_wrapper
 
 
 class TestFunctionWrapper:

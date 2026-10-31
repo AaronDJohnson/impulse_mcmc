@@ -4,9 +4,7 @@ These tests skip cleanly if `coppuccino` is not installed.
 """
 
 import importlib
-import os
-import shutil
-import sys
+import json
 
 import numpy as np
 import pytest
@@ -20,9 +18,7 @@ pytestmark = pytest.mark.skipif(
 def test_import_error_without_coppuccino(monkeypatch):
     """Construction must raise ImportError with a helpful message when
     coppuccino is missing."""
-    import impulse.flow_proposals as fp
-
-    real_require = fp._require_coppuccino
+    import impulse.proposals as fp
 
     def broken():
         raise ImportError("simulated missing dep")
@@ -34,8 +30,8 @@ def test_import_error_without_coppuccino(monkeypatch):
 
 def test_proposal_is_no_op_before_buffer_fills():
     from impulse.chain_stats import ChainStats
-    from impulse.flow_proposals import NormalizingFlowProposal
-    from impulse.sampler_state import PTState
+    from impulse.proposals import NormalizingFlowProposal
+    from impulse.samplers import PTState
 
     ndim = 2
     ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
@@ -67,7 +63,7 @@ def test_fixed_flow_no_refit(tmp_path):
     from coppuccino import normalizing_flows_fit
     from scipy import stats
 
-    from impulse.flow_proposals import NormalizingFlowProposal
+    from impulse.proposals import NormalizingFlowProposal
     from impulse.samplers import PTSampler
 
     cov = np.array([[1.0, 0.5], [0.5, 1.0]])
@@ -139,7 +135,7 @@ def test_chain_acceptance_rates_includes_nf_and_custom(tmp_path):
     """
     from coppuccino import normalizing_flows_fit
 
-    from impulse.flow_proposals import NormalizingFlowProposal
+    from impulse.proposals import NormalizingFlowProposal
     from impulse.samplers import PTSampler
 
     class MyTinyJump:
@@ -199,13 +195,11 @@ def test_chain_acceptance_rates_includes_nf_and_custom(tmp_path):
             assert per_chain_rates[n]["calls"] > 0, f"chain {ch_idx} {n} got 0 calls"
 
 
-def test_set_flow_after_unpickle(tmp_path):
-    """Fixed flows are dropped during pickle; ``set_flow`` re-attaches."""
-    import pickle
-
+def test_set_flow_after_checkpoint_restore():
+    """Fixed flows are not serialized in checkpoints; ``set_flow`` re-attaches."""
     from coppuccino import normalizing_flows_fit
 
-    from impulse.flow_proposals import NormalizingFlowProposal
+    from impulse.proposals import NormalizingFlowProposal
 
     rng = np.random.default_rng(0)
     flow = normalizing_flows_fit(
@@ -216,10 +210,11 @@ def test_set_flow_after_unpickle(tmp_path):
     nf = NormalizingFlowProposal(flow=flow)
     assert nf.fixed and nf.flow is flow
 
-    blob = pickle.dumps(nf)
-    restored = pickle.loads(blob)
+    state = nf.get_checkpoint_state()
+    restored = NormalizingFlowProposal()
+    restored.set_checkpoint_state(state)
     assert restored.fixed is True
-    assert restored.flow is None  # dropped during pickle
+    assert restored.flow is None
 
     restored.set_flow(flow)
     assert restored.flow is flow
@@ -227,28 +222,19 @@ def test_set_flow_after_unpickle(tmp_path):
 
 
 def test_prior_recovery_2d_normal(tmp_path):
-    """End-to-end: NF proposal alone should recover a 2D Gaussian target.
-
-    The target is a correlated 2D Normal, which the flow can model
-    arbitrarily well. Using the NF proposal exclusively (after the initial
-    buffer fill), the cold chain should match the target moments and pass
-    KS tests per-dimension against the marginals.
-    """
+    """End-to-end: NF proposal alone should recover a 2D Gaussian target."""
     from scipy import stats
 
-    from impulse.flow_proposals import NormalizingFlowProposal
+    from impulse.proposals import NormalizingFlowProposal
     from impulse.samplers import PTSampler
 
-    # Target: zero-mean Gaussian with correlation
     cov = np.array([[1.0, 0.6], [0.6, 1.0]])
-    L = np.linalg.cholesky(cov)
     cov_inv = np.linalg.inv(cov)
 
     def lnlike(x):
         return float(-0.5 * x @ cov_inv @ x)
 
     def lnprior(x):
-        # wide flat prior; bounds keep things finite
         if np.any(np.abs(x) > 10):
             return -np.inf
         return 0.0
@@ -258,8 +244,6 @@ def test_prior_recovery_2d_normal(tmp_path):
         ndim=2,
         lnlike=lnlike,
         lnprior=lnprior,
-        # Keep standard adaptive proposals active so the chain mixes
-        # whether or not the NF is fitting well at any given moment.
         am_weight=15,
         scam_weight=30,
         de_weight=50,
@@ -275,7 +259,7 @@ def test_prior_recovery_2d_normal(tmp_path):
         min_samples=1500,
         refit_interval=1500,
         max_epochs=120,
-        prior_bounds=np.array([[-8.0, 8.0], [-8.0, 8.0]]),  # tame extrapolation
+        prior_bounds=np.array([[-8.0, 8.0], [-8.0, 8.0]]),
         rng_seed=0,
     )
     sampler.proposal_bundle.add_jump(nf, weight=30.0)
@@ -288,18 +272,15 @@ def test_prior_recovery_2d_normal(tmp_path):
     burn = 3000
     s = samples[burn:]
 
-    # Moments
     mu = s.mean(axis=0)
     s_cov = np.cov(s, rowvar=False)
     np.testing.assert_allclose(mu, 0.0, atol=0.2)
     np.testing.assert_allclose(s_cov, cov, atol=0.25)
 
-    # Marginal KS — generous threshold given short chain & autocorrelation
     for d in range(2):
         ks, _ = stats.kstest(s[:, d], lambda q: stats.norm.cdf(q, 0.0, np.sqrt(cov[d, d])))
         assert ks < 0.10, f"dim {d}: KS={ks:.3f} too large"
 
-    # Sanity: the NF proposal was actually used and accepted some moves
     rates = sampler.proposal_acceptance_rates()
     assert "nf_flow" in rates
     assert rates["nf_flow"]["calls"] > 100
@@ -309,10 +290,8 @@ def test_prior_recovery_2d_normal(tmp_path):
 def test_checkpoint_state_round_trips_flag_and_counters():
     """get_checkpoint_state / set_checkpoint_state round-trip the mutable
     adaptation state (frozen/fixed flags and counters) as JSON scalars, and
-    never carry the flow object (dropped on serialize, like the pickle path)."""
-    import json
-
-    from impulse.flow_proposals import NormalizingFlowProposal
+    never carry the flow object."""
+    from impulse.proposals import NormalizingFlowProposal
 
     prop = NormalizingFlowProposal(min_samples=50, refit_interval=5)
     prop._call_count = 321
@@ -321,7 +300,6 @@ def test_checkpoint_state_round_trips_flag_and_counters():
     prop.freeze_adaptation()
 
     state = prop.get_checkpoint_state()
-    # JSON-scalar-only: no arrays, no flow object.
     assert json.loads(json.dumps(state)) == state
     assert "flow" not in state
 

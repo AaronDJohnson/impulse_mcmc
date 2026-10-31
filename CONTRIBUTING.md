@@ -1,8 +1,8 @@
 # Contributing to impulse-mcmc
 
-Thanks for contributing! This is a research code for parallel-tempering MCMC,
-NUTS, and product-space (birth-death) model selection — correctness of the sampler kernels
-is the top priority, and the sections below explain how we defend it.
+Thanks for contributing! This is a research code for parallel-tempering MCMC —
+correctness of the sampler kernels is the top priority, and the sections below
+explain how we defend it.
 
 ## Development setup
 
@@ -15,7 +15,8 @@ pip install -e ".[dev]"
 ```
 
 The `dev` extra installs pytest (with coverage and timeout plugins), black,
-isort, and flake8. Plotting helpers need matplotlib (`pip install -e ".[plots]"`).
+isort, and flake8. The normalizing-flow tests need the `flow` extra
+(`pip install -e ".[flow]"`, Python 3.11+) and skip without it.
 
 ## Running the tests
 
@@ -31,9 +32,6 @@ pytest tests/ -m "not slow"
   removed in 2.0.0 along with the dead `impulse/parallel.py` it covered.)
   `pytest-timeout` is still in the `dev` extra if you want to bound a run with
   `--timeout=N` while debugging.
-- If matplotlib is installed and your home directory is read-only (e.g. on a
-  cluster), point its cache somewhere writable before running the plot tests:
-  `export MPLCONFIGDIR=$TMPDIR/mpl`.
 
 ## Formatting and linting
 
@@ -54,17 +52,16 @@ separately if you don't already have it).
 
 Sampler bugs often don't crash — they silently bias posteriors. Two rules:
 
-1. **Detailed-balance regression tests must pass.** The tests in
-   `tests/test_birth_death_detailed_balance.py` — including the deterministic
-   exact-enumeration test (`test_exact_enumeration_stationarity`), which
-   enumerates the real kernels with zero Monte Carlo noise — are the guard
-   against transdimensional bias. Never weaken their tolerances to make a
-   change pass; a failure there means the kernel is wrong.
+1. **Statistical and reproducibility tests must pass.** The slow tests in
+   `tests/test_slow_statistics.py` check that the sampler recovers known
+   posteriors, and `tests/test_reproducibility.py` pins seed-for-seed and
+   resume-for-uninterrupted bit-exactness. Never weaken their tolerances to
+   make a change pass; a failure there means the kernel is wrong.
 2. **New proposals need a `qxy` correctness argument.** Proposals return
    `(sample, qxy)` with `qxy = log[q(x|y) / q(y|x)]`. A PR adding or changing
    a proposal must include a short written derivation of why its `qxy` is
-   correct (in the docstring or PR description), plus a test — ideally an
-   extension of the detailed-balance suite.
+   correct (in the docstring or PR description), plus a test that the chain
+   recovers a known target with it.
 
 ## API stability (2.x)
 
@@ -84,8 +81,7 @@ The 2.x series follows semver intent:
   refuse newer ones with a clear error. Resume is *reconstruct then restore*, so
   changing constructor wiring, proposal registration, or a component's serialized
   state can break old checkpoints — don't rely on resuming a long run across an
-  upgrade. The legacy pickle format is deprecated (removal targeted for a future
-  2.x release).
+  upgrade. Pickle checkpoints are neither written nor read.
 
 User-visible changes should get an entry in `CHANGELOG.md` (Keep a Changelog
 format).

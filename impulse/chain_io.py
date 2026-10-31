@@ -1,54 +1,21 @@
-"""On-disk chain record format: raw binary (default) or whitespace text.
-
-Chain files are append-only tables of fixed-width ``float64`` rows. Two
-encodings are supported, selected per sampler by the ``chain_format`` argument:
-
-``"binary"`` (default)
-    Raw little-endian-native ``float64``, no header, no delimiters --
-    ``nrows * ncols * 8`` bytes exactly. Appending is a ``bytes`` write,
-    reading is one ``numpy.fromfile``, and truncating to a row count is an
-    ``os.truncate`` at a byte offset. This is the default because formatting
-    floats as text dominated chain I/O: ``numpy.savetxt`` measured ~18% of
-    total wall time on a 21-temperature run, essentially all of it in decimal
-    conversion.
-
-``"text"``
-    The historical encoding: one row per line, ``%.18e`` fields separated by
-    single spaces, readable with ``numpy.loadtxt`` or any text tool. Slower to
-    write and ~2.7x larger on disk, but greppable and diffable, which is worth
-    having when debugging a run on a cluster.
-
-Both encodings are lossless for finite values: ``%.18e`` round-trips a
-``float64`` exactly. They differ for non-finite values -- binary preserves the
-exact NaN/inf bit patterns, text writes ``nan``/``inf`` spellings that
-``loadtxt`` maps back to canonical values.
-
-Row counts are derived from the file itself (byte length for binary, line count
-for text) rather than tracked separately, so a torn write is visible as a short
-or partial final row instead of being silently trusted.
-"""
+"""Chain I/O, file preparation, and in-memory ring-buffer storage."""
 
 import os
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 
-#: Encodings understood by every function in this module.
 FORMATS = ("binary", "text")
-
-#: Filename suffix per encoding. The suffix IS the format marker on disk, so a
-#: reader never has to be told which encoding a directory holds.
 SUFFIXES = {"binary": ".bin", "text": ".txt"}
-
-#: Bytes per stored value. The binary encoding is float64 and nothing else --
-#: a narrower dtype would silently lose precision the text encoding preserves.
 ITEMSIZE = 8
-
 _TEXT_FMT = "%.18e"
+_BUFFER_FIELDS = ("samples", "lnprob", "lnlike", "accept", "var_temp")
 
 
 def validate_format(chain_format: str) -> str:
-    """Return ``chain_format`` if supported, else raise ``ValueError``."""
+    """Return ``chain_format`` if supported ('binary' or 'text'), else raise ValueError."""
     if chain_format not in FORMATS:
         raise ValueError(
             f"chain_format must be one of {FORMATS}, got {chain_format!r}. "
@@ -64,19 +31,7 @@ def chain_suffix(chain_format: str) -> str:
 
 
 def detect_format(basepath: str) -> Optional[str]:
-    """Identify the encoding of an existing chain file given its stem.
-
-    Parameters
-    ----------
-    basepath : str
-        Path WITHOUT a suffix, e.g. ``<outdir>/chain_0``.
-
-    Returns
-    -------
-    str or None
-        ``"binary"``, ``"text"``, or ``None`` when neither file exists.
-        Binary wins if somehow both are present, matching the write default.
-    """
+    """Identify the encoding of an existing chain file given its stem."""
     for fmt in FORMATS:
         if os.path.exists(basepath + SUFFIXES[fmt]):
             return fmt
@@ -84,11 +39,7 @@ def detect_format(basepath: str) -> Optional[str]:
 
 
 def append_rows(filepath: str, rows: np.ndarray, chain_format: str) -> int:
-    """Append ``rows`` (shape ``(n, ncols)``) to ``filepath``; return ``n``.
-
-    Writing zero rows is a no-op that still returns 0, so callers can append
-    unconditionally.
-    """
+    """Append ``rows`` (shape ``(n, ncols)``) to ``filepath``; return ``n``."""
     validate_format(chain_format)
     rows = np.asarray(rows, dtype=np.float64)
     if rows.ndim == 1:
@@ -97,8 +48,6 @@ def append_rows(filepath: str, rows: np.ndarray, chain_format: str) -> int:
         return 0
     if chain_format == "binary":
         with open(filepath, "ab") as fp:
-            # ascontiguousarray: a sliced/strided view would otherwise be
-            # written in memory order rather than row-major order.
             fp.write(np.ascontiguousarray(rows).tobytes())
     else:
         with open(filepath, "a", encoding="ascii") as fp:
@@ -107,31 +56,22 @@ def append_rows(filepath: str, rows: np.ndarray, chain_format: str) -> int:
 
 
 def read_rows(filepath: str, ncols: int, chain_format: Optional[str] = None) -> np.ndarray:
-    """Read a whole chain file as a ``(nrows, ncols)`` float64 array.
-
-    ``chain_format`` defaults to the encoding implied by the file's suffix.
-    A trailing partial row (a torn write) is dropped with the rest intact.
-    """
+    """Read a whole chain file as a ``(nrows, ncols)`` float64 array."""
     if chain_format is None:
         chain_format = "binary" if filepath.endswith(SUFFIXES["binary"]) else "text"
     validate_format(chain_format)
     if chain_format == "binary":
         flat = np.fromfile(filepath, dtype=np.float64)
         nrows = flat.size // ncols
-        if flat.size != nrows * ncols:
-            # Torn final row: keep the complete ones.
-            flat = flat[: nrows * ncols]
-        return flat.reshape(nrows, ncols)
+        return flat[: nrows * ncols].reshape(nrows, ncols)
     data = np.loadtxt(filepath)
     if data.size == 0:
         return np.empty((0, ncols))
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    return data
+    return data.reshape(1, -1) if data.ndim == 1 else data
 
 
 def count_rows(filepath: str, ncols: int, chain_format: str) -> int:
-    """Number of COMPLETE rows currently in ``filepath`` (0 if absent)."""
+    """Number of complete rows currently in ``filepath`` (0 if absent)."""
     validate_format(chain_format)
     if not os.path.exists(filepath):
         return 0
@@ -142,11 +82,7 @@ def count_rows(filepath: str, ncols: int, chain_format: str) -> int:
 
 
 def truncate_rows(filepath: str, nrows: int, ncols: int, chain_format: str) -> None:
-    """Shorten ``filepath`` to its first ``nrows`` rows; no-op if already shorter.
-
-    Binary truncates at a byte offset without reading the file. Text must
-    rewrite, since line lengths are not fixed.
-    """
+    """Shorten ``filepath`` to its first ``nrows`` rows; no-op if already shorter."""
     validate_format(chain_format)
     if not os.path.exists(filepath):
         return
@@ -160,3 +96,138 @@ def truncate_rows(filepath: str, nrows: int, ncols: int, chain_format: str) -> N
     if len(lines) > nrows:
         with open(filepath, "w", encoding="ascii") as fp:
             fp.writelines(lines[:nrows])
+
+
+def prepare_files(filepaths, resume: bool = False) -> None:
+    """Ensure each file in ``filepaths`` exists, overwriting unless ``resume=True``."""
+    for filepath in filepaths:
+        path = Path(filepath)
+        if path.exists():
+            if not resume:
+                path.unlink()
+                path.touch()
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+
+def shift_array(arr: np.ndarray, num: int, fill_value: float = 0) -> np.ndarray:
+    """Shift an array along axis 0 by ``num`` positions, filling vacated entries."""
+    result = np.empty_like(arr)
+    if num > 0:
+        result[:num] = fill_value
+        result[num:] = arr[:-num]
+    elif num < 0:
+        result[num:] = fill_value
+        result[:num] = arr[-num:]
+    else:
+        result[:] = arr
+    return result
+
+
+@dataclass
+class ShortChain:
+    """Circular buffer for in-memory chain storage and periodic disk flushes."""
+
+    ndim: int
+    ntemps: int
+    short_iters: int
+    iteration: int = 0
+    outdir: str = "./chains/"
+    resume: bool = False
+    thin: int = 1
+    chain_format: str = "binary"
+
+    def __post_init__(self):
+        if self.thin > self.short_iters:
+            raise ValueError("There are not enough samples to thin. Increase save_freq.")
+        self.samples = np.zeros((self.ntemps, self.short_iters, self.ndim))
+        self.lnprob = np.zeros((self.ntemps, self.short_iters))
+        self.lnlike = np.zeros((self.ntemps, self.short_iters))
+        self.accept = np.zeros((self.ntemps, self.short_iters))
+        self.var_temp = np.zeros((self.ntemps, self.short_iters))
+        self._unsaved = 0
+        self._rows_written = 0
+        suffix = chain_suffix(self.chain_format)
+        self.filenames = [f"chain_{i}{suffix}" for i in range(self.ntemps)]
+        self.filepaths = [os.path.join(self.outdir, name) for name in self.filenames]
+        prepare_files(self.filepaths, resume=self.resume)
+
+    @property
+    def ncols(self) -> int:
+        return self.ndim + 4
+
+    def add_state(self, new_state) -> None:
+        """Record a ``SamplerState`` at the current ring position."""
+        idx = self.iteration % self.short_iters
+        self.samples[:, idx] = new_state.positions
+        self.lnprob[:, idx] = new_state.lnprobs
+        self.lnlike[:, idx] = new_state.lnlikes
+        self.accept[:, idx] = new_state.accepted
+        self.var_temp[:, idx] = new_state.temps
+        self.iteration += 1
+        self._unsaved += 1
+
+    def exists(self, outdir: str, filename: str) -> bool:
+        return Path(os.path.join(outdir, filename)).exists()
+
+    def get_recent_samples(self, count: int) -> np.ndarray:
+        """Return the ``count`` most recent samples as ``(ntemps, count, ndim)``."""
+        count = min(count, self.short_iters, self.iteration)
+        if count == 0:
+            return self.samples[:, :0, :]
+        end = self.iteration % self.short_iters
+        start = (self.iteration - count) % self.short_iters
+        if start < end:
+            return self.samples[:, start:end, :]
+        return np.concatenate([self.samples[:, start:, :], self.samples[:, :end, :]], axis=1)
+
+    def save_chain(self) -> None:
+        """Flush unsaved samples to disk with global-phase thinning."""
+        if self._unsaved == 0:
+            return
+        count = min(self._unsaved, self.short_iters)
+        end = self.iteration % self.short_iters
+        start = (self.iteration - count) % self.short_iters
+        idx = slice(start, end) if start < end else np.r_[start : self.short_iters, 0:end]
+
+        offset = (-(self.iteration - count)) % self.thin
+        nrows = 0
+        for temp_idx, filepath in enumerate(self.filepaths):
+            to_save = np.column_stack(
+                [
+                    self.samples[temp_idx, idx],
+                    self.lnlike[temp_idx, idx],
+                    self.lnprob[temp_idx, idx],
+                    self.accept[temp_idx, idx],
+                    self.var_temp[temp_idx, idx],
+                ]
+            )[offset :: self.thin]
+            nrows = append_rows(filepath, to_save, self.chain_format)
+        self._unsaved = 0
+        self._rows_written += nrows
+
+    def get_checkpoint_state(self) -> tuple[dict, dict]:
+        arrays = {k: np.asarray(getattr(self, k)) for k in _BUFFER_FIELDS}
+        meta = {
+            "iteration": int(self.iteration),
+            "unsaved": int(self._unsaved),
+            "rows_written": int(self._rows_written),
+            "short_iters": int(self.short_iters),
+            "thin": int(self.thin),
+        }
+        return arrays, meta
+
+    def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        self.short_iters = int(meta["short_iters"])
+        self.thin = int(meta["thin"])
+        self.iteration = int(meta["iteration"])
+        self._unsaved = int(meta["unsaved"])
+        self._rows_written = int(meta["rows_written"])
+        for k in _BUFFER_FIELDS:
+            setattr(self, k, np.array(arrays[k], dtype=float))
+
+    def truncate_files_to_saved(self) -> None:
+        """Truncate chain files on disk to the checkpointed row count."""
+        for filepath in self.filepaths:
+            truncate_rows(filepath, self._rows_written, self.ncols, self.chain_format)

@@ -30,5 +30,5 @@ iterations, toy likelihood if possible):
 - Random seed(s) used and whether the result persists across seeds:
 - Number of iterations / temperatures, and any convergence diagnostics you
   checked (Gelman-Rubin, effective sample size, acceptance rates):
-- Please do **not** attach checkpoint `.pkl` files — they are pickles and we
-  won't load them. Attach chain text output or a script instead.
+- Please do **not** attach checkpoint files or old `.pkl` pickles. Attach a
+  script that reproduces the problem, or chain output, instead.

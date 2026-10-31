@@ -1,10 +1,11 @@
+import warnings
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
 from impulse.chain_stats import ChainStats, MultiChainStats, _HistoryBuffer
-from impulse.sampler_state import PTState, SamplerState
+from impulse.samplers import PTState, SamplerState
 
 
 class TestChainStats:
@@ -476,55 +477,6 @@ class TestMultiChainStats:
                 assert S.shape == (expected_size,)
 
 
-class TestEnablePerModelLayout:
-    """enable_per_model derives its indices from ParameterLayout."""
-
-    @staticmethod
-    def _make_stats(ndim, groups):
-        ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
-        rng = np.random.default_rng(0)
-        return ChainStats(
-            ndim=ndim,
-            pt_state=ptstate,
-            chain_index=0,
-            rng=rng,
-            groups=groups,
-            buffer_size=10,
-        )
-
-    def test_scalar_and_layout_paths_agree(self):
-        from impulse.product_space import ParameterLayout
-
-        num_models, num_params = 2, 3
-        layout = ParameterLayout(num_params=num_params, num_models=num_models)
-        groups = [list(range(k * num_params, (k + 1) * num_params)) for k in range(num_models)]
-
-        scalar_stats = self._make_stats(layout.total_dim, [list(g) for g in groups])
-        scalar_stats.enable_per_model(num_models, num_params)
-
-        layout_stats = self._make_stats(layout.total_dim, [list(g) for g in groups])
-        layout_stats.enable_per_model(num_models, num_params, layout=layout)
-
-        for stats in (scalar_stats, layout_stats):
-            assert stats._num_models == num_models
-            assert stats._num_params == num_params
-            assert stats._nmodel_idx == layout.nmodel_index == num_models * num_params
-            assert set(stats._per_model) == set(range(num_models))
-
-    def test_multi_chain_forwards_layout(self):
-        from impulse.product_space import ParameterLayout
-
-        num_models, num_params = 2, 2
-        layout = ParameterLayout(num_params=num_params, num_models=num_models)
-        groups = [list(range(k * num_params, (k + 1) * num_params)) for k in range(num_models)]
-        chains = [self._make_stats(layout.total_dim, [list(g) for g in groups]) for _ in range(2)]
-        multi = MultiChainStats(chains)
-        multi.enable_per_model(num_models, num_params, layout=layout)
-        for cs in multi.chain_stats:
-            assert cs._nmodel_idx == layout.nmodel_index
-            assert cs._num_models == num_models
-
-
 class TestHistoryBufferThinning:
     """Storing every buffer_thin-th state instead of every consecutive one.
 
@@ -640,3 +592,111 @@ class TestGroupsCoverage:
         stats = ChainStats(ndim=4, pt_state=ptstate, chain_index=0, rng=np.random.default_rng(0))
         covered = {int(i) for g in stats.groups for i in np.atleast_1d(g)}
         assert covered == set(range(4))
+
+
+class TestUserSuppliedShapes:
+    """sample_cov / sample_mean shapes accepted (or rejected) at construction."""
+
+    @staticmethod
+    def _stats(ndim, **kw):
+        ptstate = PTState(ndim=ndim, ntemps=1, min_temp=1.0, max_temp=1.0)
+        return ChainStats(
+            ndim=ndim, pt_state=ptstate, chain_index=0, rng=np.random.default_rng(0), **kw
+        )
+
+    def test_shape_1_sample_cov_for_ndim_1_is_used(self):
+        """A (1,) variance must scale the proposal, not fall back to identity."""
+        stats = self._stats(1, sample_cov=np.array([1e-4]))
+        assert stats.sample_cov.shape == (1, 1)
+        np.testing.assert_allclose(np.abs(stats.proposal_L[0]), [[1e-2]], rtol=1e-6)
+
+    def test_0d_sample_mean_for_ndim_1_is_promoted(self):
+        stats = self._stats(1, sample_mean=np.float64(0.3))
+        assert stats.sample_mean.shape == (1,)
+
+    @pytest.mark.parametrize(
+        "bad", [np.array([4.0, 1.0, 9.0]), np.eye(2), np.ones((3, 2))], ids=["1d", "2x2", "3x2"]
+    )
+    def test_wrong_shape_sample_cov_raises(self, bad):
+        """A diagonal passed as a 1-D array used to give proposal_L diag [0, 1, 0]."""
+        with pytest.raises(ValueError, match=r"sample_cov must have shape \(3, 3\)"):
+            self._stats(3, sample_cov=bad)
+
+    def test_uncovered_groups_warning_explains_the_consequence(self):
+        with pytest.warns(UserWarning, match="stay frozen"):
+            self._stats(3, groups=[[0, 1]])
+
+
+def test_eigh_failure_falls_back_to_identity_with_a_warning(monkeypatch):
+    from impulse.chain_stats import svd_groups
+
+    def boom(_):
+        raise np.linalg.LinAlgError("did not converge")
+
+    monkeypatch.setattr(np.linalg, "eigh", boom)
+    with pytest.warns(RuntimeWarning, match="identity"):
+        _, _, proposal_L = svd_groups([None], [None], [np.arange(2)], 4.0 * np.eye(2))
+    np.testing.assert_array_equal(proposal_L[0] @ proposal_L[0].T, np.eye(2))
+
+
+# NaN entries make eigh return NaN rather than raise; a covariance near the float64
+# limit is finite but overflows to inf eigenvalues inside the decomposition.
+_UNDECOMPOSABLE = {
+    "nan": np.array([[1.0, np.nan], [np.nan, 1.0]]),
+    "overflow": 1.7e308 * np.array([[1.0, 0.99], [0.99, 1.0]]),
+}
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf], ids=["nan", "inf"])
+def test_non_finite_sample_cov_raises(bad):
+    ptstate = PTState(ndim=2, ntemps=1, min_temp=1.0, max_temp=1.0)
+    cov = np.eye(2)
+    cov[0, 1] = cov[1, 0] = bad
+    with pytest.raises(ValueError, match="sample_cov contains non-finite"):
+        ChainStats(
+            ndim=2, pt_state=ptstate, chain_index=0, rng=np.random.default_rng(0), sample_cov=cov
+        )
+
+
+@pytest.mark.parametrize("name", sorted(_UNDECOMPOSABLE))
+def test_non_finite_decomposition_without_previous_factor_uses_identity(name):
+    from impulse.chain_stats import svd_groups
+
+    with pytest.warns(RuntimeWarning, match="identity"):
+        _, svd_S, proposal_L = svd_groups([None], [None], [np.arange(2)], _UNDECOMPOSABLE[name])
+    assert np.all(np.isfinite(svd_S[0]))
+    np.testing.assert_array_equal(proposal_L[0] @ proposal_L[0].T, np.eye(2))
+
+
+@pytest.mark.parametrize("name", sorted(_UNDECOMPOSABLE))
+def test_non_finite_decomposition_keeps_the_previous_factor(name):
+    from impulse.chain_stats import svd_groups
+
+    groups = [np.arange(2)]
+    svd_U, svd_S, proposal_L = svd_groups(
+        [None], [None], groups, np.array([[2.0, 0.5], [0.5, 1.0]])
+    )
+    before = [a.copy() for a in (svd_U[0], svd_S[0], proposal_L[0])]
+    with pytest.warns(RuntimeWarning, match="keeping the previous"):
+        svd_U, svd_S, proposal_L = svd_groups(
+            svd_U, svd_S, groups, _UNDECOMPOSABLE[name], proposal_L
+        )
+    for got, want in zip((svd_U[0], svd_S[0], proposal_L[0]), before):
+        np.testing.assert_array_equal(got, want)
+
+
+def test_finite_decomposition_does_not_warn():
+    from impulse.chain_stats import svd_groups
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        svd_groups(
+            [None, None], [None, None], [np.arange(2), np.array([1])], np.eye(2), ridge=1e-10
+        )
+
+
+def test_checkpoint_meta_keeps_the_per_model_key_for_v2_readers():
+    """impulse v2.0 reads meta["per_model"] unconditionally when it resumes a checkpoint."""
+    cs = ChainStats(2, PTState(ndim=2, ntemps=1), 0, np.random.default_rng(0))
+    _, meta = cs.get_checkpoint_state()
+    assert "per_model" in meta and meta["per_model"] is None

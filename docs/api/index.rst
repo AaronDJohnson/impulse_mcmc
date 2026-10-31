@@ -4,47 +4,34 @@ API reference
 The supported API is everything in ``impulse.__all__``, grouped below exactly
 as in ``impulse.__init__``. It is covered by the 2.x stability policy.
 
-Product-space model selection and the NUTS-interleaved hybrid sampler live in
-:doc:`impulse.experimental <experimental>` and are versioned separately.
-
 .. currentmodule:: impulse
 
 .. autosummary::
 
    PTSampler
-   NUTSSampler
-   NestedProductSpace
-   model_visitation_stats
-   bayes_factor_from_chain
+   am
+   scam
+   de
+   gaussian
+   DEProposal
+   NormalizingFlowProposal
+   JumpProposals
+   ProposalBundle
    grubin
    effective_sample_size
    autocorr_length_ips_ims
-   checkpoint_sampler
-   load_checkpoint
-   load_nuts_checkpoint
    CheckpointMismatchError
+   TornCheckpointError
+   checkpoint_sampler
+   save_state_checkpoint
+   load_state_checkpoint
+   restore_state_checkpoint
    check_for_checkpoint
-   compose_logp_and_grad
-   make_logp_and_grad_numerical
-   MassMatrix
-   MassMatrixType
-   compute_sbc_rank
-   compute_sbc_quantile
-   compute_model_pit
-   ecdf
-   sbc_ecdf_plot
-   coverage_plot
-   rank_histogram
-   run_sbc_continuous
-   run_sbc_model_selection
 
 .. toctree::
    :maxdepth: 2
 
    samplers
-   model-spaces
+   proposals
    diagnostics
    checkpoint
-   nuts-utilities
-   validation
-   experimental

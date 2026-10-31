@@ -3,7 +3,7 @@ import warnings
 import numpy as np
 import pytest
 
-from impulse.sampler_state import PTState, SamplerState, tempered_lnprobs
+from impulse.samplers import PTState, SamplerState, tempered_lnprobs
 
 
 class TestSamplerState:

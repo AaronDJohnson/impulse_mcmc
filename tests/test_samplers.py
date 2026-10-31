@@ -8,13 +8,14 @@ import pytest
 
 from impulse.chain_stats import MultiChainStats
 from impulse.proposals import DEProposal, ProposalBundle, de
-from impulse.sampler_state import PTState, tempered_lnprobs
 from impulse.samplers import (
     PTSampler,
+    PTState,
     setup_chain_stats,
     setup_initial_position,
     setup_seeds,
     setup_standard_jumps,
+    tempered_lnprobs,
 )
 
 
@@ -361,9 +362,7 @@ class TestPTSampler:
             assert de_jump.__name__ == "de"
             assert de_jump.min_fill == 300
 
-    # The sample() loop lives in the shared engine module impulse._pt_base,
-    # so tqdm must be patched where it is looked up
-    @patch("impulse._pt_base.tqdm")  # Mock tqdm to avoid progress bar output
+    @patch("impulse.samplers.tqdm")  # Mock tqdm to avoid progress bar output
     def test_pt_sampler_sample_basic(self, mock_tqdm, simple_likelihood, simple_prior, temp_dir):
         """Test basic sampling functionality"""
         # Make tqdm return an iterable that doesn't interfere
@@ -556,16 +555,13 @@ class TestPTSampler:
         assert sampler.lnlike.vectorized == True
         assert sampler.lnprior.vectorized == True
 
-    # check_for_checkpoint and tqdm are looked up in the shared engine
-    # module impulse._pt_base; load_checkpoint is looked up in
-    # impulse.samplers (the PTSampler._load_checkpoint hook)
-    @patch("impulse._pt_base.check_for_checkpoint")
-    @patch("impulse.samplers.load_checkpoint")
-    @patch("impulse._pt_base.tqdm")
+    @patch("impulse.samplers.check_for_checkpoint")
+    @patch("impulse.samplers.restore_state_checkpoint")
+    @patch("impulse.samplers.tqdm")
     def test_pt_sampler_resume_functionality(
         self,
         mock_tqdm,
-        mock_load_checkpoint,
+        mock_restore_checkpoint,
         mock_check_checkpoint,
         simple_likelihood,
         simple_prior,
@@ -573,16 +569,8 @@ class TestPTSampler:
     ):
         """Test resume functionality"""
         mock_tqdm.return_value = range(5)
-        mock_check_checkpoint.return_value = "/fake/checkpoint.pkl"
-
-        # Create a pickleable stand-in for a loaded sampler
-        class _FakeLoaded:
-            pass
-
-        fake_loaded = _FakeLoaded()
-        fake_loaded.iteration = 100
-        fake_loaded.some_state = "loaded"
-        mock_load_checkpoint.return_value = fake_loaded
+        mock_check_checkpoint.return_value = "/fake/checkpoint.json"
+        mock_restore_checkpoint.return_value = {}
 
         sampler = PTSampler(
             ndim=2,
@@ -598,7 +586,7 @@ class TestPTSampler:
 
         # Check that checkpoint loading was attempted
         mock_check_checkpoint.assert_called_once_with(temp_dir)
-        mock_load_checkpoint.assert_called_once()
+        mock_restore_checkpoint.assert_called_once()
 
     def test_pt_sampler_different_initial_formats(self, simple_likelihood, simple_prior, temp_dir):
         """Test PTSampler with different initial position formats"""
@@ -720,7 +708,7 @@ class TestPTSampler:
         assert sampler.lnlike.threads == 2
         assert sampler.lnprior.threads == 2
 
-    @patch("impulse._pt_base.tqdm")  # sample() loop lives in impulse._pt_base
+    @patch("impulse.samplers.tqdm")
     def test_proposal_acceptance_rates(self, mock_tqdm, simple_likelihood, simple_prior, temp_dir):
         """Total calls across all proposals equals num_iterations * ntemps."""
         n_iter = 50
@@ -969,21 +957,10 @@ class TestNumAdapt:
         sampler.sample(np.array([0.1, 0.1]), num_iterations=60)
         assert prop.frozen is False
 
-    def test_num_adapt_missing_attribute_defaults_to_adapt_forever(
-        self, simple_likelihood, simple_prior, temp_dir
-    ):
-        """Resume-safety: checkpoints predating num_adapt keep adapting"""
-        sampler = self._make_sampler(simple_likelihood, simple_prior, temp_dir, 50)
-        # emulate resume from a checkpoint written before num_adapt existed
-        del sampler.num_adapt
-        assert sampler._adaptation_active(10**9) is True
-        sampler.sample(np.array([0.1, 0.1]), num_iterations=30)  # no AttributeError
-        assert sampler.short_chain.iteration == 30
-
     def test_flow_proposal_freeze_stops_refits(self, chain_stats_2d):
         """freeze_adaptation permanently disables NF refits"""
         pytest.importorskip("coppuccino")
-        from impulse.flow_proposals import NormalizingFlowProposal
+        from impulse.proposals import NormalizingFlowProposal
 
         prop = NormalizingFlowProposal(refit_interval=1, min_samples=1)
         fits = []
