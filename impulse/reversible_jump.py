@@ -919,3 +919,435 @@ class _RJJumpProposals(JumpProposals):
                 rate = accepts / calls if calls > 0 else 0.0
                 result[name] = {"calls": calls, "accepts": accepts, "rate": rate}
         return result
+
+
+class _RJCallable:
+    """Adapt ``f(x, k)`` to engine rows, which carry ``k`` as the last column."""
+
+    def __init__(self, f: Callable, ndim: int, vectorized: bool):
+        if not callable(f):
+            raise TypeError(f"{f!r} is not callable")
+        self.f = f
+        self.ndim = int(ndim)
+        self.vectorized = bool(vectorized)
+        self.__name__ = _jump_name(f)
+
+    def __call__(self, x: np.ndarray, *args: Any, **kwargs: Any) -> Any:
+        d = self.ndim
+        if self.vectorized:
+            return self.f(np.ascontiguousarray(x[:, :d]), x[:, d].astype(np.intp), *args, **kwargs)
+        return self.f(x[:d], int(x[d]), *args, **kwargs)
+
+
+def _merge_periodic(
+    layout: RJLayout,
+    periodic: Optional[PeriodicSpec],
+    component_periodic: Optional[PeriodicSpec],
+) -> Optional[PeriodicSpec]:
+    merged: PeriodicSpec = {}
+    for i, spec in (periodic or {}).items():
+        if not 0 <= int(i) < layout.ndim:
+            raise ValueError(
+                f"periodic index {i} is outside the padded parameter vector 0..{layout.ndim - 1}"
+            )
+        merged[int(i)] = spec
+    for c, spec in (component_periodic or {}).items():
+        if not 0 <= int(c) < layout.n_component:
+            raise ValueError(
+                f"component_periodic index {c} is outside a component's parameters "
+                f"0..{layout.n_component - 1}"
+            )
+        for j in range(layout.max_components):
+            i = layout.slot(j).start + int(c)
+            if i in merged:
+                raise ValueError(
+                    f"parameter {i} (component slot {j}, entry {c}) is declared in both "
+                    "periodic and component_periodic"
+                )
+            merged[i] = spec
+    return merged or None
+
+
+_RESERVED_JUMP_NAMES = BirthDeath._BRANCHES
+
+
+def _check_jump_name(move: Any) -> None:
+    name = _jump_name(move)
+    if name in _RESERVED_JUMP_NAMES:
+        raise ValueError(
+            f"cannot register a jump named {name!r}: the built-in birth/death move reports "
+            f"under {list(_RESERVED_JUMP_NAMES)} in proposal_acceptance_rates(); give the "
+            "move another __name__"
+        )
+
+
+class RJPTSampler(PTSampler):
+    """Reversible-jump parallel-tempering sampler for a variable number of components.
+
+    Samples ``(k, theta_k)``: ``n_shared`` parameters every model has, plus
+    ``k`` components of ``n_component`` parameters each, with
+    ``min_components <= k <= max_components``. Moves that change ``k`` are
+    accepted with Green's reversible-jump ratio; tempering, swaps, adaptive
+    within-model proposals, chain files and checkpoints work as in
+    :class:`PTSampler`. See the *Reversible jump* user guide page.
+
+    Parameters
+    ----------
+    n_shared : int
+        Parameters every model has; may be 0.
+    n_component : int
+        Parameters per component.
+    max_components : int
+        Largest ``k``. Every row is padded to
+        ``D = n_shared + max_components * n_component`` parameters; slots past
+        ``k`` hold NaN.
+    lnlike, lnprior : callable
+        ``f(x, k)``. Per-row mode: ``x`` is the padded ``(D,)`` vector and
+        ``k`` an int. With ``vectorized=True``: ``x`` is ``(n, D)`` and ``k``
+        an ``(n,)`` integer array. Entries past ``k`` are NaN. ``lnprior`` is
+        the joint prior over numbered slots including ``log p(k)``; for
+        exchangeable components it is ``log p(k) + sum_{i<k} log pi(theta_i)``
+        plus the shared prior, with no ``k!``. The likelihood is tempered and
+        the prior is not.
+    component_proposal : object
+        Birth density for new components, with ``draw(rng, x, k) -> u``
+        (``n_component`` values) and ``logpdf(u, x, k) -> float``, where
+        ``(x, k)`` is always the smaller model's state. ``logpdf`` must be the
+        normalized density of what ``draw`` returns and finite wherever the
+        component prior is. Optional ``get_checkpoint_state`` /
+        ``set_checkpoint_state`` and ``freeze_adaptation`` hooks are honoured
+        and called once by the sampler. :class:`IndependentComponentProposal`
+        wraps state-free functions.
+    min_components : int, default 0
+        Smallest ``k``. With ``min_components == max_components`` the built-in
+        birth/death move is not registered.
+    birth_death_weight : float, default 40
+        Weight of the built-in birth/death move (about 30% of moves with the
+        default ``am``/``scam``/``de`` weights); 0 disables it.
+    component_redraw_weight : float, default 0
+        Weight of ``component_redraw``, which replaces one component with a
+        fresh draw from ``component_proposal`` at the same ``k``.
+    component_periodic : dict, optional
+        Periodic component parameters, ``{index within a component: period or
+        (low, high)}``, applied to every slot.
+    periodic : dict, optional
+        Periodic parameters by index into the padded vector ``0 .. D - 1``
+        (normally the shared ones). May not overlap ``component_periodic``.
+    vectorized : bool, default False
+        As in :class:`PTSampler`; selects the calling convention above.
+    **kwargs
+        Any other :class:`PTSampler` keyword (``ntemps``, ``outdir``,
+        ``seed``, ``groups``, ``sample_cov``, ...). ``groups`` and
+        ``sample_cov`` index the padded vector. ``ndim`` is set by the sampler
+        and may not be passed.
+
+    Attributes
+    ----------
+    layout : RJLayout
+        The padded-row convention, also available to moves as
+        ``chain_stats.layout``.
+    birth_death : BirthDeath or None
+        The built-in birth/death move, if registered.
+
+    Notes
+    -----
+    Rows seen by the parallel-tempering engine have width ``D + 1`` with ``k``
+    last, so the default temperature-ladder step ``1 + sqrt(2 / ndim)`` uses
+    ``ndim = D + 1``; pass ``temp_step`` or ``max_temp`` to set it directly.
+
+    The within-model moves are ``rj_am``, ``rj_scam`` and ``rj_de`` (weights
+    ``am_weight``, ``scam_weight``, ``de_weight``), restricted to the active
+    coordinates. Add more with :meth:`add_custom_jump`, and moves between
+    models with :meth:`add_model_jump`.
+
+    Components are exchangeable, so a slot does not follow one physical
+    component through the run (label switching): summarize ``k``, the shared
+    parameters and label-free quantities rather than per-slot values.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_shared: int,
+        n_component: int,
+        max_components: int,
+        lnlike: Callable,
+        lnprior: Callable,
+        component_proposal: Any,
+        min_components: int = 0,
+        birth_death_weight: float = 40.0,
+        component_redraw_weight: float = 0.0,
+        component_periodic: Optional[PeriodicSpec] = None,
+        periodic: Optional[PeriodicSpec] = None,
+        vectorized: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        if "ndim" in kwargs:
+            raise TypeError(
+                "RJPTSampler sets ndim itself (n_shared + max_components * n_component, "
+                "plus the k column); do not pass ndim"
+            )
+        self.layout = RJLayout(n_shared, n_component, max_components, min_components)
+        _check_component_proposal(component_proposal)
+        for name, weight in (
+            ("birth_death_weight", birth_death_weight),
+            ("component_redraw_weight", component_redraw_weight),
+        ):
+            if not (math.isfinite(weight) and weight >= 0):
+                raise ValueError(f"{name} must be a finite number >= 0, got {weight!r}")
+        self.component_proposal = component_proposal
+        self._wrapped_jumps: Dict[int, _WrappedJump] = {}
+        self._model_jumps: List[_ModelJump] = []
+        d = self.layout.ndim
+        super().__init__(
+            ndim=d + 1,
+            lnlike=_RJCallable(lnlike, d, vectorized),
+            lnprior=_RJCallable(lnprior, d, vectorized),
+            periodic=_merge_periodic(self.layout, periodic, component_periodic),
+            vectorized=vectorized,
+            **kwargs,
+        )
+        self.birth_death: Optional[BirthDeath] = None
+        if birth_death_weight > 0 and self.layout.max_components > self.layout.min_components:
+            self.birth_death = BirthDeath(self.layout, component_proposal, self.ntemps)
+            self.proposal_bundle.add_jump(self.birth_death, birth_death_weight)
+        self.component_redraw: Optional[ComponentRedraw] = None
+        if component_redraw_weight > 0:
+            self.component_redraw = ComponentRedraw(self.layout, component_proposal)
+            self.proposal_bundle.add_jump(self.component_redraw, component_redraw_weight)
+
+    def _build_chain_stats(
+        self,
+        groups: Optional[list],
+        sample_cov: Optional[np.ndarray],
+        sample_mean: Optional[np.ndarray],
+        buffer_size: int,
+        buffer_thin: int,
+    ) -> MultiChainStats:
+        chain_stats: List[ChainStats] = [
+            MaskedChainStats(
+                self.layout.ndim,
+                self.ptstate,
+                ii,
+                self.rngs[ii],
+                groups=groups,
+                sample_cov=sample_cov,
+                sample_mean=sample_mean,
+                buffer_size=buffer_size,
+                buffer_thin=buffer_thin,
+                layout=self.layout,
+            )
+            for ii in range(self.ntemps)
+        ]
+        return MultiChainStats(chain_stats)
+
+    def _build_proposal_bundle(
+        self, am_weight: float, scam_weight: float, de_weight: float, de_min_fill: int
+    ) -> ProposalBundle:
+        de_jump = RJDEProposal(de_min_fill)
+        jumps: List[JumpProposals] = [
+            _RJJumpProposals(cs) for cs in self.multi_chain_stats.chain_stats
+        ]
+        for jp in jumps:
+            jp.add_jump(rj_am, am_weight)
+            jp.add_jump(rj_scam, scam_weight)
+            jp.add_jump(de_jump, de_weight)
+        return ProposalBundle(jumps)
+
+    def add_custom_jump(self, proposal: Any, weight: float) -> None:
+        """Register a within-model move on every chain.
+
+        ``proposal(chain_stats) -> (row, qxy)``. ``chain_stats.current_sample``
+        is the current full row, shape ``(D + 1,)`` with ``k`` last, and
+        ``chain_stats.layout`` is the sampler's :class:`RJLayout`
+        (``layout.k(row)``, ``layout.params(row)``, ``layout.slot(j)``). The
+        move must return a NEW ``(D + 1,)`` array (for example
+        ``chain_stats.current_sample.copy()``, then modified) and must not
+        modify ``chain_stats.current_sample``, which is a view of the live
+        chain state; a returned array that shares memory with it raises
+        ``ValueError``. The returned row must keep ``k`` (``row[-1]``), leave
+        the slots past ``k`` NaN and have finite active values; each is
+        checked and raises ``ValueError`` naming the move. A move named
+        ``"birth"`` or ``"death"`` is refused: those names are the built-in
+        birth/death entries of :meth:`proposal_acceptance_rates`.
+        """
+        _check_jump_name(proposal)
+        wrapped = self._wrapped_jumps.get(id(proposal))
+        if wrapped is None:
+            wrapped = _CheckedWithinModelJump(proposal, self.layout)
+            self._wrapped_jumps[id(proposal)] = wrapped
+        elif not isinstance(wrapped, _CheckedWithinModelJump):
+            raise ValueError(f"{wrapped.__name__!r} is already registered as a model jump")
+        self.proposal_bundle.add_jump(wrapped, weight)
+
+    def add_model_jump(self, move: Any, weight: float, log_jacobian: float = 0.0) -> None:
+        """Register a move between models on every chain.
+
+        ``move(chain_stats) -> (row, qxy)``, with ``row[-1]`` the new ``k``
+        and ``qxy`` Green's ratio without the Jacobian:
+        ``log[j(y->x) g'(u') / (j(x->y) g(u))]``, plus ``log|det J|`` only if
+        it depends on the state. The sampler adds ``log_jacobian`` when ``k``
+        increases and subtracts it when ``k`` decreases. Register a move and
+        its reverse as one proposal, which computes ``j(y->x)`` itself.
+
+        ``chain_stats.current_sample`` is the current full row, shape
+        ``(D + 1,)`` with ``k`` last, and ``chain_stats.layout`` is the
+        sampler's :class:`RJLayout`; :meth:`RJLayout.insert` and
+        :meth:`RJLayout.remove` build the new row as a copy. The move must
+        return a NEW array and must not modify ``chain_stats.current_sample``,
+        which is a view of the live chain state; a returned array that shares
+        memory with it raises ``ValueError``. Returned rows are checked
+        (shape ``(D + 1,)``, valid ``k``, finite active values, NaN past
+        ``k``); a violation raises ``ValueError`` naming the move. A move
+        named ``"birth"`` or ``"death"`` is refused: those names are the
+        built-in birth/death entries of :meth:`proposal_acceptance_rates`.
+        """
+        _check_jump_name(move)
+        log_jacobian = float(log_jacobian)
+        if not math.isfinite(log_jacobian):
+            raise ValueError(
+                f"log_jacobian for model jump {_jump_name(move)!r} must be finite, "
+                f"got {log_jacobian}"
+            )
+        wrapped = self._wrapped_jumps.get(id(move))
+        if wrapped is None:
+            wrapped = _ModelJump(move, self.layout, log_jacobian)
+            self._wrapped_jumps[id(move)] = wrapped
+            self._model_jumps.append(wrapped)
+        elif isinstance(wrapped, _ModelJump):
+            wrapped.log_jacobian = log_jacobian
+        else:
+            raise ValueError(f"{wrapped.__name__!r} is already registered as a within-model jump")
+        self.proposal_bundle.add_jump(wrapped, weight)
+
+    def _freeze_adaptive_proposals(self) -> None:
+        super()._freeze_adaptive_proposals()
+        freeze = getattr(self.component_proposal, "freeze_adaptation", None)
+        if callable(freeze):
+            freeze()
+
+    def sample(
+        self,
+        initial_position: np.ndarray,
+        num_iterations: int,
+        thin: int = 1,
+        initial_k: Any = None,
+    ) -> None:
+        """Run the sampler.
+
+        Parameters
+        ----------
+        initial_position : np.ndarray
+            Padded parameters without ``k``: ``(D,)`` for every temperature or
+            ``(ntemps, D)``. Entries past ``initial_k`` are ignored (set to NaN).
+        num_iterations : int
+            Total iterations, including any already completed on resume.
+        thin : int, default 1
+            Save every ``thin``-th iteration.
+        initial_k : int or sequence of int, optional
+            Starting number of components, one value or one per temperature;
+            defaults to ``min_components``.
+        """
+        layout = self.layout
+        x0 = np.asarray(initial_position, dtype=float)
+        if x0.ndim == 1 or (x0.ndim == 2 and x0.shape[0] == 1):
+            x0 = np.broadcast_to(x0.reshape(1, -1), (self.ntemps, x0.shape[-1]))
+        if x0.shape != (self.ntemps, layout.ndim):
+            raise ValueError(
+                f"initial_position must have shape ({layout.ndim},) or "
+                f"({self.ntemps}, {layout.ndim}): the padded parameters without k; "
+                f"got {np.shape(initial_position)}"
+            )
+        k0 = layout.min_components if initial_k is None else initial_k
+        try:
+            ks = np.broadcast_to(np.asarray(k0), (self.ntemps,))
+        except ValueError:
+            raise ValueError(
+                f"initial_k must be one integer or {self.ntemps} of them, got {initial_k!r}"
+            ) from None
+        rows = np.stack([layout.make_row(x0[i], ks[i]) for i in range(self.ntemps)])
+        super().sample(rows, num_iterations, thin=thin)
+        if self.birth_death is not None and self.birth_death.rejected_deaths:
+            warnings.warn(
+                f"birth_death: {self.birth_death.rejected_deaths} death proposal(s) were "
+                "rejected because component_proposal.logpdf returned -inf for the component "
+                "being removed. The proposal must be finite wherever the component prior "
+                "is; otherwise those deaths can never happen and the posterior on k is "
+                "biased.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+    def load_chain(self) -> dict:
+        """Load the saved chains.
+
+        Returns the :meth:`PTSampler.load_chain` keys, with ``samples`` the
+        NaN-padded parameters ``(ntemps, n, D)`` (no ``k`` column), plus
+        ``k`` ``(ntemps, n)`` integers and the views ``shared``
+        ``(ntemps, n, n_shared)`` and ``components``
+        ``(ntemps, n, max_components, n_component)``.
+        """
+        chain = super().load_chain()
+        rows = chain["samples"]
+        d = self.layout.ndim
+        samples = np.ascontiguousarray(rows[..., :d])
+        chain["samples"] = samples
+        chain["k"] = rows[..., d].astype(np.int64)
+        chain["shared"] = self.layout.shared(samples)
+        chain["components"] = self.layout.components(samples)
+        return chain
+
+    def _rj_settings(self) -> dict:
+        return {
+            "n_shared": self.layout.n_shared,
+            "n_component": self.layout.n_component,
+            "max_components": self.layout.max_components,
+            "min_components": self.layout.min_components,
+            "component_proposal": type(self.component_proposal).__name__,
+            "model_jumps": [[j.__name__, j.log_jacobian] for j in self._model_jumps],
+        }
+
+    def _capture_checkpoint_state(self) -> Tuple[dict, dict]:
+        arrays, meta = super()._capture_checkpoint_state()
+        getter = getattr(self.component_proposal, "get_checkpoint_state", None)
+        rj = self._rj_settings()
+        rj["component_proposal_state"] = getter() if callable(getter) else None
+        meta["reversible_jump"] = rj
+        return arrays, meta
+
+    def _restore_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        super()._restore_checkpoint_state(arrays, meta)
+        state = meta["reversible_jump"]["component_proposal_state"]
+        setter = getattr(self.component_proposal, "set_checkpoint_state", None)
+        if state is not None and callable(setter):
+            setter(state)
+
+    def _verify_extra_metadata(self, meta: dict) -> None:
+        rj = meta.get("reversible_jump")
+        if rj is None:
+            raise CheckpointMismatchError(
+                "checkpoint has no reversible-jump settings; it was not written by RJPTSampler"
+            )
+        fresh = self._rj_settings()
+        for key in ("n_shared", "n_component", "max_components", "min_components"):
+            expected, actual = int(rj[key]), int(fresh[key])
+            if expected != actual:
+                raise CheckpointMismatchError(
+                    f"{key} mismatch: checkpoint has {key}={expected} but the reconstructed "
+                    f"sampler has {key}={actual}; rebuild the sampler with {key}={expected} "
+                    "to resume this run, or start a fresh run (resume=False, or a new "
+                    "outdir) to change it."
+                )
+        if rj["component_proposal"] != fresh["component_proposal"]:
+            raise CheckpointMismatchError(
+                f"component_proposal mismatch: checkpoint used {rj['component_proposal']!r} "
+                f"but the reconstructed sampler has {fresh['component_proposal']!r}."
+            )
+        checkpointed = [[str(name), float(c)] for name, c in rj["model_jumps"]]
+        if checkpointed != fresh["model_jumps"]:
+            raise CheckpointMismatchError(
+                f"model jump mismatch: checkpoint registered {checkpointed} "
+                f"([name, log_jacobian]) but the reconstructed sampler has "
+                f"{fresh['model_jumps']}; register the same model jumps with the same "
+                "log_jacobian before resuming."
+            )

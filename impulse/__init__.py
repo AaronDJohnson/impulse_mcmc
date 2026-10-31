@@ -22,11 +22,12 @@ from .resume import (
     restore_state_checkpoint,
     save_state_checkpoint,
 )
-from .reversible_jump import IndependentComponentProposal, RJLayout
+from .reversible_jump import IndependentComponentProposal, RJLayout, RJPTSampler
 from .samplers import PTSampler
 
 __all__ = [
     "PTSampler",
+    "RJPTSampler",
     "RJLayout",
     "IndependentComponentProposal",
     "am",
