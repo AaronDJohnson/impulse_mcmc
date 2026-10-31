@@ -795,9 +795,8 @@ class PTSampler:
     ) -> ProposalBundle:
         """Register the default proposals on every chain; subclasses override.
 
-        Called from ``__init__`` after ``ntemps``, ``rngs`` and ``ptstate`` are set; a subclass
-        may return objects of a subclass (the chain stats may use a different ndim than
-        ``self.ndim``).
+        Called from ``__init__`` right after ``multi_chain_stats`` is built; a subclass may
+        return a bundle of ``JumpProposals`` subclasses.
         """
         return setup_standard_jumps(
             self.multi_chain_stats, am_weight, scam_weight, de_weight, de_min_fill=de_min_fill
