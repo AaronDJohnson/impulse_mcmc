@@ -496,20 +496,28 @@ class MaskedChainStats(ChainStats):
 
 def masked_difference(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """``a - b`` with 0 wherever either entry is NaN (an inactive slot)."""
-    d = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
-    return np.where(np.isnan(d), 0.0, d)
+    d = np.subtract(a, b, dtype=float)
+    d[np.isnan(d)] = 0.0
+    return d
+
+
+def _layout(chain_stats: MaskedChainStats) -> RJLayout:
+    layout = chain_stats.layout
+    assert layout is not None
+    return layout
 
 
 def rj_am(chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
     """Adaptive Metropolis on the active coordinates of one group.
 
     As :func:`impulse.am`, with ``n_eff`` the number of active coordinates in
-    the group and the covariance factor of that active block.
+    the group and the covariance factor of that active block. Returns the
+    current state when no group has an active coordinate.
     """
     rng = chain_stats.rng
     x = chain_stats.current_sample
     assert x is not None
-    block = chain_stats.draw_active_block(rng, int(x[-1]))
+    block = chain_stats.draw_active_block(rng, _layout(chain_stats).k(x))
     if block is None:
         return x.copy(), 0.0
     idx, factor, neff, sqrt_2neff = block
@@ -524,7 +532,7 @@ def rj_scam(chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
     rng = chain_stats.rng
     x = chain_stats.current_sample
     assert x is not None
-    block = chain_stats.draw_active_block(rng, int(x[-1]))
+    block = chain_stats.draw_active_block(rng, _layout(chain_stats).k(x))
     if block is None:
         return x.copy(), 0.0
     idx, factor, neff, _ = block
@@ -540,11 +548,17 @@ class RJDEProposal:
 
     The difference of two stored rows is taken on the group's active
     coordinates, with 0 where either row lacks the slot. Swapping the two rows
-    negates the difference with the same mask, so the move is symmetric.
-    Returns the current state until ``min_fill`` rows are stored.
+    negates the difference with the same mask, so the move is symmetric. If
+    the difference is zero on every active coordinate (either row lacks all of
+    them), the row pair is redrawn, up to ``max_pair_draws`` draws in total;
+    this depends only on the buffer and the group, never on the current point,
+    so symmetry holds. If every draw is zero the current state is returned.
+    The current state is also returned until ``min_fill`` rows are stored, or
+    when no group has an active coordinate.
     """
 
     __name__ = "rj_de"
+    max_pair_draws = 16
 
     def __init__(self, min_fill: int = DE_MIN_FILL):
         if min_fill < 2:
@@ -562,19 +576,23 @@ class RJDEProposal:
         n_filled = min(chain_stats.sample_total, len(buf))
         if n_filled < max(self.min_fill, 2):
             return x.copy(), 0.0
-        block = chain_stats.draw_active_block(rng, int(x[-1]))
+        block = chain_stats.draw_active_block(rng, _layout(chain_stats).k(x))
         if block is None:
             return x.copy(), 0.0
         idx, _, _, sqrt_2neff = block
-        mm = rng.integers(0, n_filled)
-        nn = rng.integers(0, n_filled)
-        while mm == nn:
-            nn = rng.integers(0, n_filled)
-        scale = 1.0 if rng.random() > 0.5 else rng.random() * 2.4 / sqrt_2neff
         offset = len(buf) - n_filled
-        q = x.copy()
-        q[idx] += scale * masked_difference(buf[offset + mm, idx], buf[offset + nn, idx])
-        return q, 0.0
+        for _ in range(self.max_pair_draws):
+            mm = rng.integers(0, n_filled)
+            nn = rng.integers(0, n_filled)
+            while mm == nn:
+                nn = rng.integers(0, n_filled)
+            diff = masked_difference(buf[offset + mm, idx], buf[offset + nn, idx])
+            if np.any(diff):
+                scale = 1.0 if rng.random() > 0.5 else rng.random() * 2.4 / sqrt_2neff
+                q = x.copy()
+                q[idx] += scale * diff
+                return q, 0.0
+        return x.copy(), 0.0
 
 
 rj_de = RJDEProposal()
