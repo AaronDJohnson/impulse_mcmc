@@ -221,7 +221,12 @@ current state.
   the current state with `qxy = 0`.
 - `rj_de`: two stored rows; the difference on the group's active coordinates,
   with 0 where either row lacks the slot; scale uses `n_eff`. Symmetric
-  because swapping the rows negates the difference with the same mask.
+  because swapping the rows negates the difference with the same mask. A pair
+  whose difference is zero on every active coordinate is redrawn (up to 16
+  draws, then the current state): otherwise a group covering rarely occupied
+  slots would mostly propose a zero step. The zero-giving pairs are the same
+  set under a swap and depend only on the buffer, so the move stays
+  symmetric. (Amended during implementation.)
 - Weights: the usual `am_weight`, `scam_weight`, `de_weight`, `de_min_fill`.
 - `groups` index the padded parameter vector (`0..D−1`).
 
