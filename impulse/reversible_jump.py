@@ -269,7 +269,7 @@ def pairwise_covariance(params: np.ndarray, fallback_cov: np.ndarray, min_rows: 
 
 
 def clip_to_psd(cov: np.ndarray, floor: float) -> np.ndarray:
-    """``cov`` itself if its smallest eigenvalue is at least ``floor``, else clipped at ``floor``."""
+    """``cov`` if its smallest eigenvalue is at least ``floor``, else clipped at ``floor``."""
     try:
         w, v = np.linalg.eigh(cov)
     except np.linalg.LinAlgError:
@@ -312,15 +312,16 @@ class MaskedChainStats(ChainStats):
 
     Within-model moves use :meth:`active_block`: the factor of one group's
     active coordinates at one ``k``. The block comes from
-    ``(n_k * S_k + n0 * P_k) / (n_k + n_0)``: ``S_k`` is the sample covariance
+    ``(n_k * S_k + n0 * P_k) / (n_k + n0)``: ``S_k`` is the sample covariance
     of the ``n_k`` buffered rows of model exactly ``k`` (needs ``n_k >= 2``),
     ``P_k`` the active block of the pooled ``sample_cov``, and
     ``n0 = max(min_pair_rows, 2 * d_k)`` (``d_k`` active parameters) is the
     shrinkage weight, so a model with few or degenerate rows leans on the
-    pooled block instead of a rank-deficient estimate. Per-model covariances and factors are computed on first use and cached
-    until the next update, so they cost nothing to checkpoint and rebuild
-    identically. The initial covariance is kept as the fallback for rarely
-    co-active pairs and is checkpointed with the other state.
+    pooled block instead of a rank-deficient estimate. Per-model covariances
+    and factors are computed on first use and cached until the next update,
+    so they cost nothing to checkpoint and rebuild identically. The initial
+    covariance is kept as the fallback for rarely co-active pairs and is
+    checkpointed with the other state.
     """
 
     layout: Optional[RJLayout] = None
@@ -429,7 +430,7 @@ class MaskedChainStats(ChainStats):
         return cached
 
     def _model_covariance(self, k: int) -> Optional[np.ndarray]:
-        """Model-``k`` covariance over its ``n_active(k)`` coordinates, shrunk toward the pooled block.
+        """Model-``k`` covariance over its ``n_active(k)`` coordinates, shrunk to the pooled block.
 
         ``(n_k * S_k + n0 * P_k) / (n_k + n0)`` with ``n_k`` the buffered rows
         of model exactly ``k``; just ``P_k`` when ``n_k < 2``. None when the
@@ -486,7 +487,7 @@ class MaskedChainStats(ChainStats):
         return entry
 
     def draw_active_block(self, rng: np.random.Generator, k: int) -> Optional[ActiveBlock]:
-        """Pick a group with active coordinates at ``k``; return its :meth:`active_block` or None."""
+        """Pick a group with active coordinates at ``k``; return its :meth:`active_block`."""
         eligible = self.eligible_groups(k)
         if not eligible:
             return None
