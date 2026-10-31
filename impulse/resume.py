@@ -143,6 +143,12 @@ def _verify_checkpoint_metadata(sampler: Any, meta: dict) -> None:
             f"into a {cls_name!r}; reconstruct the same sampler class."
         )
 
+    # Subclasses verify their own run-shaping settings first, so a changed
+    # setting is reported by name rather than as a derived ndim mismatch.
+    verify_extra = getattr(sampler, "_verify_extra_metadata", None)
+    if callable(verify_extra):
+        verify_extra(meta)
+
     scalar_checks = (
         ("ndim", lambda s: int(s.ndim)),
         ("ntemps", lambda s: int(s.ntemps)),
