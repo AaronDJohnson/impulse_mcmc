@@ -273,8 +273,10 @@ for what is verified, and [SECURITY.md](SECURITY.md) for the trust boundary.
 ## Documentation and links
 
 - **Documentation**: <https://aarondjohnson.github.io/impulse_mcmc/>
-- **Examples**: complete notebooks in [`examples/`](examples/) (sinusoid fitting,
-  high-dimensional sampling, normalizing-flow proposals)
+- **Examples**: notebooks in [`examples/`](examples/): a sinusoid quickstart,
+  vectorized and JAX likelihoods, sampler features (tempering, periodic
+  parameters, custom proposals, checkpointing), high-dimensional sampling, and
+  normalizing-flow proposals
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Security policy**: [SECURITY.md](SECURITY.md)
 - **Changelog**: [CHANGELOG.md](CHANGELOG.md)
