@@ -231,6 +231,8 @@ class RJLayout:
 
 _MISSING: Any = object()
 
+ActiveBlock = Tuple[np.ndarray, np.ndarray, int, float]
+
 
 def pairwise_covariance(params: np.ndarray, fallback_cov: np.ndarray, min_rows: int) -> np.ndarray:
     """Pairwise-complete covariance of NaN-padded rows.
@@ -240,6 +242,8 @@ def pairwise_covariance(params: np.ndarray, fallback_cov: np.ndarray, min_rows: 
     rows take ``fallback_cov[a, b]``. The result is symmetric but not
     necessarily positive semi-definite.
     """
+    if min_rows < 2:
+        raise ValueError(f"min_rows must be >= 2, got {min_rows}")
     params = np.asarray(params, dtype=np.float64)
     present = ~np.isnan(params)
     weights = present.astype(np.float64)
@@ -298,10 +302,17 @@ class MaskedChainStats(ChainStats):
     covariance is pairwise-complete over co-active rows
     (:func:`pairwise_covariance`), falls back to the initial covariance for
     pairs seen together fewer than ``min_pair_rows`` times, and is clipped to
-    be positive semi-definite. Within-model moves use :meth:`active_block`,
-    the factor of the covariance restricted to one group's active coordinates
-    at one ``k``; factors are computed on first use and cached until the next
-    update, so they cost nothing to checkpoint and rebuild identically.
+    be positive semi-definite (``sample_cov``, which is pooled over models).
+
+    Within-model moves use :meth:`active_block`: the factor of one group's
+    active coordinates at one ``k``. Tier 1: when the buffer holds at least
+    ``max(min_pair_rows, 2 * d_k)`` rows of model exactly ``k`` (``d_k`` active
+    parameters), the block comes from the sample covariance of those rows
+    alone. Tier 2: otherwise it is the block of the pooled ``sample_cov``.
+    Per-model covariances and factors are computed on first use and cached
+    until the next update, so they cost nothing to checkpoint and rebuild
+    identically. The initial covariance is kept as the fallback for rarely
+    co-active pairs and is checkpointed with the other state.
     """
 
     layout: Optional[RJLayout] = None
@@ -321,7 +332,8 @@ class MaskedChainStats(ChainStats):
         assert self.sample_cov is not None and self.sample_mean is not None
         self._fallback_cov = np.array(self.sample_cov, dtype=float)
         self._fallback_mean = np.array(self.sample_mean, dtype=float)
-        self._factors: Dict[Tuple[int, int], Any] = {}
+        self._factors: Dict[Tuple[int, int], Optional[ActiveBlock]] = {}
+        self._model_cov: Dict[int, Optional[np.ndarray]] = {}
         self._eligible: Dict[int, List[int]] = {}
 
     def update_from_window(self, sample_num: int, new_samples: np.ndarray) -> None:
@@ -330,10 +342,19 @@ class MaskedChainStats(ChainStats):
         assert layout is not None and self.groups is not None
         assert self.svd_U is not None and self.svd_S is not None
         new_samples = np.asarray(new_samples, dtype=float)
+        ks = new_samples[:, self.ndim]
+        if not (
+            np.all(np.isfinite(ks))
+            and np.all(ks == np.floor(ks))
+            and np.all((ks >= 0) & (ks <= layout.max_components))
+        ):
+            return
+        active = layout.active_mask_rows(ks)
         params = new_samples[:, : self.ndim]
-        active = layout.active_mask_rows(new_samples[:, self.ndim])
         if not np.all(np.isfinite(params[active])):
             return
+        # Inactive slots are NaN by convention; never store stale values there.
+        params = np.where(active, params, np.nan)
         stored = _HistoryBuffer.select_for_storage(params, self._seen_raw, self.buffer_thin)
         self._seen_raw += len(params)
         if len(stored) == 0:
@@ -362,12 +383,23 @@ class MaskedChainStats(ChainStats):
             ridge=self._cov_ridge,
         )
         self._factors.clear()
+        self._model_cov.clear()
 
     recursive_update = update_from_window
 
+    def get_checkpoint_state(self) -> Tuple[dict, dict]:
+        arrays, meta = super().get_checkpoint_state()
+        arrays["fallback_cov"] = np.asarray(self._fallback_cov)
+        arrays["fallback_mean"] = np.asarray(self._fallback_mean)
+        return arrays, meta
+
     def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
         super().set_checkpoint_state(arrays, meta)
+        if "fallback_cov" in arrays:
+            self._fallback_cov = np.array(arrays["fallback_cov"], dtype=float)
+            self._fallback_mean = np.array(arrays["fallback_mean"], dtype=float)
         self._factors.clear()
+        self._model_cov.clear()
         self._eligible.clear()
 
     def eligible_groups(self, k: int) -> List[int]:
@@ -384,11 +416,37 @@ class MaskedChainStats(ChainStats):
             self._eligible[k] = cached
         return cached
 
-    def active_block(self, group_index: int, k: int) -> Any:
+    def _model_covariance(self, k: int) -> Optional[np.ndarray]:
+        """Sample covariance of the buffered rows of model exactly ``k``, or None if too few.
+
+        Covers the ``n_active(k)`` active coordinates only.
+        """
+        if k in self._model_cov:
+            return self._model_cov[k]
+        layout = self.layout
+        assert layout is not None
+        d_k = layout.n_active(k)
+        cov: Optional[np.ndarray] = None
+        n_valid = min(self.sample_total, self.buffer_size)
+        if d_k > 0 and n_valid > 0:
+            rows = self._buffer[-n_valid:]
+            n_comp = np.count_nonzero(np.isfinite(rows[:, layout.n_shared :]), axis=1)
+            mine = rows[n_comp // layout.n_component == k][:, :d_k]
+            if len(mine) >= max(self.min_pair_rows, 2 * d_k):
+                cov = np.atleast_2d(np.cov(mine, rowvar=False))
+                if not np.all(np.isfinite(cov)):
+                    cov = None
+        self._model_cov[k] = cov
+        return cov
+
+    def active_block(self, group_index: int, k: int) -> Optional[ActiveBlock]:
         """``(indices, L, n_eff, sqrt(2 n_eff))`` for one group's active coordinates at ``k``.
 
         ``L`` is the scaled eigen-factor (``L @ L.T`` is the covariance block
-        plus the ridge). Returns None when the group has no active coordinate.
+        plus the ridge). The block comes from the model-``k`` rows' own
+        covariance when there are enough of them, else from the pooled
+        ``sample_cov`` (see the class docstring). Returns None when the group
+        has no active coordinate.
         """
         key = (int(group_index), int(k))
         entry = self._factors.get(key, _MISSING)
@@ -400,7 +458,10 @@ class MaskedChainStats(ChainStats):
         if idx.size == 0:
             entry = None
         else:
-            block = np.ascontiguousarray(self.sample_cov[np.ix_(idx, idx)])
+            source = self._model_covariance(key[1])
+            if source is None:
+                source = self.sample_cov
+            block = np.ascontiguousarray(source[np.ix_(idx, idx)])
             _, _, factors = svd_groups(
                 [None], [None], [np.arange(idx.size)], block, ridge=self._cov_ridge
             )
@@ -408,7 +469,7 @@ class MaskedChainStats(ChainStats):
         self._factors[key] = entry
         return entry
 
-    def draw_active_block(self, rng: np.random.Generator, k: int) -> Any:
+    def draw_active_block(self, rng: np.random.Generator, k: int) -> Optional[ActiveBlock]:
         """Pick a group with active coordinates at ``k``; return its :meth:`active_block` or None."""
         eligible = self.eligible_groups(k)
         if not eligible:
