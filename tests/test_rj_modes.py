@@ -136,11 +136,14 @@ def test_jax_masked_likelihood(tmp_path, jax_x64):
     def log_slots(x, k):
         active = jnp.arange(K)[None, :] < k[:, None]
         safe = jnp.where(active, x[:, 1:], 1.0)  # in-domain value where f and f' are finite
-        return jnp.sum(jnp.where(active, jnp.log(safe), 0.0), axis=1)
+        return jnp.sum(jnp.where(active, jnp.log(safe * x[:, :1]), 0.0), axis=1)
 
-    grad = jax.grad(lambda x: jnp.sum(log_slots(x, ks)))(jnp.asarray(padded))
-    assert np.all(np.isfinite(np.asarray(grad)[~np.isnan(padded)]))
-    assert np.all(np.asarray(grad)[np.isnan(padded)] == 0.0)
+    grad_fn = jax.grad(lambda x: jnp.sum(log_slots(x, ks)))
+    for fn in (grad_fn, jax.jit(grad_fn)):  # eager and compiled
+        grad = np.asarray(fn(jnp.asarray(padded)))
+        assert np.all(np.isfinite(grad[:, 0]))  # shared-parameter gradient
+        assert np.all(np.isfinite(grad[~np.isnan(padded)]))
+        assert np.all(grad[np.isnan(padded)] == 0.0)
 
     shapes = set()
 
@@ -165,6 +168,7 @@ def test_jax_masked_likelihood(tmp_path, jax_x64):
     )
     reference.sample(X0, 300, initial_k=1)
     expected_chain = reference.load_chain()
+    # Exact k: JAX and NumPy lnlike differ by ~1 ulp, so an accept decision essentially never flips.
     np.testing.assert_array_equal(chain["k"], expected_chain["k"])
     np.testing.assert_allclose(chain["lnlike"], expected_chain["lnlike"], rtol=1e-12)
     assert len(np.unique(chain["k"][0])) > 1

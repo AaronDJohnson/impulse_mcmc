@@ -93,7 +93,8 @@ jobs:
     - name: Run RJPTSampler evaluation-mode tests (JAX installed via [flow])
       # JAX arrives through coppuccino; without it the JAX case skips.
       run: |
-        pytest tests/test_rj_modes.py -v
+        python -c "import jax; print('jax', jax.__version__)"
+        pytest tests/test_rj_modes.py -v -rs
 
   doc-snippets:
     # Every ```python block in README.md and docs/**/*.md is executed. This
