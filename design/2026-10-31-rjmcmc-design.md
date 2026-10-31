@@ -27,8 +27,17 @@ extra **last column** of the position array, so swaps, chain files,
 checkpoints and the MH step work unchanged. The padded parameter vector has
 `D = n_shared + K·p` entries (`K = max_components`): shared parameters first,
 then `K` component slots of `p` parameters each. Slots past `k` hold NaN. The
-padding is storage only: inactive slots are never sampled, never passed to the
-prior as values, and carry no density.
+padding is storage only: inactive slots are never sampled, reach user
+functions only as NaN, and carry no density.
+
+Widths: the PT engine sees rows of width `D + 1` (`self.ndim = D + 1`), so
+`SamplerState.positions`, `ShortChain` rows, swaps, checkpoints and
+`chain_stats.current_sample` all carry k last. Adaptive statistics see only the
+`D` parameter columns: `MaskedChainStats` drops the k column before storing
+history, its buffer rows are `D` wide, `sample_cov` / `sample_mean` are
+`(D, D)` / `(D,)`, and the default group is `[arange(D)]`. `RJPTSampler`
+builds its chain stats itself rather than through `setup_chain_stats`, and
+overrides `load_chain` for the `D + 1 + 4` column layout.
 
 New code lives in one new module, `impulse/reversible_jump.py`; every public
 name is exported from top-level `impulse`. PTSampler's own code paths
@@ -42,7 +51,7 @@ Units:
 | Unit | Responsibility |
 |---|---|
 | `RJLayout` | Owns the slot convention: `k(row)`, `params(row)`, `components(row)`, `active_mask(k)`, `insert(row, j, u)`, `remove(row, j) -> (row, u)`. `insert` and `remove` take and return full rows (`(D + 1,)`) and update the k column. The only place that knows the layout. |
-| `MaskedChainStats` (ChainStats subclass) | Masked covariance from NaN-padded history, per-k active-block factors, exposes `layout`. |
+| `MaskedChainStats` (ChainStats subclass) | Masked covariance from NaN-padded history, per-k active-block factors, exposes `layout`. Overrides `update_from_window` and the moments computation wholesale: the base `update_from_window` returns early on any non-finite input and `_HistoryBuffer.moments` returns `None` on a non-finite covariance, so neither can be reused on NaN-padded rows. |
 | `rj_am`, `rj_scam`, `rj_de` | Within-model moves on the active coordinates. |
 | `BirthDeath`, `ComponentRedraw` | Built-in moves using the component proposal. |
 | `IndependentComponentProposal` | Wraps state-free `draw(rng)` / `logpdf(u)` functions as a component proposal. |
@@ -105,8 +114,10 @@ documented and partly checked:
 - A density that changes during sampling is an adaptive proposal and must
   implement `freeze_adaptation()` (called at `num_adapt`).
 
-Optional `get_checkpoint_state()` / `set_checkpoint_state(state)` hooks are
-honoured as for other stateful proposals.
+Optional `get_checkpoint_state()` / `set_checkpoint_state(state)` and
+`freeze_adaptation()` hooks are honoured. Because birth/death and redraw share
+one component proposal, `RJPTSampler` freezes and checkpoints it directly,
+once (its own checkpoint-meta entry), not through the move wrappers.
 
 ### Custom moves
 
