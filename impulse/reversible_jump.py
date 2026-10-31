@@ -227,3 +227,190 @@ class RJLayout:
         out[hi - p : hi] = np.nan
         out[-1] = k - 1
         return out, u
+
+
+_MISSING: Any = object()
+
+
+def pairwise_covariance(params: np.ndarray, fallback_cov: np.ndarray, min_rows: int) -> np.ndarray:
+    """Pairwise-complete covariance of NaN-padded rows.
+
+    Entry ``(a, b)`` is the sample covariance over the rows where both ``a``
+    and ``b`` are present (not NaN); entries with fewer than ``min_rows`` such
+    rows take ``fallback_cov[a, b]``. The result is symmetric but not
+    necessarily positive semi-definite.
+    """
+    params = np.asarray(params, dtype=np.float64)
+    present = ~np.isnan(params)
+    weights = present.astype(np.float64)
+    counts = weights.sum(axis=0)
+    filled = np.where(present, params, 0.0)
+    # Centre each column first: covariance is shift-invariant, and centring
+    # avoids cancellation when a parameter's mean is large next to its spread.
+    centre = filled.sum(axis=0) / np.maximum(counts, 1.0)
+    centred = np.where(present, params - centre, 0.0)
+    n_ab = weights.T @ weights
+    s_ab = centred.T @ centred
+    t_ab = centred.T @ weights  # [a, b]: sum of column a over the rows where b is present
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cov = (s_ab - t_ab * t_ab.T / n_ab) / (n_ab - 1.0)
+    cov = np.where(n_ab >= min_rows, cov, fallback_cov)
+    return 0.5 * (cov + cov.T)
+
+
+def clip_to_psd(cov: np.ndarray, floor: float) -> np.ndarray:
+    """``cov`` itself if its smallest eigenvalue is at least ``floor``, else clipped at ``floor``."""
+    try:
+        w, v = np.linalg.eigh(cov)
+    except np.linalg.LinAlgError:
+        return cov
+    if w[0] >= floor:
+        return cov
+    fixed = (v * np.maximum(w, floor)) @ v.T
+    return 0.5 * (fixed + fixed.T)
+
+
+def masked_moments(
+    params: np.ndarray,
+    fallback_mean: np.ndarray,
+    fallback_cov: np.ndarray,
+    min_rows: int,
+    floor: float,
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Per-column mean and repaired pairwise-complete covariance, or None if not finite."""
+    params = np.asarray(params, dtype=np.float64)
+    present = ~np.isnan(params)
+    counts = present.sum(axis=0)
+    sums = np.where(present, params, 0.0).sum(axis=0)
+    mean = np.where(counts > 0, sums / np.maximum(counts, 1), fallback_mean)
+    cov = pairwise_covariance(params, fallback_cov, min_rows)
+    if not np.all(np.isfinite(cov)):
+        return None
+    return mean, clip_to_psd(cov, floor)
+
+
+@dataclass
+class MaskedChainStats(ChainStats):
+    """Adaptive statistics over NaN-padded reversible-jump rows.
+
+    ``ndim`` is the padded parameter count ``D``: history rows store the
+    parameters with the ``k`` column dropped and NaN in inactive slots. The
+    covariance is pairwise-complete over co-active rows
+    (:func:`pairwise_covariance`), falls back to the initial covariance for
+    pairs seen together fewer than ``min_pair_rows`` times, and is clipped to
+    be positive semi-definite. Within-model moves use :meth:`active_block`,
+    the factor of the covariance restricted to one group's active coordinates
+    at one ``k``; factors are computed on first use and cached until the next
+    update, so they cost nothing to checkpoint and rebuild identically.
+    """
+
+    layout: Optional[RJLayout] = None
+    min_pair_rows: int = 10
+
+    def __post_init__(self) -> None:
+        if self.layout is None:
+            raise ValueError("MaskedChainStats needs an RJLayout (layout=...)")
+        if self.ndim != self.layout.ndim:
+            raise ValueError(
+                f"ndim={self.ndim} does not match the layout's padded dimension "
+                f"{self.layout.ndim}"
+            )
+        if self.min_pair_rows < 2:
+            raise ValueError(f"min_pair_rows must be >= 2, got {self.min_pair_rows}")
+        super().__post_init__()
+        assert self.sample_cov is not None and self.sample_mean is not None
+        self._fallback_cov = np.array(self.sample_cov, dtype=float)
+        self._fallback_mean = np.array(self.sample_mean, dtype=float)
+        self._factors: Dict[Tuple[int, int], Any] = {}
+        self._eligible: Dict[int, List[int]] = {}
+
+    def update_from_window(self, sample_num: int, new_samples: np.ndarray) -> None:
+        """Store new ``(n, D + 1)`` rows without ``k`` and recompute the masked moments."""
+        layout = self.layout
+        assert layout is not None and self.groups is not None
+        assert self.svd_U is not None and self.svd_S is not None
+        new_samples = np.asarray(new_samples, dtype=float)
+        params = new_samples[:, : self.ndim]
+        active = layout.active_mask_rows(new_samples[:, self.ndim])
+        if not np.all(np.isfinite(params[active])):
+            return
+        stored = _HistoryBuffer.select_for_storage(params, self._seen_raw, self.buffer_thin)
+        self._seen_raw += len(params)
+        if len(stored) == 0:
+            return
+        self.sample_total += len(stored)
+        self.update_buffer(stored)
+        if sample_num + len(params) < 2:
+            return
+        n_valid = min(self.sample_total, self.buffer_size)
+        moments = masked_moments(
+            self._buffer[-n_valid:],
+            self._fallback_mean,
+            self._fallback_cov,
+            self.min_pair_rows,
+            self._cov_ridge,
+        )
+        if moments is None:
+            return
+        self.sample_mean, self.sample_cov = moments
+        self.svd_U, self.svd_S, self.proposal_L = svd_groups(
+            self.svd_U,
+            self.svd_S,
+            self.groups,
+            self.sample_cov,
+            self.proposal_L,
+            ridge=self._cov_ridge,
+        )
+        self._factors.clear()
+
+    recursive_update = update_from_window
+
+    def set_checkpoint_state(self, arrays: dict, meta: dict) -> None:
+        super().set_checkpoint_state(arrays, meta)
+        self._factors.clear()
+        self._eligible.clear()
+
+    def eligible_groups(self, k: int) -> List[int]:
+        """Indices of the groups with at least one coordinate active at model ``k``."""
+        cached = self._eligible.get(k)
+        if cached is None:
+            assert self.layout is not None
+            n_act = self.layout.n_active(k)
+            cached = [
+                gi
+                for gi, g in enumerate(self.group_index_arrays())
+                if g.size and int(g.min()) < n_act
+            ]
+            self._eligible[k] = cached
+        return cached
+
+    def active_block(self, group_index: int, k: int) -> Any:
+        """``(indices, L, n_eff, sqrt(2 n_eff))`` for one group's active coordinates at ``k``.
+
+        ``L`` is the scaled eigen-factor (``L @ L.T`` is the covariance block
+        plus the ridge). Returns None when the group has no active coordinate.
+        """
+        key = (int(group_index), int(k))
+        entry = self._factors.get(key, _MISSING)
+        if entry is not _MISSING:
+            return entry
+        assert self.layout is not None and self.sample_cov is not None
+        group = self.group_index_arrays()[key[0]]
+        idx = group[group < self.layout.n_active(k)]
+        if idx.size == 0:
+            entry = None
+        else:
+            block = np.ascontiguousarray(self.sample_cov[np.ix_(idx, idx)])
+            _, _, factors = svd_groups(
+                [None], [None], [np.arange(idx.size)], block, ridge=self._cov_ridge
+            )
+            entry = (idx, factors[0], int(idx.size), math.sqrt(2 * idx.size))
+        self._factors[key] = entry
+        return entry
+
+    def draw_active_block(self, rng: np.random.Generator, k: int) -> Any:
+        """Pick a group with active coordinates at ``k``; return its :meth:`active_block` or None."""
+        eligible = self.eligible_groups(k)
+        if not eligible:
+            return None
+        return self.active_block(eligible[_draw_group_index(rng, len(eligible))], k)
