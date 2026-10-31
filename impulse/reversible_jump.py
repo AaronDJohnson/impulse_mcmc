@@ -492,3 +492,89 @@ class MaskedChainStats(ChainStats):
         if not eligible:
             return None
         return self.active_block(eligible[_draw_group_index(rng, len(eligible))], k)
+
+
+def masked_difference(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``a - b`` with 0 wherever either entry is NaN (an inactive slot)."""
+    d = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
+    return np.where(np.isnan(d), 0.0, d)
+
+
+def rj_am(chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+    """Adaptive Metropolis on the active coordinates of one group.
+
+    As :func:`impulse.am`, with ``n_eff`` the number of active coordinates in
+    the group and the covariance factor of that active block.
+    """
+    rng = chain_stats.rng
+    x = chain_stats.current_sample
+    assert x is not None
+    block = chain_stats.draw_active_block(rng, int(x[-1]))
+    if block is None:
+        return x.copy(), 0.0
+    idx, factor, neff, sqrt_2neff = block
+    scale = _draw_jump_scale(rng)
+    q = x.copy()
+    q[idx] += 2.4 / sqrt_2neff * scale * (factor @ rng.standard_normal(neff))
+    return q, 0.0
+
+
+def rj_scam(chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+    """Single-component Adaptive Metropolis along one principal axis of the active block."""
+    rng = chain_stats.rng
+    x = chain_stats.current_sample
+    assert x is not None
+    block = chain_stats.draw_active_block(rng, int(x[-1]))
+    if block is None:
+        return x.copy(), 0.0
+    idx, factor, neff, _ = block
+    scale = _draw_jump_scale(rng)
+    ind = rng.integers(0, neff)
+    q = x.copy()
+    q[idx] += rng.standard_normal() * _SQRT2_INV * scale * factor[:, ind]
+    return q, 0.0
+
+
+class RJDEProposal:
+    """Differential evolution on the active coordinates of one group.
+
+    The difference of two stored rows is taken on the group's active
+    coordinates, with 0 where either row lacks the slot. Swapping the two rows
+    negates the difference with the same mask, so the move is symmetric.
+    Returns the current state until ``min_fill`` rows are stored.
+    """
+
+    __name__ = "rj_de"
+
+    def __init__(self, min_fill: int = DE_MIN_FILL):
+        if min_fill < 2:
+            raise ValueError(
+                f"min_fill must be >= 2 (two distinct buffer rows are needed for a "
+                f"difference move), got {min_fill}"
+            )
+        self.min_fill = int(min_fill)
+
+    def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+        rng = chain_stats.rng
+        x = chain_stats.current_sample
+        assert x is not None
+        buf = chain_stats._buffer
+        n_filled = min(chain_stats.sample_total, len(buf))
+        if n_filled < max(self.min_fill, 2):
+            return x.copy(), 0.0
+        block = chain_stats.draw_active_block(rng, int(x[-1]))
+        if block is None:
+            return x.copy(), 0.0
+        idx, _, _, sqrt_2neff = block
+        mm = rng.integers(0, n_filled)
+        nn = rng.integers(0, n_filled)
+        while mm == nn:
+            nn = rng.integers(0, n_filled)
+        scale = 1.0 if rng.random() > 0.5 else rng.random() * 2.4 / sqrt_2neff
+        offset = len(buf) - n_filled
+        q = x.copy()
+        q[idx] += scale * masked_difference(buf[offset + mm, idx], buf[offset + nn, idx])
+        return q, 0.0
+
+
+rj_de = RJDEProposal()
