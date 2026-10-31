@@ -21,11 +21,17 @@ class _HookedSampler(PTSampler):
 
     def _build_chain_stats(self, groups, sample_cov, sample_mean, buffer_size, buffer_thin):
         self.calls.append("chain_stats")
-        return super()._build_chain_stats(groups, sample_cov, sample_mean, buffer_size, buffer_thin)
+        self.built_stats = super()._build_chain_stats(
+            groups, sample_cov, sample_mean, buffer_size, buffer_thin
+        )
+        return self.built_stats
 
     def _build_proposal_bundle(self, am_weight, scam_weight, de_weight, de_min_fill):
         self.calls.append(("bundle", am_weight, scam_weight, de_weight, de_min_fill))
-        return super()._build_proposal_bundle(am_weight, scam_weight, de_weight, de_min_fill)
+        self.built_bundle = super()._build_proposal_bundle(
+            am_weight, scam_weight, de_weight, de_min_fill
+        )
+        return self.built_bundle
 
 
 def test_build_hooks_are_called_in_order(tmp_path):
@@ -42,6 +48,8 @@ def test_build_hooks_are_called_in_order(tmp_path):
         verbose=False,
     )
     assert sampler.calls == ["chain_stats", ("bundle", 1, 2, 3, 50)]
+    assert sampler.multi_chain_stats is sampler.built_stats
+    assert sampler.proposal_bundle is sampler.built_bundle
     assert sampler.multi_chain_stats.ntemps == 2
     names = [p.__name__ for p in sampler.proposal_bundle.jump_proposals[0].proposal_list]
     assert names == ["am", "scam", "de"]
@@ -86,3 +94,12 @@ def test_verify_extra_metadata_accepts_a_match(tmp_path):
     resumed = _ExtraCheckSampler(resume=True, **_extra_kwargs(tmp_path))
     resumed.sample(np.zeros(2), 200)
     assert resumed.load_chain()["samples"].shape == (2, 200, 2)
+
+
+def test_verify_extra_metadata_runs_before_scalar_checks(tmp_path):
+    _ExtraCheckSampler(**_extra_kwargs(tmp_path)).sample(np.zeros(2), 120)
+    kw = {**_extra_kwargs(tmp_path), "ndim": 3}
+    resumed = _ExtraCheckSampler(resume=True, **kw)
+    resumed.token = "b"
+    with pytest.raises(CheckpointMismatchError, match="extra_token"):
+        resumed.sample(np.zeros(3), 200)

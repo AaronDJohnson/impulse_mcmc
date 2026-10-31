@@ -743,10 +743,17 @@ class PTSampler:
             adapt_nu=adapt_nu,
         )
         self.multi_chain_stats = self._build_chain_stats(
-            groups, sample_cov, sample_mean, buffer_size, buffer_thin
+            groups=groups,
+            sample_cov=sample_cov,
+            sample_mean=sample_mean,
+            buffer_size=buffer_size,
+            buffer_thin=buffer_thin,
         )
         self.proposal_bundle = self._build_proposal_bundle(
-            am_weight, scam_weight, de_weight, de_min_fill
+            am_weight=am_weight,
+            scam_weight=scam_weight,
+            de_weight=de_weight,
+            de_min_fill=de_min_fill,
         )
         self.cov_update = cov_update
         self.save_freq = save_freq
@@ -765,7 +772,12 @@ class PTSampler:
         buffer_size: int,
         buffer_thin: int,
     ) -> MultiChainStats:
-        """Build the per-chain adaptive statistics; subclasses with another row layout override."""
+        """Build the per-chain adaptive statistics; subclasses with another row layout override.
+
+        Called from ``__init__`` after ``ntemps``, ``rngs`` and ``ptstate`` are set; a subclass
+        may return objects of a subclass (the chain stats may use a different ndim than
+        ``self.ndim``).
+        """
         return setup_chain_stats(
             self.ndim,
             self.ptstate,
@@ -781,7 +793,12 @@ class PTSampler:
     def _build_proposal_bundle(
         self, am_weight: float, scam_weight: float, de_weight: float, de_min_fill: int
     ) -> ProposalBundle:
-        """Register the default proposals on every chain; subclasses override."""
+        """Register the default proposals on every chain; subclasses override.
+
+        Called from ``__init__`` after ``ntemps``, ``rngs`` and ``ptstate`` are set; a subclass
+        may return objects of a subclass (the chain stats may use a different ndim than
+        ``self.ndim``).
+        """
         return setup_standard_jumps(
             self.multi_chain_stats, am_weight, scam_weight, de_weight, de_min_fill=de_min_fill
         )
