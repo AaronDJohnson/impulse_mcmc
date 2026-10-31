@@ -22,10 +22,12 @@ from .resume import (
     restore_state_checkpoint,
     save_state_checkpoint,
 )
+from .reversible_jump import RJLayout
 from .samplers import PTSampler
 
 __all__ = [
     "PTSampler",
+    "RJLayout",
     "am",
     "scam",
     "de",
