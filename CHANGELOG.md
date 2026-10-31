@@ -334,3 +334,9 @@ compare against "earlier 2.0.0-dev builds" matter only if you ran that branch.
   which is how an adaptive proposal persists internal state under the default
   format. It was previously undocumented, so a proposal that adapted between
   calls silently restarted from its constructor defaults on resume.
+- New example notebooks, rendered in the docs: `sinusoid_quickstart`,
+  `vectorized_likelihoods` (NumPy, JAX and threads, with timings, and the
+  silent float32 conversion JAX makes unless `jax_enable_x64` is set) and
+  `sampler_features` (tempering, periodic parameters, `sample_cov`, `groups`,
+  a custom proposal, checkpoint/resume). They replace `sinusoidal_model.ipynb`,
+  `sinusoid.ipynb` and the `sine_model.py` helper.
