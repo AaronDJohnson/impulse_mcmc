@@ -634,6 +634,25 @@ def _check_component_proposal(proposal: Any) -> None:
         )
 
 
+def _readonly(a: np.ndarray) -> np.ndarray:
+    """A read-only view, so a component proposal cannot write into the live state."""
+    v = a.view()
+    v.flags.writeable = False
+    return v
+
+
+def _draw_component(
+    proposal: Any, rng: np.random.Generator, params: np.ndarray, k: int, layout: RJLayout
+) -> np.ndarray:
+    u = np.asarray(proposal.draw(rng, params, k), dtype=float)
+    if u.shape != (layout.n_component,):
+        raise ValueError(
+            f"{type(proposal).__name__}.draw returned shape {u.shape}; expected "
+            f"({layout.n_component},): one component"
+        )
+    return u
+
+
 class BirthDeath:
     """Birth or death of one component: the built-in move between models.
 
@@ -641,12 +660,22 @@ class BirthDeath:
     death removes a uniformly chosen component. ``b_k = d_k = 1/2`` inside
     the allowed range, ``b_min = d_max = 1``. The map is a slot insertion,
     so the Jacobian is exactly 1. One instance serves every chain.
+
+    A death whose component has zero (or non-finite) proposal density is
+    rejected with ``qxy = -inf`` and counted in ``rejected_deaths``. The
+    methods ``_choose_death_slot(rng, k)`` and ``_selection_log_ratio(k)``
+    are overridable hooks (used by the statistical power tests).
     """
 
     __name__ = "birth_death"
     _BRANCHES = ("birth", "death")
 
     def __init__(self, layout: RJLayout, component_proposal: Any, ntemps: int):
+        if layout.min_components == layout.max_components:
+            raise ValueError(
+                "BirthDeath needs min_components < max_components; "
+                f"both are {layout.max_components}"
+            )
         self.layout = layout
         self.component_proposal = component_proposal
         self._calls = np.zeros((ntemps, 2), dtype=np.int64)
@@ -688,8 +717,8 @@ class BirthDeath:
             self._last_branch[chain] = 0
             self._calls[chain, 0] += 1
             j = int(rng.integers(0, k + 1))
-            params = layout.params(x)
-            u = np.asarray(proposal.draw(rng, params, k), dtype=float)
+            params = _readonly(layout.params(x))
+            u = _draw_component(proposal, rng, params, k, layout)
             log_g = float(proposal.logpdf(u, params, k))
             if not math.isfinite(log_g):
                 return x.copy(), -math.inf
@@ -698,7 +727,7 @@ class BirthDeath:
         self._calls[chain, 1] += 1
         j = self._choose_death_slot(rng, k)
         y, u = layout.remove(x, j)
-        log_g = float(proposal.logpdf(u, layout.params(y), k - 1))
+        log_g = float(proposal.logpdf(u, _readonly(layout.params(y)), k - 1))
         if not math.isfinite(log_g):
             self.rejected_deaths += 1
             return x.copy(), -math.inf
@@ -718,6 +747,7 @@ class BirthDeath:
         }
 
     def get_checkpoint_state(self) -> dict:
+        """Per-chain branch counts and ``rejected_deaths`` as JSON-able lists."""
         return {
             "calls": self._calls.tolist(),
             "accepts": self._accepts.tolist(),
@@ -726,6 +756,7 @@ class BirthDeath:
         }
 
     def set_checkpoint_state(self, state: dict) -> None:
+        """Restore the state written by :meth:`get_checkpoint_state`."""
         self._calls = np.array(state["calls"], dtype=np.int64)
         self._accepts = np.array(state["accepts"], dtype=np.int64)
         self._last_branch = np.array(state["last_branch"], dtype=np.int64)
@@ -752,8 +783,8 @@ class ComponentRedraw:
             return x.copy(), 0.0
         j = int(rng.integers(0, k))
         rest, old = layout.remove(x, j)
-        params = layout.params(rest)
-        u = np.asarray(proposal.draw(rng, params, k - 1), dtype=float)
+        params = _readonly(layout.params(rest))
+        u = _draw_component(proposal, rng, params, k - 1, layout)
         log_new = float(proposal.logpdf(u, params, k - 1))
         log_old = float(proposal.logpdf(old, params, k - 1))
         if not (math.isfinite(log_new) and math.isfinite(log_old)):
@@ -782,9 +813,15 @@ class _WrappedJump:
             if callable(fn):
                 setattr(self, hook, fn)
 
-    def _result(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+    def _result(self, chain_stats: MaskedChainStats, x: np.ndarray) -> Tuple[np.ndarray, float]:
         row, qxy = self.move(chain_stats)
         row = np.asarray(row, dtype=float)
+        if np.may_share_memory(row, x):
+            raise ValueError(
+                f"jump {self.__name__!r} returned an array sharing memory with "
+                "chain_stats.current_sample; moves must return a new array and not "
+                "modify current_sample"
+            )
         if row.shape != (self.layout.width,):
             raise ValueError(
                 f"jump {self.__name__!r} returned a row of shape {row.shape}; expected "
@@ -797,10 +834,10 @@ class _CheckedWithinModelJump(_WrappedJump):
     """A custom within-model move: must keep ``k`` and leave inactive slots NaN."""
 
     def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
-        row, qxy = self._result(chain_stats)
         x = chain_stats.current_sample
         assert x is not None
         k = self.layout.k(x)
+        row, qxy = self._result(chain_stats, x)
         if row[-1] != k:
             raise ValueError(
                 f"within-model jump {self.__name__!r} changed k from {k} to {row[-1]}; "
@@ -810,6 +847,11 @@ class _CheckedWithinModelJump(_WrappedJump):
             raise ValueError(
                 f"within-model jump {self.__name__!r} wrote to an inactive slot "
                 f"(entries past k={k} must stay NaN)"
+            )
+        if not np.all(np.isfinite(row[: self.layout.n_active(k)])):
+            raise ValueError(
+                f"within-model jump {self.__name__!r} returned a non-finite value among "
+                f"the active parameters at k={k}"
             )
         return row, qxy
 
@@ -822,11 +864,11 @@ class _ModelJump(_WrappedJump):
         self.log_jacobian = float(log_jacobian)
 
     def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
-        row, qxy = self._result(chain_stats)
         layout = self.layout
         x = chain_stats.current_sample
         assert x is not None
         k_old = layout.k(x)
+        row, qxy = self._result(chain_stats, x)
         try:
             k_new = layout.check_k(row[-1])
         except ValueError as err:

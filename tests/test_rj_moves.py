@@ -452,3 +452,126 @@ def test_jump_proposals_report_birth_and_death_separately():
     assert set(rates) == {"birth", "death"}
     assert rates["birth"] == {"calls": 1, "accepts": 1, "rate": 1.0}
     assert rates["death"] == {"calls": 0, "accepts": 0, "rate": 0.0}
+
+
+def _inplace_k(cs):
+    x = cs.current_sample
+    x[-1] = 2.0
+    return x, 0.0
+
+
+def test_in_place_moves_are_rejected_not_misread():
+    cs = _bd_at(1)
+    with pytest.raises(ValueError, match="'_inplace_k'.*sharing memory"):
+        _CheckedWithinModelJump(_inplace_k, BD_LAYOUT)(cs)
+    cs = _bd_at(1)
+    with pytest.raises(ValueError, match="'_inplace_k'.*sharing memory"):
+        _ModelJump(_inplace_k, BD_LAYOUT, 1.5)(cs)
+
+
+def test_within_model_wrapper_rejects_non_finite_active_values():
+    def nan_active(cs):
+        y = cs.current_sample.copy()
+        y[0] = np.nan
+        return y, 0.0
+
+    with pytest.raises(ValueError, match="'nan_active'.*non-finite"):
+        _CheckedWithinModelJump(nan_active, BD_LAYOUT)(_bd_at(1))
+
+
+class _Writer:
+    def draw(self, rng, x, k):
+        x[np.isnan(x)] = 0.0
+        return rng.random(P)
+
+    def logpdf(self, u, x, k):
+        return 0.0
+
+
+@pytest.mark.parametrize("move_cls, k", [(BirthDeath, 1), (ComponentRedraw, 1)])
+def test_component_proposal_cannot_write_into_the_state(move_cls, k):
+    cs = _bd_at(k)
+    before = cs.current_sample.copy()
+    args = (BD_LAYOUT, _Writer()) + ((1,) if move_cls is BirthDeath else ())
+    move = move_cls(*args)
+    with pytest.raises(ValueError, match="read-only"):
+        for seed in range(20):  # BirthDeath at k=1 may take the death branch first
+            cs.rng = np.random.default_rng(seed)
+            move(cs)
+    np.testing.assert_array_equal(cs.current_sample, before)
+
+
+def test_birth_death_needs_room_to_move():
+    layout = RJLayout(n_shared=0, n_component=P, max_components=2, min_components=2)
+    with pytest.raises(ValueError, match="min_components < max_components"):
+        BirthDeath(layout, UNIFORM, ntemps=1)
+
+
+class _Column:
+    def draw(self, rng, x, k):
+        return rng.random((P, 1))
+
+    def logpdf(self, u, x, k):
+        return 0.0
+
+
+@pytest.mark.parametrize(
+    "move, k",
+    [(BirthDeath(BD_LAYOUT, _Column(), 1), 0), (ComponentRedraw(BD_LAYOUT, _Column()), 1)],
+)
+def test_component_draw_shape_is_checked(move, k):
+    with pytest.raises(ValueError, match=r"_Column\.draw returned shape \(2, 1\); expected \(2,\)"):
+        move(_bd_at(k))
+
+
+def test_birth_with_non_finite_density_is_rejected():
+    bad = IndependentComponentProposal(_uniform_draw, lambda u: -np.inf)
+    cs = _bd_at(0)
+    y, qxy = BirthDeath(BD_LAYOUT, bad, ntemps=1)(cs)
+    assert qxy == -math.inf
+    np.testing.assert_array_equal(y, cs.current_sample)
+
+
+def test_selection_ratios_with_a_positive_minimum():
+    layout = RJLayout(n_shared=0, n_component=P, max_components=3, min_components=1)
+    bd = BirthDeath(layout, UNIFORM, ntemps=1)
+    cs = make_stats(layout)
+    cs.update_sample(layout.make_row(np.full(layout.ndim, 0.5), 1))
+    assert bd._birth_probability(1) == 1.0
+    y, qxy = bd(cs)  # at k = min only a birth is possible; d_2 / b_1 = 1/2
+    assert y[-1] == 2 and qxy == pytest.approx(math.log(0.5))
+    assert bd._selection_log_ratio(1) == pytest.approx(math.log(0.5))
+    cs.update_sample(layout.make_row(np.full(layout.ndim, 0.5), 2))
+    for seed in range(40):
+        cs.rng = np.random.default_rng(seed)
+        y, qxy = bd(cs)
+        if y[-1] == 1:
+            assert qxy == pytest.approx(math.log(2.0))  # log b_1 - log d_2 = -log(1/2)
+            break
+    else:
+        pytest.fail("no death drawn")
+
+
+def test_two_chains_sharing_one_birth_death_keep_separate_counts():
+    bd = BirthDeath(BD_LAYOUT, UNIFORM, ntemps=2)
+    jps = []
+    for chain in range(2):
+        cs = make_stats(BD_LAYOUT, seed=chain)
+        cs.chain_index = chain
+        cs.update_sample(BD_LAYOUT.make_row(np.full(BD_LAYOUT.ndim, 0.5), 1))
+        jp = _RJJumpProposals(cs)
+        jp.add_jump(bd, 1.0)
+        jps.append(jp)
+    rng = np.random.default_rng(5)
+    for _ in range(60):
+        for chain, jp in enumerate(jps):
+            row = BD_LAYOUT.make_row(np.full(BD_LAYOUT.ndim, 0.5), 1)
+            jp(SimpleNamespace(positions=np.stack([row, row])))
+            jp.report_accept(bool(rng.random() < (0.3 if chain == 0 else 0.8)))
+    for chain, jp in enumerate(jps):
+        counts = bd.branch_counts(chain)
+        assert sum(c for c, _ in counts.values()) == jp._proposal_calls[0] == 60
+        assert sum(a for _, a in counts.values()) == jp._proposal_accepts[0]
+        rates = jp.acceptance_rates()
+        assert rates["birth"]["calls"] + rates["death"]["calls"] == 60
+        assert rates["birth"]["accepts"] + rates["death"]["accepts"] == jp._proposal_accepts[0]
