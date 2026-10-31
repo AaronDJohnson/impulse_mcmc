@@ -1312,9 +1312,13 @@ class RJPTSampler(PTSampler):
         ``current_sample`` raises ``ValueError``. The returned row must keep
         ``k`` (``row[-1]``), leave the slots past ``k`` NaN and have finite
         active values; each is checked and raises ``ValueError`` naming the
-        move. ``weight`` must be finite and ``>= 0``. A move named ``"birth"``
-        or ``"death"`` is refused: those names are the built-in birth/death
-        entries of :meth:`proposal_acceptance_rates`.
+        move. The sampler wraps periodic parameters after the move, which is
+        harmless for a symmetric random-walk step (``qxy == 0``); a move with
+        any other ``qxy`` must return periodic values already wrapped into
+        their intervals and compute ``qxy`` for those values. ``weight`` must
+        be finite and ``>= 0``. A move named ``"birth"`` or ``"death"`` is
+        refused: those names are the built-in birth/death entries of
+        :meth:`proposal_acceptance_rates`.
         """
         _check_jump_name(proposal)
         _check_weight(f"weight of jump {_jump_name(proposal)!r}", weight)
