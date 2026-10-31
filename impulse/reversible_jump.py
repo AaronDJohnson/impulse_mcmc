@@ -596,3 +596,284 @@ class RJDEProposal:
 
 
 rj_de = RJDEProposal()
+
+
+class IndependentComponentProposal:
+    """Component proposal that ignores the current state.
+
+    Parameters
+    ----------
+    draw : callable
+        ``draw(rng) -> u``: one component (``n_component`` values).
+    logpdf : callable
+        ``logpdf(u) -> float``: the normalized log density of ``draw``'s
+        output; finite wherever the component prior is.
+    """
+
+    def __init__(self, draw: Callable, logpdf: Callable):
+        if not callable(draw) or not callable(logpdf):
+            raise TypeError("IndependentComponentProposal needs callable draw and logpdf")
+        self._draw = draw
+        self._logpdf = logpdf
+
+    def draw(self, rng: np.random.Generator, x: np.ndarray, k: int) -> np.ndarray:
+        """One new component; ``x`` and ``k`` are ignored."""
+        return self._draw(rng)
+
+    def logpdf(self, u: np.ndarray, x: np.ndarray, k: int) -> float:
+        """Log density of component ``u``; ``x`` and ``k`` are ignored."""
+        return self._logpdf(u)
+
+
+def _check_component_proposal(proposal: Any) -> None:
+    missing = [name for name in ("draw", "logpdf") if not callable(getattr(proposal, name, None))]
+    if missing:
+        raise ValueError(
+            "component_proposal must have callable draw(rng, x, k) and logpdf(u, x, k); "
+            f"{type(proposal).__name__} is missing {missing}"
+        )
+
+
+class BirthDeath:
+    """Birth or death of one component: the built-in move between models.
+
+    Birth inserts ``u ~ component_proposal.draw`` at a uniform position;
+    death removes a uniformly chosen component. ``b_k = d_k = 1/2`` inside
+    the allowed range, ``b_min = d_max = 1``. The map is a slot insertion,
+    so the Jacobian is exactly 1. One instance serves every chain.
+    """
+
+    __name__ = "birth_death"
+    _BRANCHES = ("birth", "death")
+
+    def __init__(self, layout: RJLayout, component_proposal: Any, ntemps: int):
+        self.layout = layout
+        self.component_proposal = component_proposal
+        self._calls = np.zeros((ntemps, 2), dtype=np.int64)
+        self._accepts = np.zeros((ntemps, 2), dtype=np.int64)
+        self._last_branch = np.full(ntemps, -1, dtype=np.int64)
+        self.rejected_deaths = 0
+
+    def _birth_probability(self, k: int) -> float:
+        if k >= self.layout.max_components:
+            return 0.0
+        if k <= self.layout.min_components:
+            return 1.0
+        return 0.5
+
+    def _log_b(self, k: int) -> float:
+        p = self._birth_probability(k)
+        return math.log(p) if p > 0.0 else -math.inf
+
+    def _log_d(self, k: int) -> float:
+        p = 1.0 - self._birth_probability(k)
+        return math.log(p) if p > 0.0 else -math.inf
+
+    def _selection_log_ratio(self, k: int) -> float:
+        """``log d_{k+1} - log b_k``: the move-choice term of a birth from ``k``."""
+        return self._log_d(k + 1) - self._log_b(k)
+
+    def _choose_death_slot(self, rng: np.random.Generator, k: int) -> int:
+        return int(rng.integers(0, k))
+
+    def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+        layout = self.layout
+        proposal = self.component_proposal
+        rng = chain_stats.rng
+        x = chain_stats.current_sample
+        assert x is not None
+        k = layout.k(x)
+        chain = chain_stats.chain_index
+        if rng.random() < self._birth_probability(k):
+            self._last_branch[chain] = 0
+            self._calls[chain, 0] += 1
+            j = int(rng.integers(0, k + 1))
+            params = layout.params(x)
+            u = np.asarray(proposal.draw(rng, params, k), dtype=float)
+            log_g = float(proposal.logpdf(u, params, k))
+            if not math.isfinite(log_g):
+                return x.copy(), -math.inf
+            return layout.insert(x, j, u), self._selection_log_ratio(k) - log_g
+        self._last_branch[chain] = 1
+        self._calls[chain, 1] += 1
+        j = self._choose_death_slot(rng, k)
+        y, u = layout.remove(x, j)
+        log_g = float(proposal.logpdf(u, layout.params(y), k - 1))
+        if not math.isfinite(log_g):
+            self.rejected_deaths += 1
+            return x.copy(), -math.inf
+        return y, log_g - self._selection_log_ratio(k - 1)
+
+    def report_branch_accept(self, chain_index: int, accepted: bool) -> None:
+        """Count an accepted birth or death for the branch ``chain_index`` last took."""
+        branch = int(self._last_branch[chain_index])
+        if accepted and branch >= 0:
+            self._accepts[chain_index, branch] += 1
+
+    def branch_counts(self, chain_index: int) -> Dict[str, Tuple[int, int]]:
+        """``{"birth": (calls, accepts), "death": (calls, accepts)}`` for one chain."""
+        return {
+            name: (int(self._calls[chain_index, b]), int(self._accepts[chain_index, b]))
+            for b, name in enumerate(self._BRANCHES)
+        }
+
+    def get_checkpoint_state(self) -> dict:
+        return {
+            "calls": self._calls.tolist(),
+            "accepts": self._accepts.tolist(),
+            "last_branch": self._last_branch.tolist(),
+            "rejected_deaths": int(self.rejected_deaths),
+        }
+
+    def set_checkpoint_state(self, state: dict) -> None:
+        self._calls = np.array(state["calls"], dtype=np.int64)
+        self._accepts = np.array(state["accepts"], dtype=np.int64)
+        self._last_branch = np.array(state["last_branch"], dtype=np.int64)
+        self.rejected_deaths = int(state["rejected_deaths"])
+
+
+class ComponentRedraw:
+    """Replace one component with a fresh draw from the component proposal (same ``k``)."""
+
+    __name__ = "component_redraw"
+
+    def __init__(self, layout: RJLayout, component_proposal: Any):
+        self.layout = layout
+        self.component_proposal = component_proposal
+
+    def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+        layout = self.layout
+        proposal = self.component_proposal
+        rng = chain_stats.rng
+        x = chain_stats.current_sample
+        assert x is not None
+        k = layout.k(x)
+        if k == 0:
+            return x.copy(), 0.0
+        j = int(rng.integers(0, k))
+        rest, old = layout.remove(x, j)
+        params = layout.params(rest)
+        u = np.asarray(proposal.draw(rng, params, k - 1), dtype=float)
+        log_new = float(proposal.logpdf(u, params, k - 1))
+        log_old = float(proposal.logpdf(old, params, k - 1))
+        if not (math.isfinite(log_new) and math.isfinite(log_old)):
+            return x.copy(), -math.inf
+        return layout.insert(rest, j, u), log_old - log_new
+
+
+_FORWARDED_HOOKS = ("get_checkpoint_state", "set_checkpoint_state", "freeze_adaptation")
+
+
+def _jump_name(move: Any) -> str:
+    return str(getattr(move, "__name__", type(move).__name__))
+
+
+class _WrappedJump:
+    """A registered user move: keeps its name and forwards the hooks it has."""
+
+    def __init__(self, move: Callable, layout: RJLayout):
+        if not callable(move):
+            raise TypeError(f"jump {_jump_name(move)!r} is not callable")
+        self.move = move
+        self.layout = layout
+        self.__name__ = _jump_name(move)
+        for hook in _FORWARDED_HOOKS:
+            fn = getattr(move, hook, None)
+            if callable(fn):
+                setattr(self, hook, fn)
+
+    def _result(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+        row, qxy = self.move(chain_stats)
+        row = np.asarray(row, dtype=float)
+        if row.shape != (self.layout.width,):
+            raise ValueError(
+                f"jump {self.__name__!r} returned a row of shape {row.shape}; expected "
+                f"({self.layout.width},): the padded parameters followed by k"
+            )
+        return row, float(qxy)
+
+
+class _CheckedWithinModelJump(_WrappedJump):
+    """A custom within-model move: must keep ``k`` and leave inactive slots NaN."""
+
+    def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+        row, qxy = self._result(chain_stats)
+        x = chain_stats.current_sample
+        assert x is not None
+        k = self.layout.k(x)
+        if row[-1] != k:
+            raise ValueError(
+                f"within-model jump {self.__name__!r} changed k from {k} to {row[-1]}; "
+                "register moves that change k with add_model_jump"
+            )
+        if not np.all(np.isnan(row[self.layout.n_active(k) : self.layout.ndim])):
+            raise ValueError(
+                f"within-model jump {self.__name__!r} wrote to an inactive slot "
+                f"(entries past k={k} must stay NaN)"
+            )
+        return row, qxy
+
+
+class _ModelJump(_WrappedJump):
+    """A custom between-model move; the sampler adds ``±log_jacobian`` when ``k`` changes."""
+
+    def __init__(self, move: Callable, layout: RJLayout, log_jacobian: float):
+        super().__init__(move, layout)
+        self.log_jacobian = float(log_jacobian)
+
+    def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
+        row, qxy = self._result(chain_stats)
+        layout = self.layout
+        x = chain_stats.current_sample
+        assert x is not None
+        k_old = layout.k(x)
+        try:
+            k_new = layout.check_k(row[-1])
+        except ValueError as err:
+            raise ValueError(f"model jump {self.__name__!r} returned an invalid k: {err}") from None
+        n_act = layout.n_active(k_new)
+        if not np.all(np.isfinite(row[:n_act])):
+            raise ValueError(
+                f"model jump {self.__name__!r} returned a non-finite value among the active "
+                f"parameters at k={k_new}"
+            )
+        if not np.all(np.isnan(row[n_act : layout.ndim])):
+            raise ValueError(
+                f"model jump {self.__name__!r} returned values in slots past k={k_new}; "
+                "they must be NaN"
+            )
+        if k_new > k_old:
+            qxy += self.log_jacobian
+        elif k_new < k_old:
+            qxy -= self.log_jacobian
+        return row, qxy
+
+
+class _RJJumpProposals(JumpProposals):
+    """JumpProposals that also reports moves with branches (birth/death) per branch."""
+
+    def report_accept(self, accepted: bool) -> None:
+        super().report_accept(accepted)
+        idx = self._last_proposal_idx
+        if idx >= 0:
+            hook = getattr(self.proposal_list[idx], "report_branch_accept", None)
+            if hook is not None:
+                hook(self.chain_stats.chain_index, accepted)
+
+    def acceptance_rates(self) -> dict:
+        result = {}
+        for i, proposal in enumerate(self.proposal_list):
+            branch_counts = getattr(proposal, "branch_counts", None)
+            if branch_counts is None:
+                counts = {
+                    proposal.__name__: (
+                        int(self._proposal_calls[i]),
+                        int(self._proposal_accepts[i]),
+                    )
+                }
+            else:
+                counts = branch_counts(self.chain_stats.chain_index)
+            for name, (calls, accepts) in counts.items():
+                rate = accepts / calls if calls > 0 else 0.0
+                result[name] = {"calls": calls, "accepts": accepts, "rate": rate}
+        return result
