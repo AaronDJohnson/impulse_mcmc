@@ -10,6 +10,9 @@ from impulse import CheckpointMismatchError, IndependentComponentProposal, PTSam
 from impulse.resume import check_for_checkpoint
 
 P = 2
+K = 3
+N_SHARED = 1
+D = N_SHARED + K * P
 N_FIRST, TOTAL = 300, 500
 
 
@@ -36,6 +39,7 @@ class CountingUniform(IndependentComponentProposal):
         super().__init__(_draw, _logpdf)
         self.draws = 0
         self.freezes = 0
+        self.draws_at_freeze = None
 
     def draw(self, rng, x, k):
         self.draws += 1
@@ -49,11 +53,13 @@ class CountingUniform(IndependentComponentProposal):
 
     def freeze_adaptation(self):
         self.freezes += 1
+        self.draws_at_freeze = self.draws
 
 
 def _lnlike(x, k):  # works for any layout: uses only the active (non-NaN) entries
     active = x[~np.isnan(x)]
-    return -0.5 * float(np.sum(((active - 0.5) / 0.2) ** 2))
+    # the 1.5 * k bonus keeps p(k) roughly flat over 0..3, so redraws and wraps really run
+    return -0.5 * float(np.sum(((active - 0.5) / 0.2) ** 2)) + 1.5 * k
 
 
 def _lnprior(x, k):
@@ -63,9 +69,9 @@ def _lnprior(x, k):
 
 def _make(outdir, resume=False, log_jacobian=2 * math.log(0.2), **kwargs):
     options = dict(
-        n_shared=1,
+        n_shared=N_SHARED,
         n_component=P,
-        max_components=3,
+        max_components=K,
         lnlike=_lnlike,
         lnprior=_lnprior,
         component_proposal=UNIFORM,
@@ -78,19 +84,21 @@ def _make(outdir, resume=False, log_jacobian=2 * math.log(0.2), **kwargs):
         save_freq=100,
         cov_update=25,
         buffer_size=150,
-        buffer_thin=1,
+        buffer_thin=2,
         de_min_fill=20,
         verbose=False,
     )
     options.update(kwargs)
     sampler = RJPTSampler(**options)
     sampler.add_model_jump(
-        AffineBirthDeath(mu=[0.5, 0.5], sigma=[0.2, 0.2]), weight=10, log_jacobian=log_jacobian
+        AffineBirthDeath(mu=[0.5, 0.5], sigma=[0.2, 0.2], support=(0.0, 1.0)),
+        weight=10,
+        log_jacobian=log_jacobian,
     )
     return sampler
 
 
-X0 = np.full(7, 0.5)
+X0 = np.full(D, 0.5)
 
 
 def test_same_seed_gives_the_same_chain(tmp_path):
@@ -103,13 +111,14 @@ def test_same_seed_gives_the_same_chain(tmp_path):
     assert len(np.unique(chains[0]["k"])) > 1
 
 
-def test_resume_is_bit_identical(tmp_path):
-    full = _make(tmp_path / "full")
+@pytest.mark.parametrize("chain_format", ["binary", "text"])
+def test_resume_is_bit_identical(tmp_path, chain_format):
+    full = _make(tmp_path / "full", chain_format=chain_format)
     full.sample(X0, TOTAL, initial_k=1)
-    first = _make(tmp_path / "split")
+    first = _make(tmp_path / "split", chain_format=chain_format)
     first.sample(X0, N_FIRST, initial_k=1)
     assert check_for_checkpoint(str(tmp_path / "split")) is not None
-    resumed = _make(tmp_path / "split", resume=True)
+    resumed = _make(tmp_path / "split", resume=True, chain_format=chain_format)
     resumed.sample(X0, TOTAL, initial_k=1)
     assert_rj_chains_identical(full.load_chain(), resumed.load_chain())
     assert resumed.proposal_acceptance_rates() == full.proposal_acceptance_rates()
@@ -124,6 +133,14 @@ def test_resume_is_bit_identical(tmp_path):
         (dict(min_components=1), "min_components mismatch"),
         (dict(component_proposal=OtherUniform(_draw, _logpdf)), "component_proposal mismatch"),
         (dict(log_jacobian=0.0), "model jump mismatch"),
+    ],
+    ids=[
+        "n_shared",
+        "n_component",
+        "max_components",
+        "min_components",
+        "component_proposal",
+        "log_jacobian",
     ],
 )
 def test_changed_settings_refuse_to_resume(tmp_path, change, match):
@@ -141,7 +158,7 @@ def test_ptsampler_checkpoint_does_not_resume_into_rjptsampler(tmp_path):
         return 0.0 if np.all((x >= 0) & (x <= 1)) else -np.inf
 
     PTSampler(
-        ndim=8,
+        ndim=D + 1,
         lnlike=lnlike,
         lnprior=lnprior,
         ntemps=3,
@@ -157,6 +174,11 @@ def test_component_proposal_state_and_freeze(tmp_path):
     full = CountingUniform()
     _make(tmp_path / "full", component_proposal=full, num_adapt=150).sample(X0, TOTAL, initial_k=1)
     assert full.freezes == 1 and full.draws > 0
+    # the freeze happens at num_adapt, not when sample() starts: a run of exactly num_adapt
+    # iterations has made the same draws by then
+    upto = CountingUniform()
+    _make(tmp_path / "upto", component_proposal=upto, num_adapt=150).sample(X0, 150, initial_k=1)
+    assert full.draws_at_freeze == upto.draws > 0
     _make(tmp_path / "split", component_proposal=CountingUniform(), num_adapt=150).sample(
         X0, N_FIRST, initial_k=1
     )
@@ -170,12 +192,11 @@ def test_component_proposal_state_and_freeze(tmp_path):
 
 def test_resume_restores_fallback_covariance_over_constructor_argument(tmp_path):
     """The checkpointed fallback covariance wins over a different ``sample_cov`` on resume."""
-    d = 7
     full = _make(tmp_path / "full")
     full.sample(X0, TOTAL, initial_k=1)
     _make(tmp_path / "split").sample(X0, N_FIRST, initial_k=1)
     resumed = _make(
-        tmp_path / "split", resume=True, sample_cov=4.0 * np.eye(d), sample_mean=np.zeros(d)
+        tmp_path / "split", resume=True, sample_cov=4.0 * np.eye(D), sample_mean=np.zeros(D)
     )
     resumed.sample(X0, TOTAL, initial_k=1)
     assert_rj_chains_identical(full.load_chain(), resumed.load_chain())
