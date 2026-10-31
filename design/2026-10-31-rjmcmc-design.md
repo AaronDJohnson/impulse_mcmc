@@ -317,8 +317,20 @@ Reproducibility and modes:
 - README: short reversible-jump section.
 - CHANGELOG 2.0.0: update the "PTSampler only" scope paragraph; add an Added
   entry.
-- `examples/rj_sinusoids.ipynb` (unknown number of sinusoids in noise),
-  rendered on the examples page.
+- `examples/rj_sinusoids.ipynb`, rendered on the examples page with stored
+  outputs, a few minutes to run on a laptop:
+  - Data: 8 sinusoids in white noise, the weakest near the detection limit
+    so the posterior on k splits mainly between 7 and 8. `max_components=12`,
+    uniform prior on k.
+  - Components `(log10 A, f, φ)` with `component_periodic` for φ; noise σ as
+    the one shared parameter. Vectorized `lnlike(x, k)` with NaN masking.
+  - Birth density: the data periodogram over frequency mixed with the prior,
+    amplitude and phase from the prior (the sinusoid analogue of a GB
+    F-statistic map). `component_redraw` on. A short comparison against
+    prior-only births shows the birth acceptance difference.
+  - Plots: k trace; posterior on k vs its prior; histogram of all active
+    frequencies vs the true ones (label-switching-invariant); reconstructed
+    signal with a credible band; birth/death acceptance.
 - Doc-snippet check and Sphinx `-W` pass.
 
 ## Delivery
