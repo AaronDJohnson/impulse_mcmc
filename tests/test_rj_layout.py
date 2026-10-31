@@ -48,17 +48,27 @@ def test_active_mask():
     assert np.array_equal(rows[1], L.active_mask(2))
 
 
-@pytest.mark.parametrize("k", [0, 1, 3])
-def test_insert_then_remove_is_identity(k):
-    row = _row(k, seed=k)
-    u = np.array([7.0, 8.0, 9.0])
-    for j in range(k + 1):
-        grown = L.insert(row, j, u)
-        assert grown[-1] == k + 1
-        assert np.array_equal(L.components(grown)[j], u)
-        back, removed = L.remove(grown, j)
-        assert np.array_equal(back, row, equal_nan=True)
-        assert np.array_equal(removed, u)
+LAYOUTS = [(2, 3, 4, 0), (0, 1, 1, 0), (0, 1, 5, 0), (3, 1, 6, 2)]
+
+
+def _any_row(lay, k, seed=0):
+    return lay.make_row(np.random.default_rng(seed).normal(size=lay.ndim), k)
+
+
+@pytest.mark.parametrize("args", LAYOUTS)
+def test_insert_then_remove_is_identity(args):
+    lay = RJLayout(*args)
+    u = np.arange(7.0, 7.0 + lay.n_component)
+    for k in range(lay.min_components, lay.max_components):
+        row = _any_row(lay, k, seed=k)
+        for j in range(k + 1):
+            grown = lay.insert(row, j, u)
+            assert grown[-1] == k + 1
+            assert np.all(np.isnan(lay.params(grown)[lay.n_active(k + 1) :]))
+            assert np.array_equal(lay.components(grown)[j], u)
+            back, removed = lay.remove(grown, j)
+            assert np.array_equal(back, row, equal_nan=True)
+            assert np.array_equal(removed, u)
 
 
 def test_insert_shifts_later_components():
@@ -70,12 +80,42 @@ def test_insert_shifts_later_components():
     assert np.array_equal(L.shared(grown), L.shared(row))
 
 
-def test_remove_then_insert_is_identity():
-    row = _row(3, seed=5)
-    for j in range(3):
-        smaller, u = L.remove(row, j)
-        assert smaller[-1] == 2 and np.all(np.isnan(L.components(smaller)[2:]))
-        assert np.array_equal(L.insert(smaller, j, u), row, equal_nan=True)
+@pytest.mark.parametrize("args", LAYOUTS)
+def test_remove_then_insert_is_identity(args):
+    lay = RJLayout(*args)
+    for k in range(max(lay.min_components, 1), lay.max_components + 1):
+        row = _any_row(lay, k, seed=5 + k)
+        for j in range(k):
+            smaller, u = lay.remove(row, j)
+            assert smaller[-1] == k - 1
+            assert np.all(np.isnan(lay.params(smaller)[lay.n_active(k - 1) :]))
+            assert np.array_equal(lay.insert(smaller, j, u), row, equal_nan=True)
+
+
+def test_below_min_components_rejected():
+    lay = RJLayout(2, 3, 4, 2)
+    with pytest.raises(ValueError, match="k must be an integer"):
+        lay.check_k(1)
+    with pytest.raises(ValueError, match="k must be an integer"):
+        lay.make_row(np.zeros(lay.ndim), 1)
+
+
+def test_insert_and_remove_check_row_width():
+    params_only = L.params(_row(2))
+    with pytest.raises(ValueError, match="shape"):
+        L.insert(params_only, 0, [1, 2, 3])
+    with pytest.raises(ValueError, match="shape"):
+        L.remove(params_only, 0)
+
+
+def test_insert_rejects_non_finite_component():
+    with pytest.raises(ValueError, match="finite"):
+        L.insert(_row(1), 0, [1, np.nan, 3])
+
+
+def test_active_mask_cannot_be_made_writable():
+    with pytest.raises(ValueError):
+        L.active_mask(2).setflags(write=True)
 
 
 def test_insert_and_remove_do_not_mutate_their_input():

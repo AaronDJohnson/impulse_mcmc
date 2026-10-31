@@ -109,7 +109,10 @@ class RJLayout:
         return int(kf)
 
     def k(self, row: np.ndarray) -> int:
-        """Model index stored in the last entry of ``row``."""
+        """Model index stored in the last entry of ``row``.
+
+        Assumes a valid row; use :meth:`check_k` to validate untrusted input.
+        """
         return int(row[-1])
 
     def params(self, row: np.ndarray) -> np.ndarray:
@@ -121,7 +124,10 @@ class RJLayout:
         return x[..., : self.n_shared]
 
     def components(self, x: np.ndarray) -> np.ndarray:
-        """Component slots of row(s) or parameter vector(s), ``(..., max_components, n_component)``."""
+        """Component slots of row(s) or parameter vector(s).
+
+        Shape ``(..., max_components, n_component)``.
+        """
         x = np.asarray(x)
         return x[..., self.n_shared : self.ndim].reshape(
             x.shape[:-1] + (self.max_components, self.n_component)
@@ -137,8 +143,9 @@ class RJLayout:
         k = int(k)
         mask = self._masks.get(k)
         if mask is None:
-            mask = np.arange(self.ndim) < self.n_active(k)
-            mask.setflags(write=False)
+            base = np.arange(self.ndim) < self.n_active(k)
+            base.setflags(write=False)
+            mask = base.view()
             self._masks[k] = mask
         return mask
 
@@ -165,8 +172,20 @@ class RJLayout:
         row[-1] = k
         return row
 
+    def _check_row(self, row: Any) -> None:
+        if np.shape(row) != (self.width,):
+            raise ValueError(
+                f"row must have shape ({self.width},) (parameters then k); got {np.shape(row)}"
+            )
+
     def insert(self, row: np.ndarray, j: int, u: Any) -> np.ndarray:
-        """Copy of ``row`` with component ``u`` inserted at position ``j`` (``0 <= j <= k``)."""
+        """Copy of ``row`` with component ``u`` inserted at position ``j`` (``0 <= j <= k``).
+
+        Checks the row width, ``j``, ``u`` and that ``k < max_components``; it does
+        not enforce ``min_components``. Never modifies ``row``.
+        """
+        self._check_row(row)
+        j = int(j)
         k = self.k(row)
         p = self.n_component
         if k >= self.max_components:
@@ -176,6 +195,8 @@ class RJLayout:
         u = np.asarray(u, dtype=float).reshape(-1)
         if u.shape != (p,):
             raise ValueError(f"a component has {p} parameters, got {u.size}")
+        if not np.all(np.isfinite(u)):
+            raise ValueError("inserted component must be finite")
         row = np.asarray(row, dtype=float)
         out = row.copy()
         lo = self.n_shared + j * p
@@ -186,7 +207,13 @@ class RJLayout:
         return out
 
     def remove(self, row: np.ndarray, j: int) -> Tuple[np.ndarray, np.ndarray]:
-        """``(row without component j, the removed component)`` for ``0 <= j < k``."""
+        """``(row without component j, the removed component)`` for ``0 <= j < k``.
+
+        Checks the row width and ``j``; it does not enforce ``min_components``
+        (``k`` may drop below it). Never modifies ``row``.
+        """
+        self._check_row(row)
+        j = int(j)
         k = self.k(row)
         p = self.n_component
         if not 0 <= j < k:
