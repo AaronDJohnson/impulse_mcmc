@@ -18,7 +18,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from impulse.chain_stats import ChainStats, MultiChainStats, _HistoryBuffer, svd_groups
+from impulse.chain_stats import (
+    COV_RIDGE_REL,
+    ChainStats,
+    MultiChainStats,
+    _HistoryBuffer,
+    svd_groups,
+)
 from impulse.proposals import (
     _SQRT2_INV,
     DE_MIN_FILL,
@@ -305,11 +311,13 @@ class MaskedChainStats(ChainStats):
     be positive semi-definite (``sample_cov``, which is pooled over models).
 
     Within-model moves use :meth:`active_block`: the factor of one group's
-    active coordinates at one ``k``. Tier 1: when the buffer holds at least
-    ``max(min_pair_rows, 2 * d_k)`` rows of model exactly ``k`` (``d_k`` active
-    parameters), the block comes from the sample covariance of those rows
-    alone. Tier 2: otherwise it is the block of the pooled ``sample_cov``.
-    Per-model covariances and factors are computed on first use and cached
+    active coordinates at one ``k``. The block comes from
+    ``(n_k * S_k + n0 * P_k) / (n_k + n_0)``: ``S_k`` is the sample covariance
+    of the ``n_k`` buffered rows of model exactly ``k`` (needs ``n_k >= 2``),
+    ``P_k`` the active block of the pooled ``sample_cov``, and
+    ``n0 = max(min_pair_rows, 2 * d_k)`` (``d_k`` active parameters) is the
+    shrinkage weight, so a model with few or degenerate rows leans on the
+    pooled block instead of a rank-deficient estimate. Per-model covariances and factors are computed on first use and cached
     until the next update, so they cost nothing to checkpoint and rebuild
     identically. The initial covariance is kept as the fallback for rarely
     co-active pairs and is checkpointed with the other state.
@@ -361,6 +369,8 @@ class MaskedChainStats(ChainStats):
             return
         self.sample_total += len(stored)
         self.update_buffer(stored)
+        self._factors.clear()
+        self._model_cov.clear()
         if sample_num + len(params) < 2:
             return
         n_valid = min(self.sample_total, self.buffer_size)
@@ -382,8 +392,6 @@ class MaskedChainStats(ChainStats):
             self.proposal_L,
             ridge=self._cov_ridge,
         )
-        self._factors.clear()
-        self._model_cov.clear()
 
     recursive_update = update_from_window
 
@@ -398,6 +406,10 @@ class MaskedChainStats(ChainStats):
         if "fallback_cov" in arrays:
             self._fallback_cov = np.array(arrays["fallback_cov"], dtype=float)
             self._fallback_mean = np.array(arrays["fallback_mean"], dtype=float)
+            scale = float(np.mean(np.diag(self._fallback_cov)))
+            if not np.isfinite(scale) or scale <= 0.0:
+                scale = 1.0
+            self._cov_ridge = COV_RIDGE_REL * scale
         self._factors.clear()
         self._model_cov.clear()
         self._eligible.clear()
@@ -417,25 +429,31 @@ class MaskedChainStats(ChainStats):
         return cached
 
     def _model_covariance(self, k: int) -> Optional[np.ndarray]:
-        """Sample covariance of the buffered rows of model exactly ``k``, or None if too few.
+        """Model-``k`` covariance over its ``n_active(k)`` coordinates, shrunk toward the pooled block.
 
-        Covers the ``n_active(k)`` active coordinates only.
+        ``(n_k * S_k + n0 * P_k) / (n_k + n0)`` with ``n_k`` the buffered rows
+        of model exactly ``k``; just ``P_k`` when ``n_k < 2``. None when the
+        model has no active parameter.
         """
         if k in self._model_cov:
             return self._model_cov[k]
         layout = self.layout
-        assert layout is not None
+        assert layout is not None and self.sample_cov is not None
         d_k = layout.n_active(k)
         cov: Optional[np.ndarray] = None
-        n_valid = min(self.sample_total, self.buffer_size)
-        if d_k > 0 and n_valid > 0:
-            rows = self._buffer[-n_valid:]
-            n_comp = np.count_nonzero(np.isfinite(rows[:, layout.n_shared :]), axis=1)
-            mine = rows[n_comp // layout.n_component == k][:, :d_k]
-            if len(mine) >= max(self.min_pair_rows, 2 * d_k):
-                cov = np.atleast_2d(np.cov(mine, rowvar=False))
-                if not np.all(np.isfinite(cov)):
-                    cov = None
+        if d_k > 0:
+            cov = np.array(self.sample_cov[:d_k, :d_k], dtype=float)
+            n_valid = min(self.sample_total, self.buffer_size)
+            if n_valid > 0:
+                rows = self._buffer[-n_valid:]
+                n_comp = np.count_nonzero(np.isfinite(rows[:, layout.n_shared :]), axis=1)
+                mine = rows[n_comp // layout.n_component == k][:, :d_k]
+                n_k = len(mine)
+                if n_k >= 2:
+                    own = np.atleast_2d(np.cov(mine, rowvar=False))
+                    if np.all(np.isfinite(own)):
+                        n0 = max(self.min_pair_rows, 2 * d_k)
+                        cov = (n_k * own + n0 * cov) / (n_k + n0)
         self._model_cov[k] = cov
         return cov
 
@@ -443,9 +461,8 @@ class MaskedChainStats(ChainStats):
         """``(indices, L, n_eff, sqrt(2 n_eff))`` for one group's active coordinates at ``k``.
 
         ``L`` is the scaled eigen-factor (``L @ L.T`` is the covariance block
-        plus the ridge). The block comes from the model-``k`` rows' own
-        covariance when there are enough of them, else from the pooled
-        ``sample_cov`` (see the class docstring). Returns None when the group
+        plus the ridge). The block is the model-``k`` covariance shrunk toward
+        the pooled ``sample_cov`` (see the class docstring). Returns None when the group
         has no active coordinate.
         """
         key = (int(group_index), int(k))
@@ -459,8 +476,7 @@ class MaskedChainStats(ChainStats):
             entry = None
         else:
             source = self._model_covariance(key[1])
-            if source is None:
-                source = self.sample_cov
+            assert source is not None
             block = np.ascontiguousarray(source[np.ix_(idx, idx)])
             _, _, factors = svd_groups(
                 [None], [None], [np.arange(idx.size)], block, ridge=self._cov_ridge

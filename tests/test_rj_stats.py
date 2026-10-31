@@ -112,8 +112,10 @@ def test_active_block_factor_matches_the_block_of_the_covariance():
     idx, factor, neff, sqrt_2neff = cs.active_block(0, 2)
     assert idx.tolist() == [0, 1, 2, 3, 4] and neff == 5
     assert sqrt_2neff == math.sqrt(10)
-    own = np.cov(LAYOUT.params(rows[rows[:, -1] == 2])[:, :5], rowvar=False)
-    block = own + cs._cov_ridge * np.eye(5)
+    mine = LAYOUT.params(rows[rows[:, -1] == 2])[:, :5]
+    n_k, n0 = len(mine), max(cs.min_pair_rows, 10)
+    blend = (n_k * np.cov(mine, rowvar=False) + n0 * cs.sample_cov[:5, :5]) / (n_k + n0)
+    block = blend + cs._cov_ridge * np.eye(5)
     np.testing.assert_allclose(factor @ factor.T, block, rtol=1e-10, atol=1e-12)
     assert cs.active_block(0, 2) is cs.active_block(0, 2)
     cs.update_from_window(cs.sample_total, padded_rows(LAYOUT, 20, seed=1))
@@ -185,6 +187,7 @@ def test_fallback_state_round_trips_through_a_checkpoint():
     fresh.set_checkpoint_state(arrays, meta)
     np.testing.assert_array_equal(fresh._fallback_cov, 4 * np.eye(7))
     np.testing.assert_array_equal(fresh._fallback_mean, np.arange(7.0))
+    assert fresh._cov_ridge == cs._cov_ridge != make_stats(LAYOUT)._cov_ridge
 
 
 def test_pairwise_covariance_rejects_tiny_min_rows():
@@ -214,21 +217,41 @@ def test_blocks_come_from_each_models_own_rows():
         assert neff == truth.shape[0]
         got = factor @ factor.T
         assert np.linalg.eigvalsh(got).min() > 0
-        np.testing.assert_allclose(np.diag(got), np.diag(truth), rtol=0.1)
+        if k == 1:
+            np.testing.assert_allclose(np.diag(got), np.diag(truth), rtol=0.1)
+        else:  # shrinkage toward the pooled block inflates the tight model a little
+            assert truth[0, 0] <= got[0, 0] < 3 * truth[0, 0]
+            assert got[0, 0] < cs.sample_cov[0, 0] / 20
     # the pooled matrix would give a k = 0 variance far from the k = 0 rows'
     assert cs.sample_cov[0, 0] > 10 * a0.var(ddof=1)
 
 
-def test_a_model_with_too_few_rows_uses_the_pooled_block():
+def test_a_model_with_fewer_than_two_rows_gets_exactly_the_pooled_block():
     cs = make_stats(LAYOUT, buffer_size=500, buffer_thin=1)
     rows = padded_rows(LAYOUT, 300)
-    rows = rows[(rows[:, -1] != 2) | (np.cumsum(rows[:, -1] == 2) <= 5)]  # 5 rows at k = 2
-    cs.update_from_window(0, rows)
-    assert cs._model_covariance(2) is None
-    idx, factor, _, _ = cs.active_block(0, 2)
-    block = cs.sample_cov[np.ix_(idx, idx)] + cs._cov_ridge * np.eye(len(idx))
-    np.testing.assert_allclose(factor @ factor.T, block, rtol=1e-10, atol=1e-12)
-    assert cs._model_covariance(1) is not None
+    for n_rows in (0, 1):
+        keep = (rows[:, -1] != 2) | (np.cumsum(rows[:, -1] == 2) <= n_rows)
+        cs = make_stats(LAYOUT, buffer_size=500, buffer_thin=1)
+        cs.update_from_window(0, rows[keep])
+        np.testing.assert_array_equal(cs._model_covariance(2), cs.sample_cov[:5, :5])
+        assert cs._model_covariance(1) is not None
+
+
+def test_degenerate_model_rows_do_not_collapse_the_block():
+    lay = RJLayout(n_shared=1, n_component=2, max_components=3)
+    rng = np.random.default_rng(5)
+    # healthy rows at every k, then a stuck stretch: 100 copies of 3 distinct k = 3 rows
+    healthy = padded_rows(lay, 400)
+    pts = rng.normal(size=(3, lay.ndim)) + 3.0
+    stuck = np.stack([lay.make_row(pts[i % 3], 3) for i in range(100)])
+    cs = make_stats(lay, buffer_size=600, buffer_thin=1)
+    cs.update_from_window(0, np.concatenate([healthy, stuck]))
+    n_k = int(np.sum(np.concatenate([healthy, stuck])[:, -1] == 3))
+    n0 = max(cs.min_pair_rows, 2 * lay.ndim)
+    pooled = np.linalg.eigvalsh(cs.sample_cov).min()
+    got = np.linalg.eigvalsh(cs._model_covariance(3)).min()
+    assert got >= n0 / (n_k + n0) * pooled * (1 - 1e-9)
+    assert got > 1e3 * cs._cov_ridge
 
 
 def test_draw_active_block_only_returns_eligible_groups():
@@ -243,3 +266,13 @@ def test_draw_active_block_only_returns_eligible_groups():
     assert (
         make_stats(RJLayout(0, 1, 2), groups=[np.array([0, 1])]).draw_active_block(rng, 0) is None
     )
+
+
+def test_caches_are_cleared_even_when_the_moments_are_unusable():
+    cs = make_stats(LAYOUT, buffer_size=500, buffer_thin=1)
+    cs.update_from_window(0, padded_rows(LAYOUT, 300))
+    cs.active_block(0, 2)
+    assert cs._factors and cs._model_cov
+    cs.update_from_window(1, padded_rows(LAYOUT, 1, seed=9))  # one row: moments skipped or not
+    cs.update_from_window(2, padded_rows(LAYOUT, 30, seed=9))
+    assert cs._factors == {} and cs._model_cov == {}
