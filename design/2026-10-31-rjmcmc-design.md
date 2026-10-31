@@ -191,13 +191,25 @@ current state.
 
 - One history buffer per chain stores padded rows (NaN in inactive slots).
   The k column is excluded from all statistics and groups.
-- Masked covariance: entry `(a, b)` uses only stored rows where both `a` and
-  `b` are active (pairwise-complete). Entries with fewer than 10 such rows
-  take the initial covariance's entry (`sample_cov`, default identity). The
-  matrix is then made positive semi-definite by clipping eigenvalues at the
-  existing ridge (`COV_RIDGE_REL × initial scale`).
+- Inactive slots are forced to NaN before a row is stored, so a stored row's
+  model is its finite prefix; windows with a non-finite active value or an
+  invalid k are skipped.
+- Pooled masked covariance (`sample_cov`): entry `(a, b)` uses only stored
+  rows where both `a` and `b` are active (pairwise-complete). Entries with
+  fewer than 10 such rows take the initial covariance's entry (default
+  identity; checkpointed, since it stays in use for rarely visited slots).
+  The matrix is then made positive semi-definite by clipping eigenvalues at
+  the existing ridge (`COV_RIDGE_REL × initial scale`).
+- Per-model covariance: for model `k`, `Σ_k` is the sample covariance of the
+  stored rows whose model is exactly `k`, on the model's active coordinates,
+  when there are at least `max(10, 2·d_k)` of them (`d_k = n_shared + k·p`);
+  otherwise `Σ_k` is the pooled matrix's active block. (Amended during
+  implementation: a pooled matrix mixes models, can be indefinite when a
+  parameter's scale differs between models, and clipping it can leave a
+  near-zero proposal direction; the model's own rows give a PSD estimate of
+  the model-`k` posterior covariance.)
 - Per-k factors: for group `g` at model `k`, the factor of
-  `Σ[active, active]` (active = `g ∩ active_mask(k)`) via `svd_groups`,
+  `Σ_k[active, active]` (active = `g ∩ active_mask(k)`) via `svd_groups`,
   computed on first use and cached until the next covariance update.
 - `rj_am` / `rj_scam`: as `am` / `scam` on the active block, with
   `n_eff` = number of active coordinates in the group. Groups with no active
@@ -286,8 +298,9 @@ fast suite):
 Unit:
 
 - Masked covariance equals brute-force `np.cov` on co-active rows; fallback
-  below 10 rows; PSD after repair. Per-k factor equals the active block's
-  factor. `rj_de` difference symmetry; `n_eff` uses the active count.
+  below 10 rows; PSD after repair. Per-model covariance from exact-k rows,
+  PD where the pooled matrix is indefinite; pooled fallback when a model has
+  too few rows. `rj_de` difference symmetry; `n_eff` uses the active count.
 - `RJLayout.insert` / `remove` are inverses; `active_mask`.
 - Every construction-time and run-time check raises, naming the jump where
   applicable; the `logpdf = −inf` warning fires once.
