@@ -19,6 +19,8 @@ temperature chain by default (weights ``am_weight``, ``scam_weight`` and
    NormalizingFlowProposal
    JumpProposals
    ProposalBundle
+   IndependentComponentProposal
+   RJLayout
 
 Built-in moves
 --------------
@@ -53,3 +55,17 @@ proposal independently on every step, from its own random stream.
 .. autoclass:: JumpProposals
 
 .. autoclass:: ProposalBundle
+
+Reversible-jump building blocks
+-------------------------------
+
+``RJPTSampler`` draws new components from a component proposal: any object
+with ``draw(rng, x, k)`` and ``logpdf(u, x, k)``, or an
+``IndependentComponentProposal`` wrapping state-free functions. Custom moves
+find the row layout in ``chain_stats.layout``. See
+:doc:`/user_guide/reversible-jump`.
+
+.. autoclass:: IndependentComponentProposal
+
+.. autoclass:: RJLayout
+   :members: k, params, shared, components, slot, active_mask, make_row, insert, remove

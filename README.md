@@ -13,7 +13,8 @@ inference. **`PTSampler`** combines adaptive Metropolis-Hastings proposals (AM,
 SCAM, differential evolution, optional normalizing flows), automatic
 temperature-ladder adaptation, and batched (vectorized or JAX-jitted)
 likelihood evaluation. Every run checkpoints and resumes bit-exactly, in a
-format that executes no code on load.
+format that executes no code on load. **`RJPTSampler`** extends it to reversible-jump
+sampling of a variable number of components.
 
 ## Installation
 
@@ -237,6 +238,53 @@ sampler.sample(np.ones(2), num_iterations=5000)
 print(sampler.proposal_acceptance_rates()["scale_jump"]["rate"])
 ```
 
+## Reversible jump: a variable number of components
+
+`RJPTSampler` samples models with a variable number `k` of copies of one
+component type (sinusoids, pulses, galactic binaries, ...) plus optional
+shared parameters. Births and deaths change `k` and are accepted with Green's
+reversible-jump ratio; you supply the density new components are drawn from,
+and can add your own moves within and between models. Your functions take
+`(x, k)`, where `x` holds the shared parameters and then `max_components`
+slots of `n_component` parameters, NaN past slot `k`:
+
+```python
+import numpy as np
+
+from impulse import IndependentComponentProposal, RJPTSampler
+
+pulse_t = np.linspace(0.0, 10.0, 200)
+pulse_data = np.exp(-0.5 * ((pulse_t - 3.0) / 0.3) ** 2)
+pulse_data += 0.1 * np.random.default_rng(0).standard_normal(pulse_t.size)
+
+
+def pulse_lnlike(x, k):  # up to 4 pulses of (amplitude, centre)
+    comps = x.reshape(4, 2)[:k]
+    model = sum(a * np.exp(-0.5 * ((pulse_t - c) / 0.3) ** 2) for a, c in comps)
+    r = pulse_data - model
+    return -0.5 * np.dot(r, r) / 0.1**2
+
+
+def pulse_lnprior(x, k):  # uniform k; amplitude U(0, 2), centre U(0, 10)
+    comps = x.reshape(4, 2)[:k]
+    inside = np.all((comps >= 0.0) & (comps <= [2.0, 10.0]))
+    return -k * np.log(20.0) if inside else -np.inf
+
+
+pulse_births = IndependentComponentProposal(
+    draw=lambda rng: rng.uniform([0.0, 0.0], [2.0, 10.0]),
+    logpdf=lambda u: -np.log(20.0) if np.all((u >= 0.0) & (u <= [2.0, 10.0])) else -np.inf,
+)
+rj = RJPTSampler(n_shared=0, n_component=2, max_components=4,
+                 lnlike=pulse_lnlike, lnprior=pulse_lnprior,
+                 component_proposal=pulse_births, ntemps=4, seed=1, outdir="./rj_chains")
+rj.sample(np.zeros(8), num_iterations=5000, initial_k=0)
+print(np.bincount(rj.load_chain()["k"][0, 1000:], minlength=5))  # samples per k
+```
+
+See the [reversible-jump guide](https://aarondjohnson.github.io/impulse_mcmc/user_guide/reversible-jump.html)
+and the [example notebook](https://github.com/AaronDJohnson/impulse_mcmc/blob/main/examples/rj_sinusoids.ipynb).
+
 ## Checkpoint and resume
 
 Checkpoints are written automatically every `save_freq` iterations. Resuming is
@@ -275,8 +323,9 @@ for what is verified, and [SECURITY.md](SECURITY.md) for the trust boundary.
 - **Documentation**: <https://aarondjohnson.github.io/impulse_mcmc/>
 - **Examples**: notebooks in [`examples/`](examples/): a sinusoid quickstart,
   vectorized and JAX likelihoods, sampler features (tempering, periodic
-  parameters, custom proposals, checkpointing), high-dimensional sampling, and
-  normalizing-flow proposals
+  parameters, custom proposals, checkpointing), high-dimensional sampling,
+  normalizing-flow proposals, and a reversible-jump search for an unknown number
+  of sinusoids
 - **Contributing**: [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Security policy**: [SECURITY.md](SECURITY.md)
 - **Changelog**: [CHANGELOG.md](CHANGELOG.md)

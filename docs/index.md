@@ -29,6 +29,9 @@ cold_samples = chain["samples"][0]   # (nsamples, ndim) cold chain
 - **Adaptive proposals** — AM, SCAM, and min-fill-gated differential
   evolution, plus an optional normalizing-flow independence proposal and any
   custom moves you register.
+- **Reversible jump** — `RJPTSampler` samples a variable number of
+  components (birth/death and your own moves within and between models),
+  with every `PTSampler` feature (see {doc}`user_guide/reversible-jump`).
 - **Vectorized and JAX-jitted likelihoods** — evaluate every temperature
   chain in one batched call.
 - **Checkpoint/resume** that is bit-exact: an interrupted run resumed to `N`
@@ -54,6 +57,7 @@ user_guide/getting-started
 user_guide/parallel-tempering
 user_guide/checkpointing
 user_guide/custom-proposals
+user_guide/reversible-jump
 ```
 
 ```{toctree}

@@ -11,10 +11,12 @@ Version 1.0.0 on PyPI is the pre-rewrite package (the old `base.py` /
 `mhsampler.py` / `ptsampler.py` API, since removed). 2.0.0 is a complete
 rewrite and shares no API with it.
 
-2.0.0 ships one sampler, `PTSampler`. The development builds on the `v2`
-branch also carried NUTS, product-space model selection and SBC validation
-tools; those are not part of this release (see *Removed*). Entries below that
-compare against "earlier 2.0.0-dev builds" matter only if you ran that branch.
+2.0.0 ships two samplers: `PTSampler`, and `RJPTSampler`, a reversible-jump
+sampler built on it for models with a variable number of components. The
+development builds on the `v2` branch also carried NUTS, product-space model
+selection and SBC validation tools; those are not part of this release (see
+*Removed*). Entries below that compare against "earlier 2.0.0-dev builds"
+matter only if you ran that branch.
 
 ### Breaking Changes
 
@@ -214,6 +216,17 @@ compare against "earlier 2.0.0-dev builds" matter only if you ran that branch.
 
 ### Added
 
+- `RJPTSampler`: reversible-jump MCMC with parallel tempering for a variable
+  number `k` of copies of one component type plus optional shared parameters.
+  Built-in birth/death and an optional component-redraw move draw from a
+  user-supplied component proposal (`IndependentComponentProposal` wraps plain
+  `draw`/`logpdf` functions); custom within-model moves (`add_custom_jump`)
+  and between-model moves (`add_model_jump`, with a constant `log_jacobian`);
+  adaptive AM, SCAM and DE on the active parameters; per-row, vectorized,
+  threaded and JAX likelihoods `lnlike(x, k)`; NaN-padded chain files with `k`
+  as an extra column; bit-exact checkpoint/resume. `RJLayout` gives custom
+  moves the row layout. See the reversible-jump user guide and
+  `examples/rj_sinusoids.ipynb`.
 - `chain_format` keyword on `PTSampler`: `"binary"` (default) or `"text"`. See
   Breaking Changes. The implementation lives in the new `impulse.chain_io`
   module.
