@@ -460,13 +460,20 @@ def _inplace_k(cs):
     return x, 0.0
 
 
+def _returns_current(cs):
+    return cs.current_sample, 0.0
+
+
 def test_in_place_moves_are_rejected_not_misread():
-    cs = _bd_at(1)
-    with pytest.raises(ValueError, match="'_inplace_k'.*sharing memory"):
-        _CheckedWithinModelJump(_inplace_k, BD_LAYOUT)(cs)
-    cs = _bd_at(1)
-    with pytest.raises(ValueError, match="'_inplace_k'.*sharing memory"):
-        _ModelJump(_inplace_k, BD_LAYOUT, 1.5)(cs)
+    # current_sample is a read-only view, so an in-place write fails before k is read back.
+    with pytest.raises(ValueError, match="read-only"):
+        _CheckedWithinModelJump(_inplace_k, BD_LAYOUT)(_bd_at(1))
+    with pytest.raises(ValueError, match="read-only"):
+        _ModelJump(_inplace_k, BD_LAYOUT, 1.5)(_bd_at(1))
+    with pytest.raises(ValueError, match="'_returns_current'.*sharing memory"):
+        _CheckedWithinModelJump(_returns_current, BD_LAYOUT)(_bd_at(1))
+    with pytest.raises(ValueError, match="'_returns_current'.*sharing memory"):
+        _ModelJump(_returns_current, BD_LAYOUT, 1.5)(_bd_at(1))
 
 
 def test_within_model_wrapper_rejects_non_finite_active_values():

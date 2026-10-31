@@ -11,6 +11,7 @@ convention.
 
 from __future__ import annotations
 
+import json
 import math
 import warnings
 from dataclasses import dataclass, field
@@ -34,7 +35,7 @@ from impulse.proposals import (
     _draw_jump_scale,
 )
 from impulse.resume import CheckpointMismatchError
-from impulse.samplers import PeriodicSpec, PTSampler
+from impulse.samplers import PeriodicSpec, PTSampler, WrapSpec
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,9 @@ class MaskedChainStats(ChainStats):
     so they cost nothing to checkpoint and rebuild identically. The initial
     covariance is kept as the fallback for rarely co-active pairs and is
     checkpointed with the other state.
+
+    ``current_sample`` is a read-only view of the chain's current row, so a
+    move that writes into it raises instead of corrupting the chain state.
     """
 
     layout: Optional[RJLayout] = None
@@ -395,6 +399,10 @@ class MaskedChainStats(ChainStats):
         )
 
     recursive_update = update_from_window
+
+    def update_sample(self, position: np.ndarray) -> None:
+        """Set ``current_sample`` to a read-only view of ``position``."""
+        self.current_sample = _readonly(position)
 
     def get_checkpoint_state(self) -> Tuple[dict, dict]:
         arrays, meta = super().get_checkpoint_state()
@@ -635,14 +643,68 @@ def _check_component_proposal(proposal: Any) -> None:
 
 
 def _readonly(a: np.ndarray) -> np.ndarray:
-    """A read-only view, so a component proposal cannot write into the live state."""
+    """A read-only view, so a move or component proposal cannot write into the live state."""
     v = a.view()
     v.flags.writeable = False
     return v
 
 
+class _PeriodicBounds:
+    """Closed intervals ``[low, high]`` that the periodic entries of a proposed value must lie in.
+
+    The engine wraps every proposed row into its periodic intervals before the
+    MH step, so a density or ``qxy`` computed for an unwrapped value is the
+    density of the wrong point. The check is closed because ``np.mod`` can
+    return exactly the period.
+    """
+
+    def __init__(self, spec: PeriodicSpec, size: int, what: str):
+        spec = {int(i): v for i, v in spec.items()}
+        wrap = WrapSpec.from_dict(spec)
+        assert wrap is not None
+        if wrap.indices[0] < 0 or wrap.indices[-1] >= size:
+            raise ValueError(f"{what} indices must be in 0..{size - 1}, got {sorted(spec)}")
+        self.indices = wrap.indices
+        self.lows = wrap.lows
+        highs = []
+        for i in wrap.indices:
+            value = spec[int(i)]
+            highs.append(float(value[1]) if isinstance(value, (tuple, list)) else float(value))
+        self.highs = np.array(highs)
+        # The engine wraps into [low, low + period]; low + period can round past high.
+        self._limits = np.maximum(self.highs, wrap.lows + wrap.periods)
+
+    @classmethod
+    def from_spec(
+        cls, spec: Optional[PeriodicSpec], size: int, what: str
+    ) -> Optional[_PeriodicBounds]:
+        return cls(spec, size, what) if spec else None
+
+    def first_outside(
+        self, values: np.ndarray, n_active: Optional[int] = None
+    ) -> Optional[Tuple[int, float, float, float]]:
+        """``(index, value, low, high)`` of the first entry outside its interval, else None.
+
+        Only indices below ``n_active`` are checked when it is given. NaN is not
+        reported here; finiteness is checked separately.
+        """
+        v = values[self.indices]
+        bad = (v < self.lows) | (v > self._limits)
+        if n_active is not None:
+            bad &= self.indices < n_active
+        if not bad.any():
+            return None
+        i = int(np.argmax(bad))
+        return int(self.indices[i]), float(v[i]), float(self.lows[i]), float(self.highs[i])
+
+
 def _draw_component(
-    proposal: Any, rng: np.random.Generator, params: np.ndarray, k: int, layout: RJLayout
+    proposal: Any,
+    rng: np.random.Generator,
+    params: np.ndarray,
+    k: int,
+    layout: RJLayout,
+    bounds: Optional[_PeriodicBounds] = None,
 ) -> np.ndarray:
     u = np.asarray(proposal.draw(rng, params, k), dtype=float)
     if u.shape != (layout.n_component,):
@@ -650,6 +712,17 @@ def _draw_component(
             f"{type(proposal).__name__}.draw returned shape {u.shape}; expected "
             f"({layout.n_component},): one component"
         )
+    if bounds is not None:
+        outside = bounds.first_outside(u)
+        if outside is not None:
+            c, value, low, high = outside
+            raise ValueError(
+                f"{type(proposal).__name__}.draw returned {value!r} for periodic component "
+                f"parameter {c}, outside its declared interval [{low!r}, {high!r}]. Wrap the "
+                "draw into the interval and make logpdf the density of the wrapped value; or, "
+                "if your draw uses a different interval (e.g. (-pi, pi)), declare that "
+                "interval in component_periodic."
+            )
     return u
 
 
@@ -665,12 +738,22 @@ class BirthDeath:
     rejected with ``qxy = -inf`` and counted in ``rejected_deaths``. The
     methods ``_choose_death_slot(rng, k)`` and ``_selection_log_ratio(k)``
     are overridable hooks (used by the statistical power tests).
+
+    ``component_periodic`` (``{index within a component: period or (low,
+    high)}``) declares the periodic component parameters; a draw outside
+    their closed intervals raises ``ValueError``.
     """
 
     __name__ = "birth_death"
     _BRANCHES = ("birth", "death")
 
-    def __init__(self, layout: RJLayout, component_proposal: Any, ntemps: int):
+    def __init__(
+        self,
+        layout: RJLayout,
+        component_proposal: Any,
+        ntemps: int,
+        component_periodic: Optional[PeriodicSpec] = None,
+    ):
         if layout.min_components == layout.max_components:
             raise ValueError(
                 "BirthDeath needs min_components < max_components; "
@@ -678,6 +761,9 @@ class BirthDeath:
             )
         self.layout = layout
         self.component_proposal = component_proposal
+        self._bounds = _PeriodicBounds.from_spec(
+            component_periodic, layout.n_component, "component_periodic"
+        )
         self._calls = np.zeros((ntemps, 2), dtype=np.int64)
         self._accepts = np.zeros((ntemps, 2), dtype=np.int64)
         self._last_branch = np.full(ntemps, -1, dtype=np.int64)
@@ -718,7 +804,7 @@ class BirthDeath:
             self._calls[chain, 0] += 1
             j = int(rng.integers(0, k + 1))
             params = _readonly(layout.params(x))
-            u = _draw_component(proposal, rng, params, k, layout)
+            u = _draw_component(proposal, rng, params, k, layout, self._bounds)
             log_g = float(proposal.logpdf(u, params, k))
             if not math.isfinite(log_g):
                 return x.copy(), -math.inf
@@ -764,13 +850,25 @@ class BirthDeath:
 
 
 class ComponentRedraw:
-    """Replace one component with a fresh draw from the component proposal (same ``k``)."""
+    """Replace one component with a fresh draw from the component proposal (same ``k``).
+
+    ``component_periodic`` is as for :class:`BirthDeath`: a draw outside the
+    periodic intervals raises ``ValueError``.
+    """
 
     __name__ = "component_redraw"
 
-    def __init__(self, layout: RJLayout, component_proposal: Any):
+    def __init__(
+        self,
+        layout: RJLayout,
+        component_proposal: Any,
+        component_periodic: Optional[PeriodicSpec] = None,
+    ):
         self.layout = layout
         self.component_proposal = component_proposal
+        self._bounds = _PeriodicBounds.from_spec(
+            component_periodic, layout.n_component, "component_periodic"
+        )
 
     def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
         layout = self.layout
@@ -784,7 +882,7 @@ class ComponentRedraw:
         j = int(rng.integers(0, k))
         rest, old = layout.remove(x, j)
         params = _readonly(layout.params(rest))
-        u = _draw_component(proposal, rng, params, k - 1, layout)
+        u = _draw_component(proposal, rng, params, k - 1, layout, self._bounds)
         log_new = float(proposal.logpdf(u, params, k - 1))
         log_old = float(proposal.logpdf(old, params, k - 1))
         if not (math.isfinite(log_new) and math.isfinite(log_old)):
@@ -857,11 +955,25 @@ class _CheckedWithinModelJump(_WrappedJump):
 
 
 class _ModelJump(_WrappedJump):
-    """A custom between-model move; the sampler adds ``±log_jacobian`` when ``k`` changes."""
+    """A custom between-model move; the sampler adds ``±log_jacobian`` when ``k`` changes.
 
-    def __init__(self, move: Callable, layout: RJLayout, log_jacobian: float):
+    ``periodic`` is the padded-vector periodic spec (``periodic`` merged with
+    ``component_periodic`` expanded to every slot). Unless ``qxy`` is ``-inf``
+    (always rejected), the active periodic entries of the returned row must
+    lie in their closed intervals: ``qxy`` is computed for the returned
+    values, and the engine would otherwise store wrapped ones.
+    """
+
+    def __init__(
+        self,
+        move: Callable,
+        layout: RJLayout,
+        log_jacobian: float,
+        periodic: Optional[PeriodicSpec] = None,
+    ):
         super().__init__(move, layout)
         self.log_jacobian = float(log_jacobian)
+        self._bounds = _PeriodicBounds.from_spec(periodic, layout.ndim, "periodic")
 
     def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
         layout = self.layout
@@ -884,6 +996,18 @@ class _ModelJump(_WrappedJump):
                 f"model jump {self.__name__!r} returned values in slots past k={k_new}; "
                 "they must be NaN"
             )
+        if self._bounds is not None and qxy != -math.inf:
+            outside = self._bounds.first_outside(row, n_act)
+            if outside is not None:
+                i, value, low, high = outside
+                raise ValueError(
+                    f"model jump {self.__name__!r} returned {value!r} for periodic parameter "
+                    f"{i} (k={k_new}), outside its declared interval [{low!r}, {high!r}]. "
+                    "Return the row already wrapped into the interval (e.g. with np.mod), with "
+                    "qxy computed for the wrapped values, or return qxy = -inf to reject it; "
+                    "if your move uses a different interval, declare that interval in "
+                    "periodic / component_periodic."
+                )
         if k_new > k_old:
             qxy += self.log_jacobian
         elif k_new < k_old:
@@ -981,6 +1105,11 @@ def _check_jump_name(move: Any) -> None:
         )
 
 
+def _check_weight(what: str, weight: Any) -> None:
+    if not (math.isfinite(weight) and weight >= 0):
+        raise ValueError(f"{what} must be a finite number >= 0, got {weight!r}")
+
+
 class RJPTSampler(PTSampler):
     """Reversible-jump parallel-tempering sampler for a variable number of components.
 
@@ -1014,10 +1143,15 @@ class RJPTSampler(PTSampler):
         (``n_component`` values) and ``logpdf(u, x, k) -> float``, where
         ``(x, k)`` is always the smaller model's state. ``logpdf`` must be the
         normalized density of what ``draw`` returns and finite wherever the
-        component prior is. Optional ``get_checkpoint_state`` /
-        ``set_checkpoint_state`` and ``freeze_adaptation`` hooks are honoured
-        and called once by the sampler. :class:`IndependentComponentProposal`
-        wraps state-free functions.
+        component prior is. Draws must lie inside the declared periodic
+        intervals (``component_periodic``) and ``logpdf`` must be the density of
+        that value: starting from a distribution on the real line, wrap the
+        draw (``np.mod``) and use the wrapped density. A draw outside the
+        interval raises ``ValueError``. Optional ``get_checkpoint_state`` (which
+        must return JSON-serializable data) / ``set_checkpoint_state`` and
+        ``freeze_adaptation`` hooks are honoured and called once by the
+        sampler. :class:`IndependentComponentProposal` wraps state-free
+        functions.
     min_components : int, default 0
         Smallest ``k``. With ``min_components == max_components`` the built-in
         birth/death move is not registered.
@@ -1029,7 +1163,8 @@ class RJPTSampler(PTSampler):
         fresh draw from ``component_proposal`` at the same ``k``.
     component_periodic : dict, optional
         Periodic component parameters, ``{index within a component: period or
-        (low, high)}``, applied to every slot.
+        (low, high)}``, applied to every slot. ``component_proposal`` draws
+        must already lie in these closed intervals (see above).
     periodic : dict, optional
         Periodic parameters by index into the padded vector ``0 .. D - 1``
         (normally the shared ones). May not overlap ``component_periodic``.
@@ -1038,8 +1173,9 @@ class RJPTSampler(PTSampler):
     **kwargs
         Any other :class:`PTSampler` keyword (``ntemps``, ``outdir``,
         ``seed``, ``groups``, ``sample_cov``, ...). ``groups`` and
-        ``sample_cov`` index the padded vector. ``ndim`` is set by the sampler
-        and may not be passed.
+        ``sample_cov`` index the padded vector (``sample_mean`` is ``(D,)``,
+        ``sample_cov`` ``(D, D)``). ``ndim`` is set by the sampler and may not
+        be passed.
 
     Attributes
     ----------
@@ -1089,31 +1225,33 @@ class RJPTSampler(PTSampler):
             )
         self.layout = RJLayout(n_shared, n_component, max_components, min_components)
         _check_component_proposal(component_proposal)
-        for name, weight in (
-            ("birth_death_weight", birth_death_weight),
-            ("component_redraw_weight", component_redraw_weight),
-        ):
-            if not (math.isfinite(weight) and weight >= 0):
-                raise ValueError(f"{name} must be a finite number >= 0, got {weight!r}")
+        _check_weight("birth_death_weight", birth_death_weight)
+        _check_weight("component_redraw_weight", component_redraw_weight)
         self.component_proposal = component_proposal
         self._wrapped_jumps: Dict[int, _WrappedJump] = {}
         self._model_jumps: List[_ModelJump] = []
+        self._rejected_deaths_before = 0
         d = self.layout.ndim
+        self._periodic = _merge_periodic(self.layout, periodic, component_periodic)
         super().__init__(
             ndim=d + 1,
             lnlike=_RJCallable(lnlike, d, vectorized),
             lnprior=_RJCallable(lnprior, d, vectorized),
-            periodic=_merge_periodic(self.layout, periodic, component_periodic),
+            periodic=self._periodic,
             vectorized=vectorized,
             **kwargs,
         )
         self.birth_death: Optional[BirthDeath] = None
         if birth_death_weight > 0 and self.layout.max_components > self.layout.min_components:
-            self.birth_death = BirthDeath(self.layout, component_proposal, self.ntemps)
+            self.birth_death = BirthDeath(
+                self.layout, component_proposal, self.ntemps, component_periodic
+            )
             self.proposal_bundle.add_jump(self.birth_death, birth_death_weight)
         self.component_redraw: Optional[ComponentRedraw] = None
         if component_redraw_weight > 0:
-            self.component_redraw = ComponentRedraw(self.layout, component_proposal)
+            self.component_redraw = ComponentRedraw(
+                self.layout, component_proposal, component_periodic
+            )
             self.proposal_bundle.add_jump(self.component_redraw, component_redraw_weight)
 
     def _build_chain_stats(
@@ -1124,9 +1262,15 @@ class RJPTSampler(PTSampler):
         buffer_size: int,
         buffer_thin: int,
     ) -> MultiChainStats:
+        d = self.layout.ndim
+        if sample_mean is not None and np.shape(np.atleast_1d(sample_mean)) != (d,):
+            raise ValueError(
+                f"sample_mean must have shape ({d},) (the padded parameter vector), got "
+                f"{np.shape(sample_mean)}"
+            )
         chain_stats: List[ChainStats] = [
             MaskedChainStats(
-                self.layout.ndim,
+                d,
                 self.ptstate,
                 ii,
                 self.rngs[ii],
@@ -1160,18 +1304,20 @@ class RJPTSampler(PTSampler):
         ``proposal(chain_stats) -> (row, qxy)``. ``chain_stats.current_sample``
         is the current full row, shape ``(D + 1,)`` with ``k`` last, and
         ``chain_stats.layout`` is the sampler's :class:`RJLayout`
-        (``layout.k(row)``, ``layout.params(row)``, ``layout.slot(j)``). The
-        move must return a NEW ``(D + 1,)`` array (for example
-        ``chain_stats.current_sample.copy()``, then modified) and must not
-        modify ``chain_stats.current_sample``, which is a view of the live
-        chain state; a returned array that shares memory with it raises
-        ``ValueError``. The returned row must keep ``k`` (``row[-1]``), leave
-        the slots past ``k`` NaN and have finite active values; each is
-        checked and raises ``ValueError`` naming the move. A move named
-        ``"birth"`` or ``"death"`` is refused: those names are the built-in
-        birth/death entries of :meth:`proposal_acceptance_rates`.
+        (``layout.k(row)``, ``layout.params(row)``, ``layout.slot(j)``).
+        ``current_sample`` is a read-only view of the live chain state:
+        writing to it raises ``ValueError``. The move must return a NEW
+        ``(D + 1,)`` array (for example ``chain_stats.current_sample.copy()``,
+        then modified); a returned array that shares memory with
+        ``current_sample`` raises ``ValueError``. The returned row must keep
+        ``k`` (``row[-1]``), leave the slots past ``k`` NaN and have finite
+        active values; each is checked and raises ``ValueError`` naming the
+        move. ``weight`` must be finite and ``>= 0``. A move named ``"birth"``
+        or ``"death"`` is refused: those names are the built-in birth/death
+        entries of :meth:`proposal_acceptance_rates`.
         """
         _check_jump_name(proposal)
+        _check_weight(f"weight of jump {_jump_name(proposal)!r}", weight)
         wrapped = self._wrapped_jumps.get(id(proposal))
         if wrapped is None:
             wrapped = _CheckedWithinModelJump(proposal, self.layout)
@@ -1193,16 +1339,22 @@ class RJPTSampler(PTSampler):
         ``chain_stats.current_sample`` is the current full row, shape
         ``(D + 1,)`` with ``k`` last, and ``chain_stats.layout`` is the
         sampler's :class:`RJLayout`; :meth:`RJLayout.insert` and
-        :meth:`RJLayout.remove` build the new row as a copy. The move must
-        return a NEW array and must not modify ``chain_stats.current_sample``,
-        which is a view of the live chain state; a returned array that shares
-        memory with it raises ``ValueError``. Returned rows are checked
-        (shape ``(D + 1,)``, valid ``k``, finite active values, NaN past
-        ``k``); a violation raises ``ValueError`` naming the move. A move
-        named ``"birth"`` or ``"death"`` is refused: those names are the
-        built-in birth/death entries of :meth:`proposal_acceptance_rates`.
+        :meth:`RJLayout.remove` build the new row as a copy.
+        ``current_sample`` is a read-only view of the live chain state:
+        writing to it raises ``ValueError``. The move must return a NEW array;
+        a returned array that shares memory with ``current_sample`` raises
+        ``ValueError``. Returned rows must already be wrapped into their
+        periodic intervals (``periodic``, ``component_periodic``), with
+        ``qxy`` computed for the wrapped values, unless ``qxy`` is ``-inf``
+        (always rejected). Returned rows are checked (shape ``(D + 1,)``,
+        valid ``k``, finite active values, NaN past ``k``, and the periodic
+        intervals unless ``qxy`` is ``-inf``); a violation raises ``ValueError``
+        naming the move. ``weight`` must be finite and ``>= 0``. A move named
+        ``"birth"`` or ``"death"`` is refused: those names are the built-in
+        birth/death entries of :meth:`proposal_acceptance_rates`.
         """
         _check_jump_name(move)
+        _check_weight(f"weight of model jump {_jump_name(move)!r}", weight)
         log_jacobian = float(log_jacobian)
         if not math.isfinite(log_jacobian):
             raise ValueError(
@@ -1211,7 +1363,7 @@ class RJPTSampler(PTSampler):
             )
         wrapped = self._wrapped_jumps.get(id(move))
         if wrapped is None:
-            wrapped = _ModelJump(move, self.layout, log_jacobian)
+            wrapped = _ModelJump(move, self.layout, log_jacobian, self._periodic)
             self._wrapped_jumps[id(move)] = wrapped
             self._model_jumps.append(wrapped)
         elif isinstance(wrapped, _ModelJump):
@@ -1267,16 +1419,29 @@ class RJPTSampler(PTSampler):
             ) from None
         rows = np.stack([layout.make_row(x0[i], ks[i]) for i in range(self.ntemps)])
         super().sample(rows, num_iterations, thin=thin)
-        if self.birth_death is not None and self.birth_death.rejected_deaths:
+        if self.birth_death is None:
+            return
+        total = self.birth_death.rejected_deaths
+        new = total - self._rejected_deaths_before
+        if new > 0:
             warnings.warn(
-                f"birth_death: {self.birth_death.rejected_deaths} death proposal(s) were "
-                "rejected because component_proposal.logpdf returned -inf for the component "
-                "being removed. The proposal must be finite wherever the component prior "
-                "is; otherwise those deaths can never happen and the posterior on k is "
-                "biased.",
+                f"birth_death: {new} death proposal(s) in this sample() call ({total} in "
+                "total) were rejected because component_proposal.logpdf returned a "
+                "non-finite value for the component being removed. The proposal must be "
+                "finite wherever the component prior is; otherwise those deaths can never "
+                "happen and the posterior on k is biased.",
                 RuntimeWarning,
                 stacklevel=2,
             )
+
+    def _restore_from_checkpoint(self) -> bool:
+        restored = super()._restore_from_checkpoint()
+        # Runs on every sample() call, after any restore: the end-of-run warning
+        # reports only the deaths rejected during this call.
+        self._rejected_deaths_before = (
+            0 if self.birth_death is None else self.birth_death.rejected_deaths
+        )
+        return restored
 
     def load_chain(self) -> dict:
         """Load the saved chains.
@@ -1310,8 +1475,17 @@ class RJPTSampler(PTSampler):
     def _capture_checkpoint_state(self) -> Tuple[dict, dict]:
         arrays, meta = super()._capture_checkpoint_state()
         getter = getattr(self.component_proposal, "get_checkpoint_state", None)
+        state = getter() if callable(getter) else None
+        try:
+            json.dumps(state)
+        except TypeError as err:
+            raise TypeError(
+                f"{type(self.component_proposal).__name__}.get_checkpoint_state() must return "
+                "JSON-serializable data (dicts, lists, strings, numbers, booleans, None; "
+                f"convert arrays with .tolist()): {err}"
+            ) from err
         rj = self._rj_settings()
-        rj["component_proposal_state"] = getter() if callable(getter) else None
+        rj["component_proposal_state"] = state
         meta["reversible_jump"] = rj
         return arrays, meta
 
