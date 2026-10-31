@@ -587,7 +587,7 @@ class RJDEProposal:
             while mm == nn:
                 nn = rng.integers(0, n_filled)
             diff = masked_difference(buf[offset + mm, idx], buf[offset + nn, idx])
-            if np.any(diff):
+            if diff.any():
                 scale = 1.0 if rng.random() > 0.5 else rng.random() * 2.4 / sqrt_2neff
                 q = x.copy()
                 q[idx] += scale * diff
