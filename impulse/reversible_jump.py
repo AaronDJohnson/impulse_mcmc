@@ -5,8 +5,8 @@ The state is ``(k, theta_k)``: ``n_shared`` parameters every model has, then
 ``min_components <= k <= max_components``. It is stored as one padded row of
 width ``D + 1``, ``D = n_shared + max_components * n_component``: the shared
 parameters, then ``max_components`` component slots (slots past ``k`` hold
-NaN), then ``k``. :class:`RJLayout` is the only code that knows this
-convention.
+NaN), then ``k``. :class:`RJLayout` owns this layout convention and is the
+API for it.
 """
 
 from __future__ import annotations
@@ -622,6 +622,12 @@ class IndependentComponentProposal:
     logpdf : callable
         ``logpdf(u) -> float``: the normalized log density of ``draw``'s
         output; finite wherever the component prior is.
+
+    Notes
+    -----
+    Draws of a periodic component coordinate must lie inside its declared
+    interval, and ``logpdf`` must be the density of that (wrapped) value;
+    out-of-interval draws raise ``ValueError``.
     """
 
     def __init__(self, draw: Callable, logpdf: Callable):
@@ -1208,8 +1214,13 @@ class RJPTSampler(PTSampler):
     layout : RJLayout
         The padded-row convention, also available to moves as
         ``chain_stats.layout``.
-    birth_death : BirthDeath or None
+    component_proposal : object
+        The component proposal passed in, used for birth draws.
+    birth_death : object or None
         The built-in birth/death move, if registered.
+    component_redraw : object or None
+        The built-in move that redraws one component from
+        ``component_proposal``, if registered.
 
     Notes
     -----

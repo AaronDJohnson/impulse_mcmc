@@ -62,11 +62,13 @@ Reversible-jump building blocks
 ``RJPTSampler`` draws new components from a component proposal: any object
 with ``draw(rng, x, k)`` and ``logpdf(u, x, k)``, or an
 ``IndependentComponentProposal`` wrapping state-free functions. Custom moves
-find the row layout in ``chain_stats.layout``. See
+find the row layout in ``chain_stats.layout``. Draws of a periodic component
+coordinate must lie inside its declared interval, and ``logpdf`` must be the
+density of that (wrapped) value; out-of-interval draws raise ``ValueError``. See
 :doc:`/user_guide/reversible-jump`.
 
 .. autoclass:: IndependentComponentProposal
 
 .. autoclass:: RJLayout
-   :members: k, params, shared, components, slot, active_mask, n_active, ndim, width,
+   :members: k, params, shared, components, slot, active_mask, active_mask_rows, n_active, ndim, width,
               check_k, make_row, insert, remove
