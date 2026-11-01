@@ -7,9 +7,11 @@ The state is `(k, θ_k)`, where `θ_k` holds the shared parameters and `k`
 components of `p` parameters each. Moves that add or remove a component change
 the number of parameters and are accepted with Green's reversible-jump ratio.
 
-`RJPTSampler` is a `PTSampler`: tempering, the adaptive proposals, vectorized,
-threaded and JAX likelihoods, and checkpoint/resume all work as described in
-the rest of this guide. This page covers what is different.
+`RJPTSampler` is a `PTSampler`: tempering and swaps, adaptive within-model
+moves (the RJ versions of AM, SCAM and DE), vectorized, threaded and JAX
+likelihoods, checkpoint/resume and custom moves all work as described in the
+rest of this guide. `PTSampler`'s own proposals and `NormalizingFlowProposal`
+do not: they assume unpadded rows. This page covers what is different.
 
 ## How the state is stored
 
@@ -278,6 +280,9 @@ last, and the returned row must keep the same `k` and NaN in the same slots
 `current_sample` is a read-only view of the live chain state: writing to it
 raises `ValueError`, and so does returning it (or any array sharing its
 memory). Return a new array, for example `current_sample.copy()` with changes.
+`PTSampler`'s built-in proposals and `NormalizingFlowProposal` assume unpadded
+rows and are refused with `ValueError`; the RJ versions (`rj_am`, `rj_scam`,
+`rj_de`) are registered automatically.
 `chain_stats.ndim` is `D`, without the `k` column: choose coordinates with
 `layout.n_active(k)` or `layout.slot(j)`, not `range(chain_stats.ndim)`, which
 includes inactive slots. `chain_stats.layout` is an

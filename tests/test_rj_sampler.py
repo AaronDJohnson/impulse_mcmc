@@ -295,6 +295,23 @@ def test_user_functions_get_read_only_arrays(tmp_path, vectorized, which):
         sampler.sample(X0, 5, initial_k=1)
 
 
+@pytest.mark.parametrize(
+    "name", ["am", "scam", "de", "gaussian", "DEProposal", "NormalizingFlowProposal"]
+)
+def test_ptsampler_proposals_are_refused(tmp_path, name):
+    import impulse
+    from impulse import proposals
+
+    obj = getattr(proposals, name)
+    move = obj() if isinstance(obj, type) and name == "DEProposal" else obj
+    if name == "NormalizingFlowProposal":
+        move = object.__new__(obj)  # the flow itself needs optional deps; isinstance is enough
+    assert getattr(impulse, name, obj) is obj
+    sampler = _sampler(tmp_path)
+    with pytest.raises(ValueError, match="rj_am"):
+        sampler.add_custom_jump(move, 1.0)
+
+
 def test_jump_weights_are_checked(tmp_path):
     sampler = _sampler(tmp_path)
 

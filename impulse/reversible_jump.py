@@ -29,11 +29,17 @@ from impulse.chain_stats import (
 from impulse.proposals import (
     _SQRT2_INV,
     DE_MIN_FILL,
+    DEProposal,
     JumpProposals,
+    NormalizingFlowProposal,
     ProposalBundle,
     _draw_group_index,
     _draw_jump_scale,
 )
+from impulse.proposals import am as _pt_am
+from impulse.proposals import de as _pt_de
+from impulse.proposals import gaussian as _pt_gaussian
+from impulse.proposals import scam as _pt_scam
 from impulse.resume import CheckpointMismatchError
 from impulse.samplers import PeriodicSpec, PTSampler, WrapSpec
 
@@ -1110,6 +1116,19 @@ def _check_jump_name(move: Any) -> None:
         )
 
 
+_PT_ONLY_FUNCTIONS = (_pt_am, _pt_scam, _pt_de, _pt_gaussian)
+
+
+def _check_not_pt_proposal(move: Any) -> None:
+    """Refuse PTSampler's proposals, which assume unpadded rows."""
+    if move in _PT_ONLY_FUNCTIONS or isinstance(move, (DEProposal, NormalizingFlowProposal)):
+        raise ValueError(
+            f"cannot register {_jump_name(move)!r}: PTSampler's proposals assume unpadded "
+            "rows and fail on RJPTSampler's NaN-padded ones. rj_am, rj_scam and rj_de "
+            "(registered automatically) are the RJ equivalents"
+        )
+
+
 def _check_weight(what: str, weight: Any) -> None:
     if not (math.isfinite(weight) and weight >= 0):
         raise ValueError(f"{what} must be a finite number >= 0, got {weight!r}")
@@ -1325,9 +1344,14 @@ class RJPTSampler(PTSampler):
         their intervals and compute ``qxy`` for those values. ``weight`` must
         be finite and ``>= 0``. A move named ``"birth"`` or ``"death"`` is
         refused: those names are the built-in birth/death entries of
-        :meth:`proposal_acceptance_rates`.
+        :meth:`proposal_acceptance_rates`. ``PTSampler``'s own proposals
+        (``am``, ``scam``, ``de``, ``gaussian``, :class:`DEProposal`,
+        :class:`NormalizingFlowProposal`) assume unpadded rows and are refused
+        with ``ValueError``; ``rj_am``, ``rj_scam`` and ``rj_de`` are
+        registered automatically.
         """
         _check_jump_name(proposal)
+        _check_not_pt_proposal(proposal)
         _check_weight(f"weight of jump {_jump_name(proposal)!r}", weight)
         wrapped = self._wrapped_jumps.get(id(proposal))
         if wrapped is None:

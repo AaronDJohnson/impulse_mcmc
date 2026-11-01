@@ -31,7 +31,9 @@ cold_samples = chain["samples"][0]   # (nsamples, ndim) cold chain
   custom moves you register.
 - **Reversible jump** — `RJPTSampler` samples a variable number of
   components (birth/death and your own moves within and between models),
-  with every `PTSampler` feature (see {doc}`user_guide/reversible-jump`).
+  with tempering and swaps, adaptive within-model moves, vectorized, threaded
+  and JAX evaluation, and checkpoint/resume (see
+  {doc}`user_guide/reversible-jump`).
 - **Vectorized and JAX-jitted likelihoods** — evaluate every temperature
   chain in one batched call.
 - **Checkpoint/resume** that is bit-exact: an interrupted run resumed to `N`
