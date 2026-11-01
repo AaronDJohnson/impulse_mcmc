@@ -182,7 +182,9 @@ the `component_proposal`: an object with
 birth, and the state after removing the component for a death. A proposal that
 depends on it (for example, one that avoids existing components) therefore
 stays correct: the death evaluates `logpdf` at the same smaller state the
-matching birth drew from.
+matching birth drew from. `component_redraw` (below) likewise draws the new
+component, and evaluates `logpdf` for both the new and the replaced one, at the
+state without the component being redrawn.
 
 Two requirements are yours to meet:
 
