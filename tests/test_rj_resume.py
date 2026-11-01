@@ -70,7 +70,7 @@ def _lnprior(x, k):
 def _make(outdir, resume=False, log_jacobian=2 * math.log(0.2), **kwargs):
     options = dict(
         n_shared=N_SHARED,
-        n_component=P,
+        component_dim=P,
         max_components=K,
         lnlike=_lnlike,
         lnprior=_lnprior,
@@ -128,7 +128,7 @@ def test_resume_is_bit_identical(tmp_path, chain_format):
     "change, match",
     [
         (dict(n_shared=2), "n_shared mismatch"),
-        (dict(n_component=3), "n_component mismatch"),
+        (dict(component_dim=3), "component_dim mismatch"),
         (dict(max_components=4), "max_components mismatch"),
         (dict(min_components=1), "min_components mismatch"),
         (dict(component_proposal=OtherUniform(_draw, _logpdf)), "component_proposal mismatch"),
@@ -136,7 +136,7 @@ def test_resume_is_bit_identical(tmp_path, chain_format):
     ],
     ids=[
         "n_shared",
-        "n_component",
+        "component_dim",
         "max_components",
         "min_components",
         "component_proposal",

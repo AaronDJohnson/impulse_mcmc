@@ -38,7 +38,7 @@ def _lnprior(x, k):
 def _sampler(outdir, **kwargs):
     options = dict(
         n_shared=1,
-        n_component=P,
+        component_dim=P,
         max_components=K,
         lnlike=_lnlike,
         lnprior=_lnprior,
@@ -104,7 +104,7 @@ def test_vectorized_functions_get_a_batch_and_an_int_array(tmp_path):
         (dict(birth_death_weight=-1.0), ValueError, "birth_death_weight"),
         (dict(component_redraw_weight=np.nan), ValueError, "component_redraw_weight"),
         (dict(min_components=4), ValueError, "min_components"),
-        (dict(n_component=0), ValueError, "n_component"),
+        (dict(component_dim=0), ValueError, "component_dim"),
     ],
 )
 def test_construction_checks(tmp_path, kwargs, error, match):

@@ -15,7 +15,7 @@ from impulse.reversible_jump import (
 )
 from impulse.samplers import PTState
 
-LAYOUT = RJLayout(n_shared=1, n_component=2, max_components=3)  # D = 7
+LAYOUT = RJLayout(n_shared=1, component_dim=2, max_components=3)  # D = 7
 
 
 def _brute_force(params, fallback, min_rows):
@@ -207,7 +207,7 @@ def _mixture_rows(layout, n0=1800, n1=200, seed=0):
 
 
 def test_blocks_come_from_each_models_own_rows():
-    lay = RJLayout(n_shared=1, n_component=1, max_components=1)
+    lay = RJLayout(n_shared=1, component_dim=1, max_components=1)
     rows, a0, ab1 = _mixture_rows(lay)
     cs = make_stats(lay, buffer_size=2000, buffer_thin=1)
     cs.update_from_window(0, rows)
@@ -238,7 +238,7 @@ def test_a_model_with_fewer_than_two_rows_gets_exactly_the_pooled_block():
 
 
 def test_degenerate_model_rows_do_not_collapse_the_block():
-    lay = RJLayout(n_shared=1, n_component=2, max_components=3)
+    lay = RJLayout(n_shared=1, component_dim=2, max_components=3)
     rng = np.random.default_rng(5)
     # healthy rows at every k, then a stuck stretch: 100 copies of 3 distinct k = 3 rows
     healthy = padded_rows(lay, 400)

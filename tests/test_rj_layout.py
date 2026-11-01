@@ -5,7 +5,7 @@ import pytest
 
 from impulse import RJLayout
 
-L = RJLayout(n_shared=2, n_component=3, max_components=4, min_components=0)
+L = RJLayout(n_shared=2, component_dim=3, max_components=4, min_components=0)
 
 
 def _row(k, seed=0):
@@ -58,7 +58,7 @@ def _any_row(lay, k, seed=0):
 @pytest.mark.parametrize("args", LAYOUTS)
 def test_insert_then_remove_is_identity(args):
     lay = RJLayout(*args)
-    u = np.arange(7.0, 7.0 + lay.n_component)
+    u = np.arange(7.0, 7.0 + lay.component_dim)
     for k in range(lay.min_components, lay.max_components):
         row = _any_row(lay, k, seed=k)
         for j in range(k + 1):
@@ -149,11 +149,11 @@ def test_views_on_batches():
 @pytest.mark.parametrize(
     "args, match",
     [
-        ((0, 0, 3), "n_component"),
+        ((0, 0, 3), "component_dim"),
         ((0, 1, 3, 4), "min_components"),
         ((-1, 1, 3), "n_shared"),
         ((0, 1, 0), "max_components"),
-        ((0, 1.5, 3), "n_component must be an integer"),
+        ((0, 1.5, 3), "component_dim must be an integer"),
     ],
 )
 def test_construction_checks(args, match):

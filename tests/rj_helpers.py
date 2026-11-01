@@ -66,7 +66,7 @@ class AffineBirthDeath:
         b = birth_probability(layout, k)
         if rng.random() < b:
             j = int(rng.integers(0, k + 1))
-            u = rng.standard_normal(layout.n_component)
+            u = rng.standard_normal(layout.component_dim)
             theta = self.mu + self.sigma * u
             if self.support is not None:
                 low, high = self.support

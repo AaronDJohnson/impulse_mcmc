@@ -16,7 +16,7 @@ do not: they assume unpadded rows. This page covers what is different.
 ## How the state is stored
 
 Every stored row has the same width. With `K = max_components`,
-`p = n_component` and `D = n_shared + K·p`:
+`p = component_dim` and `D = n_shared + K·p`:
 
 | Columns | Content |
 |---|---|
@@ -79,7 +79,7 @@ births = IndependentComponentProposal(
 
 sampler = RJPTSampler(
     n_shared=0,
-    n_component=P,
+    component_dim=P,
     max_components=K,
     lnlike=lnlike,
     lnprior=lnprior,
@@ -156,7 +156,7 @@ assert np.allclose(
 
 vec_sampler = RJPTSampler(
     n_shared=0,
-    n_component=P,
+    component_dim=P,
     max_components=K,
     lnlike=lnlike_vectorized,
     lnprior=lnprior_vectorized,
@@ -248,7 +248,7 @@ class GriddedProposal:
 
 gridded = RJPTSampler(
     n_shared=0,
-    n_component=P,
+    component_dim=P,
     max_components=K,
     lnlike=lnlike,
     lnprior=lnprior,
@@ -368,7 +368,7 @@ class AffineBirthDeath:
         k = layout.k(x)
         b = self.birth_probability(layout, k)
         if rng.random() < b:  # birth, at one of k + 1 positions
-            u = rng.standard_normal(layout.n_component)
+            u = rng.standard_normal(layout.component_dim)
             y = layout.insert(x, int(rng.integers(k + 1)), self.mu + self.sigma * u)
             d_next = 1.0 - self.birth_probability(layout, k + 1)
             return y, np.log(d_next) - np.log(b) - self.log_normal(u)
@@ -381,7 +381,7 @@ class AffineBirthDeath:
 SIGMA_BIRTH = np.array([0.5, 2.5])
 custom = RJPTSampler(
     n_shared=0,
-    n_component=P,
+    component_dim=P,
     max_components=K,
     lnlike=lnlike,
     lnprior=lnprior,
@@ -469,7 +469,7 @@ Resume works as for `PTSampler` (see {doc}`checkpointing`): rebuild the
 sampler the same way, with the same constructor arguments, the same
 `add_custom_jump` and `add_model_jump` calls in the same order, and a component
 proposal of the same class, then pass `resume=True`. On top of the `PTSampler`
-checks, a changed `n_shared`, `n_component`, `max_components`,
+checks, a changed `n_shared`, `component_dim`, `max_components`,
 `min_components`, component proposal class name, or list of model jumps
 (names, order, `log_jacobian`) raises `CheckpointMismatchError`.
 
@@ -535,7 +535,7 @@ with jax.disable_jit():
 
 jax_sampler = RJPTSampler(
     n_shared=0,
-    n_component=P,
+    component_dim=P,
     max_components=K,
     lnlike=lnlike_jax,
     lnprior=lnprior_vectorized,

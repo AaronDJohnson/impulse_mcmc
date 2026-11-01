@@ -22,7 +22,7 @@ from impulse.reversible_jump import (
     rj_scam,
 )
 
-LAYOUT = RJLayout(n_shared=1, n_component=2, max_components=3)  # D = 7, rows of 8
+LAYOUT = RJLayout(n_shared=1, component_dim=2, max_components=3)  # D = 7, rows of 8
 
 
 def _at(k, seed=0, fill=0, current=None, **kwargs):
@@ -53,7 +53,7 @@ def test_within_model_moves_touch_only_active_coordinates(move, k):
 
 
 def test_moves_return_the_current_state_when_nothing_is_active():
-    layout = RJLayout(n_shared=0, n_component=2, max_components=2)
+    layout = RJLayout(n_shared=0, component_dim=2, max_components=2)
     cs = make_stats(layout, buffer_size=200, buffer_thin=1)
     cs.update_from_window(0, padded_rows(layout, 150))
     cs.update_sample(layout.make_row(np.zeros(4), 0))
@@ -156,7 +156,7 @@ def test_within_model_steps_do_not_depend_on_the_current_point():
 
 def test_rj_de_redraws_pairs_that_give_a_zero_difference():
     # Half of the stored rows lack every slot, so a single pair is usable only 1 time in 4.
-    layout = RJLayout(n_shared=0, n_component=2, max_components=3)
+    layout = RJLayout(n_shared=0, component_dim=2, max_components=3)
     rows = np.stack([layout.make_row(np.full(6, float(i)), 3 if i % 2 else 0) for i in range(80)])
     moved = 0
     for seed in range(200):
@@ -225,7 +225,7 @@ def test_rj_de_min_fill_validation():
 
 
 P = 2
-BD_LAYOUT = RJLayout(n_shared=0, n_component=P, max_components=3)  # D = 6, rows of 7
+BD_LAYOUT = RJLayout(n_shared=0, component_dim=P, max_components=3)  # D = 6, rows of 7
 
 
 def _uniform_draw(rng):
@@ -509,7 +509,7 @@ def test_component_proposal_cannot_write_into_the_state(move_cls, k):
 
 
 def test_birth_death_needs_room_to_move():
-    layout = RJLayout(n_shared=0, n_component=P, max_components=2, min_components=2)
+    layout = RJLayout(n_shared=0, component_dim=P, max_components=2, min_components=2)
     with pytest.raises(ValueError, match="min_components < max_components"):
         BirthDeath(layout, UNIFORM, ntemps=1)
 
@@ -540,7 +540,7 @@ def test_birth_with_non_finite_density_is_rejected():
 
 
 def test_selection_ratios_with_a_positive_minimum():
-    layout = RJLayout(n_shared=0, n_component=P, max_components=3, min_components=1)
+    layout = RJLayout(n_shared=0, component_dim=P, max_components=3, min_components=1)
     bd = BirthDeath(layout, UNIFORM, ntemps=1)
     cs = make_stats(layout)
     cs.update_sample(layout.make_row(np.full(layout.ndim, 0.5), 1))

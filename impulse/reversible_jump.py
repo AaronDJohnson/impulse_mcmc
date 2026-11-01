@@ -1,9 +1,9 @@
 """Reversible-jump parallel tempering for a variable number of components.
 
 The state is ``(k, theta_k)``: ``n_shared`` parameters every model has, then
-``k`` components of ``n_component`` parameters each, with
+``k`` components of ``component_dim`` parameters each, with
 ``min_components <= k <= max_components``. It is stored as one padded row of
-width ``D + 1``, ``D = n_shared + max_components * n_component``: the shared
+width ``D + 1``, ``D = n_shared + max_components * component_dim``: the shared
 parameters, then ``max_components`` component slots (slots past ``k`` hold
 NaN), then ``k``. :class:`RJLayout` owns this layout convention and is the
 API for it.
@@ -49,10 +49,10 @@ class RJLayout:
     """Slot convention for padded reversible-jump rows.
 
     A row has ``width = D + 1`` entries: ``n_shared`` shared parameters,
-    ``max_components`` slots of ``n_component`` parameters (NaN past ``k``),
+    ``max_components`` slots of ``component_dim`` parameters (NaN past ``k``),
     then ``k``. A parameter vector is the same without the trailing ``k``.
     The active parameters at model ``k`` are exactly the first
-    ``n_active(k) = n_shared + k * n_component`` entries.
+    ``n_active(k) = n_shared + k * component_dim`` entries.
 
     Components are numbered ``0 .. k - 1``. :meth:`insert` and :meth:`remove`
     shift the later components and update ``k``; both return new arrays and
@@ -63,7 +63,7 @@ class RJLayout:
     ----------
     n_shared : int
         Parameters every model has (noise level, background); may be 0.
-    n_component : int
+    component_dim : int
         Parameters per component, at least 1.
     max_components : int
         Largest allowed ``k``, at least 1.
@@ -72,7 +72,7 @@ class RJLayout:
     """
 
     n_shared: int
-    n_component: int
+    component_dim: int
     max_components: int
     min_components: int = 0
     _masks: Dict[int, np.ndarray] = field(
@@ -80,15 +80,15 @@ class RJLayout:
     )
 
     def __post_init__(self) -> None:
-        for name in ("n_shared", "n_component", "max_components", "min_components"):
+        for name in ("n_shared", "component_dim", "max_components", "min_components"):
             value = getattr(self, name)
             if isinstance(value, bool) or float(value) != int(value):
                 raise ValueError(f"{name} must be an integer, got {value!r}")
             object.__setattr__(self, name, int(value))
         if self.n_shared < 0:
             raise ValueError(f"n_shared must be >= 0, got {self.n_shared}")
-        if self.n_component < 1:
-            raise ValueError(f"n_component must be >= 1, got {self.n_component}")
+        if self.component_dim < 1:
+            raise ValueError(f"component_dim must be >= 1, got {self.component_dim}")
         if self.max_components < 1:
             raise ValueError(f"max_components must be >= 1, got {self.max_components}")
         if not 0 <= self.min_components <= self.max_components:
@@ -100,7 +100,7 @@ class RJLayout:
     @property
     def ndim(self) -> int:
         """Length ``D`` of the padded parameter vector (without ``k``)."""
-        return self.n_shared + self.max_components * self.n_component
+        return self.n_shared + self.max_components * self.component_dim
 
     @property
     def width(self) -> int:
@@ -109,7 +109,7 @@ class RJLayout:
 
     def n_active(self, k: int) -> int:
         """Number of active parameters at model ``k``."""
-        return self.n_shared + int(k) * self.n_component
+        return self.n_shared + int(k) * self.component_dim
 
     def check_k(self, k: Any) -> int:
         """Return ``k`` as an int; ``ValueError`` unless it is a valid model index."""
@@ -139,17 +139,17 @@ class RJLayout:
     def components(self, x: np.ndarray) -> np.ndarray:
         """Component slots of row(s) or parameter vector(s).
 
-        Shape ``(..., max_components, n_component)``.
+        Shape ``(..., max_components, component_dim)``.
         """
         x = np.asarray(x)
         return x[..., self.n_shared : self.ndim].reshape(
-            x.shape[:-1] + (self.max_components, self.n_component)
+            x.shape[:-1] + (self.max_components, self.component_dim)
         )
 
     def slot(self, j: int) -> slice:
         """Slice of the parameters of component ``j``."""
-        start = self.n_shared + int(j) * self.n_component
-        return slice(start, start + self.n_component)
+        start = self.n_shared + int(j) * self.component_dim
+        return slice(start, start + self.component_dim)
 
     def active_mask(self, k: int) -> np.ndarray:
         """Read-only ``(D,)`` mask of the parameters active at model ``k``."""
@@ -164,7 +164,7 @@ class RJLayout:
 
     def active_mask_rows(self, ks: Any) -> np.ndarray:
         """``(n, D)`` mask for a batch of model indices."""
-        n_act = self.n_shared + np.asarray(ks).astype(np.intp) * self.n_component
+        n_act = self.n_shared + np.asarray(ks).astype(np.intp) * self.component_dim
         return np.arange(self.ndim)[None, :] < n_act[:, None]
 
     def make_row(self, x: Any, k: Any) -> np.ndarray:
@@ -200,7 +200,7 @@ class RJLayout:
         self._check_row(row)
         j = int(j)
         k = self.k(row)
-        p = self.n_component
+        p = self.component_dim
         if k >= self.max_components:
             raise ValueError(f"cannot insert: k={k} is already max_components")
         if not 0 <= j <= k:
@@ -228,7 +228,7 @@ class RJLayout:
         self._check_row(row)
         j = int(j)
         k = self.k(row)
-        p = self.n_component
+        p = self.component_dim
         if not 0 <= j < k:
             raise ValueError(f"remove position j={j} must be in [0, {k - 1}]")
         row = np.asarray(row, dtype=float)
@@ -462,7 +462,7 @@ class MaskedChainStats(ChainStats):
             if n_valid > 0:
                 rows = self._buffer[-n_valid:]
                 n_comp = np.count_nonzero(np.isfinite(rows[:, layout.n_shared :]), axis=1)
-                mine = rows[n_comp // layout.n_component == k][:, :d_k]
+                mine = rows[n_comp // layout.component_dim == k][:, :d_k]
                 n_k = len(mine)
                 if n_k >= 2:
                     own = np.atleast_2d(np.cov(mine, rowvar=False))
@@ -618,7 +618,7 @@ class IndependentComponentProposal:
     Parameters
     ----------
     draw : callable
-        ``draw(rng) -> u``: one component (``n_component`` values).
+        ``draw(rng) -> u``: one component (``component_dim`` values).
     logpdf : callable
         ``logpdf(u) -> float``: the normalized log density of ``draw``'s
         output; finite wherever the component prior is.
@@ -719,10 +719,10 @@ def _draw_component(
     bounds: Optional[_PeriodicBounds] = None,
 ) -> np.ndarray:
     u = np.asarray(proposal.draw(rng, params, k), dtype=float)
-    if u.shape != (layout.n_component,):
+    if u.shape != (layout.component_dim,):
         raise ValueError(
             f"{type(proposal).__name__}.draw returned shape {u.shape}; expected "
-            f"({layout.n_component},): one component"
+            f"({layout.component_dim},): one component"
         )
     if bounds is not None:
         outside = bounds.first_outside(u)
@@ -774,7 +774,7 @@ class BirthDeath:
         self.layout = layout
         self.component_proposal = component_proposal
         self._bounds = _PeriodicBounds.from_spec(
-            component_periodic, layout.n_component, "component_periodic"
+            component_periodic, layout.component_dim, "component_periodic"
         )
         self._calls = np.zeros((ntemps, 2), dtype=np.int64)
         self._accepts = np.zeros((ntemps, 2), dtype=np.int64)
@@ -879,7 +879,7 @@ class ComponentRedraw:
         self.layout = layout
         self.component_proposal = component_proposal
         self._bounds = _PeriodicBounds.from_spec(
-            component_periodic, layout.n_component, "component_periodic"
+            component_periodic, layout.component_dim, "component_periodic"
         )
 
     def __call__(self, chain_stats: MaskedChainStats) -> Tuple[np.ndarray, float]:
@@ -1093,10 +1093,10 @@ def _merge_periodic(
             )
         merged[int(i)] = spec
     for c, spec in (component_periodic or {}).items():
-        if not 0 <= int(c) < layout.n_component:
+        if not 0 <= int(c) < layout.component_dim:
             raise ValueError(
                 f"component_periodic index {c} is outside a component's parameters "
-                f"0..{layout.n_component - 1}"
+                f"0..{layout.component_dim - 1}"
             )
         for j in range(layout.max_components):
             i = layout.slot(j).start + int(c)
@@ -1144,7 +1144,7 @@ class RJPTSampler(PTSampler):
     """Reversible-jump parallel-tempering sampler for a variable number of components.
 
     Samples ``(k, theta_k)``: ``n_shared`` parameters every model has, plus
-    ``k`` components of ``n_component`` parameters each, with
+    ``k`` components of ``component_dim`` parameters each, with
     ``min_components <= k <= max_components``. Moves that change ``k`` are
     accepted with Green's reversible-jump ratio; tempering, swaps, adaptive
     within-model proposals, chain files and checkpoints work as in
@@ -1154,11 +1154,11 @@ class RJPTSampler(PTSampler):
     ----------
     n_shared : int
         Parameters every model has; may be 0.
-    n_component : int
+    component_dim : int
         Parameters per component.
     max_components : int
         Largest ``k``. Every row is padded to
-        ``D = n_shared + max_components * n_component`` parameters; slots past
+        ``D = n_shared + max_components * component_dim`` parameters; slots past
         ``k`` hold NaN.
     lnlike, lnprior : callable
         ``f(x, k)``. Per-row mode: ``x`` is the padded ``(D,)`` vector and
@@ -1172,7 +1172,7 @@ class RJPTSampler(PTSampler):
         the prior is not.
     component_proposal : object
         Birth density for new components, with ``draw(rng, x, k) -> u``
-        (``n_component`` values) and ``logpdf(u, x, k) -> float``, where
+        (``component_dim`` values) and ``logpdf(u, x, k) -> float``, where
         ``(x, k)`` is always the smaller model's state. ``logpdf`` must be the
         normalized density of what ``draw`` returns and finite wherever the
         component prior is. Draws must lie inside the declared periodic
@@ -1242,7 +1242,7 @@ class RJPTSampler(PTSampler):
         self,
         *,
         n_shared: int,
-        n_component: int,
+        component_dim: int,
         max_components: int,
         lnlike: Callable,
         lnprior: Callable,
@@ -1257,10 +1257,10 @@ class RJPTSampler(PTSampler):
     ) -> None:
         if "ndim" in kwargs:
             raise TypeError(
-                "RJPTSampler sets ndim itself (n_shared + max_components * n_component, "
+                "RJPTSampler sets ndim itself (n_shared + max_components * component_dim, "
                 "plus the k column); do not pass ndim"
             )
-        self.layout = RJLayout(n_shared, n_component, max_components, min_components)
+        self.layout = RJLayout(n_shared, component_dim, max_components, min_components)
         _check_component_proposal(component_proposal)
         _check_weight("birth_death_weight", birth_death_weight)
         _check_weight("component_redraw_weight", component_redraw_weight)
@@ -1496,7 +1496,7 @@ class RJPTSampler(PTSampler):
         NaN-padded parameters ``(ntemps, n, D)`` (no ``k`` column), plus
         ``k`` ``(ntemps, n)`` integers and the views ``shared``
         ``(ntemps, n, n_shared)`` and ``components``
-        ``(ntemps, n, max_components, n_component)``.
+        ``(ntemps, n, max_components, component_dim)``.
         """
         chain = super().load_chain()
         rows = chain["samples"]
@@ -1511,7 +1511,7 @@ class RJPTSampler(PTSampler):
     def _rj_settings(self) -> dict:
         return {
             "n_shared": self.layout.n_shared,
-            "n_component": self.layout.n_component,
+            "component_dim": self.layout.component_dim,
             "max_components": self.layout.max_components,
             "min_components": self.layout.min_components,
             "component_proposal": type(self.component_proposal).__name__,
@@ -1549,7 +1549,7 @@ class RJPTSampler(PTSampler):
                 "checkpoint has no reversible-jump settings; it was not written by RJPTSampler"
             )
         fresh = self._rj_settings()
-        for key in ("n_shared", "n_component", "max_components", "min_components"):
+        for key in ("n_shared", "component_dim", "max_components", "min_components"):
             expected, actual = int(rj[key]), int(fresh[key])
             if expected != actual:
                 raise CheckpointMismatchError(

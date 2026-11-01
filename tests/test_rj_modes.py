@@ -60,7 +60,7 @@ def _batch_lnprior(x, k):
 def _sampler(outdir, **kwargs):
     options = dict(
         n_shared=1,
-        n_component=1,
+        component_dim=1,
         max_components=K,
         lnlike=_row_lnlike,
         lnprior=_row_lnprior,

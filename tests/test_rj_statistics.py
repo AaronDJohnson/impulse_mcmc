@@ -131,7 +131,7 @@ class CentredBeta:
 def _run_prior_only(outdir, n_iter, proposal, broken=None, min_components=0):
     sampler = RJPTSampler(
         n_shared=0,
-        n_component=PRIOR_P,
+        component_dim=PRIOR_P,
         max_components=PRIOR_K,
         min_components=min_components,
         lnlike=_zero_lnlike,
@@ -256,7 +256,7 @@ STD_NORMAL = IndependentComponentProposal(_normal_draw, normal_logpdf)
 def _run_gauss(outdir, n_iter, broken=None, model_jump=None, log_jacobian=0.0):
     sampler = RJPTSampler(
         n_shared=0,
-        n_component=1,
+        component_dim=1,
         max_components=GAUSS_K,
         lnlike=_gauss_lnlike,
         lnprior=_gauss_lnprior,
@@ -322,7 +322,7 @@ def test_constant_jacobian_detects_a_missing_jacobian(tmp_path):
 def test_component_redraw_alone_at_fixed_k(tmp_path, n_iter, bound):
     sampler = RJPTSampler(
         n_shared=0,
-        n_component=1,
+        component_dim=1,
         max_components=3,
         min_components=3,
         lnlike=_gauss_lnlike,
