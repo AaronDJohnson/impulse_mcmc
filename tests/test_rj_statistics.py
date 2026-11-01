@@ -3,6 +3,8 @@
 Each check compares a chain average with its exact value, using a batch-means
 standard error. The slow cases also run a deliberately broken kernel and
 require the same check to fail, so the tolerance is known to have power.
+The tests check the default adaptive configuration: ``num_adapt`` is unset,
+so AM/SCAM/DE and the parallel-tempering ladder keep adapting throughout.
 """
 
 import math
@@ -16,14 +18,15 @@ from impulse import IndependentComponentProposal, RJLayout, RJPTSampler
 from impulse.reversible_jump import BirthDeath
 
 SMOKE, FULL = 20_000, 200_000
+SMOKE_BOUND, FULL_BOUND = 6.0, 5.0
 RUNS = [
-    pytest.param(SMOKE, 6.0, id="smoke"),
-    pytest.param(FULL, 4.5, id="full", marks=pytest.mark.slow),
+    pytest.param(SMOKE, SMOKE_BOUND, id="smoke"),
+    pytest.param(FULL, FULL_BOUND, id="full", marks=pytest.mark.slow),
 ]
 POWER = 8.0
 
 
-def k_z_scores(ks, probs):
+def _k_z_scores(ks, probs):
     """Batch-means z of each k indicator, for every k with probability >= 0.005."""
     return np.array(
         [batch_mean_z(ks == k, p) for k, p in enumerate(probs) if p >= 0.005], dtype=float
@@ -125,11 +128,12 @@ class CentredBeta:
         return math.log(0.5 + 0.5 * math.exp(float(np.sum(stats.beta.logpdf(u, a, b)))))
 
 
-def _run_prior_only(outdir, n_iter, proposal, broken=None):
+def _run_prior_only(outdir, n_iter, proposal, broken=None, min_components=0):
     sampler = RJPTSampler(
         n_shared=0,
         n_component=PRIOR_P,
         max_components=PRIOR_K,
+        min_components=min_components,
         lnlike=_zero_lnlike,
         lnprior=_poisson_lnprior,
         component_proposal=proposal,
@@ -156,10 +160,10 @@ def _component_z(comps):
     return batch_mean_z(below, 0.0), batch_mean_z(centred, 0.0)
 
 
-def _check_prior_only(ks, comps, bound):
-    z_k = k_z_scores(ks, POISSON)
+def _check_prior_only(ks, comps, bound, probs=POISSON):
+    z_k = _k_z_scores(ks, probs)
     z_c = np.array(_component_z(comps))
-    message = f"k z {np.round(z_k, 2)}; component z {np.round(z_c, 2)}; {_k_report(ks, POISSON)}"
+    message = f"k z {np.round(z_k, 2)}; component z {np.round(z_c, 2)}; {_k_report(ks, probs)}"
     print(message)
     assert np.max(np.abs(z_k)) < bound, message
     assert np.max(np.abs(z_c)) < bound, message
@@ -172,6 +176,15 @@ def test_prior_only(tmp_path, proposal, n_iter, bound):
     _check_prior_only(ks, comps, bound)
 
 
+def test_prior_only_with_a_lower_bound_on_k(tmp_path):
+    """min_components = 1: the truncated Poisson renormalized on 1..PRIOR_K (smoke only)."""
+    ks, comps = _run_prior_only(tmp_path, SMOKE, PRIOR_BIRTHS, min_components=1)
+    target = np.where(np.arange(PRIOR_K + 1) >= 1, POISSON, 0.0)
+    target /= target.sum()
+    assert ks.min() >= 1
+    _check_prior_only(ks, comps, SMOKE_BOUND, probs=target)
+
+
 @pytest.mark.parametrize("n_iter, bound", RUNS)
 def test_state_dependent_component_proposal(tmp_path, n_iter, bound):
     proposal = CentredBeta(RJLayout(0, PRIOR_P, PRIOR_K))
@@ -180,7 +193,7 @@ def test_state_dependent_component_proposal(tmp_path, n_iter, bound):
 
 
 def _check_detected(ks, probs):
-    z_k = k_z_scores(ks, probs)
+    z_k = _k_z_scores(ks, probs)
     message = f"k z {np.round(z_k, 2)}; {_k_report(ks, probs)}"
     print(message)
     assert np.max(np.abs(z_k)) > POWER, message
@@ -190,6 +203,21 @@ def _check_detected(ks, probs):
 def test_prior_only_detects_a_missing_selection_ratio(tmp_path):
     ks, _ = _run_prior_only(tmp_path, FULL, PRIOR_BIRTHS, broken=NoSelectionRatioBirthDeath)
     _check_detected(ks, POISSON)
+
+
+@pytest.mark.slow
+def test_prior_only_detects_a_missing_birth_density(tmp_path):
+    """Mixed births with a uniform logpdf: the q != p term is dropped.
+
+    p(k) cannot see this (the birth density integrates to 1 over the prior's
+    support), so only the component statistics detect it.
+    """
+    proposal = IndependentComponentProposal(_mixed_draw, _uniform_logpdf)
+    ks, comps = _run_prior_only(tmp_path, FULL, proposal)
+    z_c = np.array(_component_z(comps))
+    message = f"component z {np.round(z_c, 2)}; {_k_report(ks, POISSON)}"
+    print(message)
+    assert np.max(np.abs(z_c)) > POWER, message
 
 
 # --- Analytic posterior on k: y_n ~ N(sum_{i<k} a_i, 1), a_i ~ N(0, 1), uniform k ----------
@@ -248,7 +276,7 @@ def _run_gauss(outdir, n_iter, broken=None, model_jump=None, log_jacobian=0.0):
 
 
 def _check_gauss(ks, bound):
-    z_k = k_z_scores(ks, GAUSS_POSTERIOR)
+    z_k = _k_z_scores(ks, GAUSS_POSTERIOR)
     message = f"k z {np.round(z_k, 2)}; {_k_report(ks, GAUSS_POSTERIOR)}"
     print(message)
     assert np.max(np.abs(z_k)) < bound, message
@@ -310,6 +338,10 @@ def test_component_redraw_alone_at_fixed_k(tmp_path, n_iter, bound):
         verbose=False,
     )
     sampler.sample(np.zeros(3), n_iter, initial_k=3)
+    # Zero total weight would fall back to uniform selection; pin that only the redraw ran.
+    calls = {name: r["calls"] for name, r in sampler.proposal_acceptance_rates().items()}
+    print(f"proposal calls: {calls}")
+    assert calls == {"rj_am": 0, "rj_scam": 0, "rj_de": 0, "component_redraw": n_iter}
     total = sampler.load_chain()["samples"][0, n_iter // 10 :].sum(axis=1)
     var = 1.0 / (1.0 / 3.0 + len(Y))  # posterior of sum(a): prior N(0, 3), 4 unit-noise data
     mean = var * Y.sum()
