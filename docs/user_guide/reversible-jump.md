@@ -306,8 +306,9 @@ intervals, and compute `qxy` for those values.
 The built-in within-model moves (`rj_am`, `rj_scam`, `rj_de`), like
 `NudgeCentre` above, return the current state when there is nothing to move
 (for example `n_shared = 0` and `k = 0`), and `rj_de` also does so until its
-history buffer holds `de_min_fill` rows (default 100). The sampler counts that as accepted, so within-model
-acceptance rates read high when the chain spends time at low `k`.
+history buffer holds `de_min_fill` rows (default 100). The sampler counts
+that as accepted, so within-model acceptance rates read high when the chain
+spends time at low `k`.
 
 `weight` must be finite and at least 0. Moves named `birth` or `death` are
 refused: those are the names of the built-in birth/death entries in
