@@ -92,6 +92,7 @@ _NOTEBOOKS = {
     "sinusoid_quickstart.ipynb": "Quickstart: fitting a sinusoid",
     "vectorized_likelihoods.ipynb": "Vectorized likelihoods: NumPy, JAX and threads",
     "sampler_features.ipynb": "Sampler features",
+    "rj_sinusoids.ipynb": "Reversible jump: how many sinusoids?",
     # high_dimensional_test.ipynb is deliberately NOT rendered: its stored
     # outputs were produced by pre-2.0.0 code and had to be cleared (they
     # reported sigma 2.718 against a true value of 0.800 -- exp() of the old

@@ -742,19 +742,18 @@ class PTSampler:
             adapt_t0=adapt_t0,
             adapt_nu=adapt_nu,
         )
-        self.multi_chain_stats = setup_chain_stats(
-            ndim,
-            self.ptstate,
-            self.rngs,
-            groups,
-            sample_cov,
-            sample_mean,
-            buffer_size,
-            self.ptstate.ladder,
-            buffer_thin,
+        self.multi_chain_stats = self._build_chain_stats(
+            groups=groups,
+            sample_cov=sample_cov,
+            sample_mean=sample_mean,
+            buffer_size=buffer_size,
+            buffer_thin=buffer_thin,
         )
-        self.proposal_bundle = setup_standard_jumps(
-            self.multi_chain_stats, am_weight, scam_weight, de_weight, de_min_fill=de_min_fill
+        self.proposal_bundle = self._build_proposal_bundle(
+            am_weight=am_weight,
+            scam_weight=scam_weight,
+            de_weight=de_weight,
+            de_min_fill=de_min_fill,
         )
         self.cov_update = cov_update
         self.save_freq = save_freq
@@ -764,6 +763,44 @@ class PTSampler:
         self.verbose = verbose
         self._num_adapt_explicit = num_adapt is not _UNSET
         self.num_adapt = None if num_adapt is _UNSET else num_adapt
+
+    def _build_chain_stats(
+        self,
+        groups: Optional[list],
+        sample_cov: Optional[np.ndarray],
+        sample_mean: Optional[np.ndarray],
+        buffer_size: int,
+        buffer_thin: int,
+    ) -> MultiChainStats:
+        """Build the per-chain adaptive statistics; subclasses with another row layout override.
+
+        Called from ``__init__`` after ``ntemps``, ``rngs`` and ``ptstate`` are set; a subclass
+        may return objects of a subclass (the chain stats may use a different ndim than
+        ``self.ndim``).
+        """
+        return setup_chain_stats(
+            self.ndim,
+            self.ptstate,
+            self.rngs,
+            groups,
+            sample_cov,
+            sample_mean,
+            buffer_size,
+            self.ptstate.ladder,
+            buffer_thin,
+        )
+
+    def _build_proposal_bundle(
+        self, am_weight: float, scam_weight: float, de_weight: float, de_min_fill: int
+    ) -> ProposalBundle:
+        """Register the default proposals on every chain; subclasses override.
+
+        Called from ``__init__`` right after ``multi_chain_stats`` is built; a subclass may
+        return a bundle of ``JumpProposals`` subclasses.
+        """
+        return setup_standard_jumps(
+            self.multi_chain_stats, am_weight, scam_weight, de_weight, de_min_fill=de_min_fill
+        )
 
     def _adaptation_active(self, iteration: int) -> bool:
         return self.num_adapt is None or iteration < self.num_adapt

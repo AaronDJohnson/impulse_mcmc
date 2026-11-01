@@ -29,7 +29,11 @@ FENCE = re.compile(r"^```python\n(.*?)^```", re.M | re.S)
 #: Optional third-party packages a snippet may legitimately require. A missing
 #: one is a skip; anything else missing is a genuine failure (a real import
 #: typo in the docs must not be excused).
-OPTIONAL_DEPS = {"coppuccino"}
+#:
+#: ``jax_enable_x64`` is process-global and this checker runs every page in one
+#: process. The reversible-jump page, whose JAX block turns x64 on, sorts last
+#: in ``FILES`` (see the sorted glob above), so no snippet runs after it.
+OPTIONAL_DEPS = {"coppuccino", "jax"}
 
 
 def _missing_optional(exc: BaseException) -> str | None:

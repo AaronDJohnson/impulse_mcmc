@@ -90,6 +90,12 @@ jobs:
       run: |
         pytest tests/test_flow_proposals.py -v
 
+    - name: Run RJPTSampler evaluation-mode tests (JAX installed via [flow])
+      # JAX arrives through coppuccino; the import check fails the job if it stops doing so.
+      run: |
+        python -c "import jax; print('jax', jax.__version__)"
+        pytest tests/test_rj_modes.py -v -rs
+
   doc-snippets:
     # Every ```python block in README.md and docs/**/*.md is executed. This
     # runs real (short) chains, so it lives outside the fast matrix.

@@ -2,8 +2,8 @@
 
 The repository ships complete, runnable Jupyter notebooks in
 [`examples/`](https://github.com/AaronDJohnson/impulse_mcmc/tree/main/examples).
-The three below are rendered here with their **stored outputs**; they are
-never executed during documentation builds. They share one model, a sinusoid
+The four below are rendered here with their **stored outputs**; they are
+never executed during documentation builds. They share one model, sinusoids
 in noise, and are meant to be read in order:
 
 ```{toctree}
@@ -12,6 +12,7 @@ in noise, and are meant to be read in order:
 sinusoid_quickstart
 vectorized_likelihoods
 sampler_features
+rj_sinusoids
 ```
 
 - **Quickstart**: likelihood and prior, running the sampler, reading the
@@ -21,6 +22,9 @@ sampler_features
 - **Sampler features**: tempering on a two-mode posterior, periodic
   parameters, starting covariances and groups, a custom proposal, and
   checkpoint/resume with `num_adapt`.
+- **Reversible jump**: an unknown number of sinusoids, a birth density built
+  from the data (an F-statistic analogue) compared with prior births, and
+  reading the posterior on `k` without being fooled by label switching.
 
 ## More notebooks in the repository
 

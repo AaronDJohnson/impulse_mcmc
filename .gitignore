@@ -131,3 +131,5 @@ examples/chains*/
 sampler_checkpoint.pkl
 # Docs: notebooks staged into the Sphinx source tree at build time (docs/conf.py)
 docs/examples/*.ipynb
+# Local design notes and implementation plans (not part of the package)
+design/
