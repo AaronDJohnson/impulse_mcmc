@@ -208,8 +208,9 @@ interval, for example `(−π, π)`, declare that interval in `component_periodi
 `draw(rng)` and `logpdf(u)`, as in the quickstart. The prior is always a valid
 birth density, but a poor one when the likelihood is sharp: most births land
 where the data rule a component out. A density built from the data puts
-births where components are likely, so the chain finds them sooner. For galactic binaries that is an F-statistic map; for these pulses, a
-matched filter over the centre:
+births where components are likely, so the chain finds them sooner. For
+galactic binaries that is an F-statistic map; for these pulses, a matched
+filter over the centre:
 
 ```python
 edges = np.linspace(LOW[1], HIGH[1], 101)  # 100 centre cells of width 0.1
@@ -261,14 +262,14 @@ for name, run in [("prior births", sampler), ("matched-filter births", gridded)]
 ```
 
 Once the chain has both pulses the choice no longer matters here: no third
-pulse fits, so every birth is rejected either way.
+pulse fits, so almost every birth is rejected either way.
 
 ## Custom moves
 
 ### Within a model: `add_custom_jump`
 
 A within-model move has the `PTSampler` signature (see
-{doc}`custom-proposals`), `move(chain_stats) -> (row, qxy)`, with three
+{doc}`custom-proposals`), `move(chain_stats) -> (row, qxy)`, with these
 differences: `chain_stats.current_sample` is the full row `(D + 1,)` with `k`
 last, and the returned row must keep the same `k` and NaN in the same slots
 (the sampler raises `ValueError` naming the move otherwise).
@@ -277,8 +278,8 @@ raises `ValueError`, and so does returning it (or any array sharing its
 memory). Return a new array, for example `current_sample.copy()` with changes.
 `chain_stats.ndim` is `D`, without the `k` column: choose coordinates with
 `layout.n_active(k)` or `layout.slot(j)`, not `range(chain_stats.ndim)`, which
-includes inactive slots. `chain_stats.layout` is an {class}`~impulse.RJLayout`, which knows where each
-slot is:
+includes inactive slots. `chain_stats.layout` is an
+{class}`~impulse.RJLayout`, which knows where each slot is:
 
 ```python
 class NudgeCentre:
@@ -302,10 +303,10 @@ harmless for a symmetric random-walk step like this one (`qxy = 0`), but a move
 with any other `qxy` must return periodic values already wrapped into their
 intervals, and compute `qxy` for those values.
 
-The built-in within-model moves (`rj_am`, `rj_scam`, `rj_de`, and
-`NudgeCentre` above) return the current state when there is nothing to move
+The built-in within-model moves (`rj_am`, `rj_scam`, `rj_de`), like
+`NudgeCentre` above, return the current state when there is nothing to move
 (for example `n_shared = 0` and `k = 0`), and `rj_de` also does so until its
-history buffer has filled. The sampler counts that as accepted, so within-model
+history buffer holds `de_min_fill` rows (default 100). The sampler counts that as accepted, so within-model
 acceptance rates read high when the chain spends time at low `k`.
 
 `weight` must be finite and at least 0. Moves named `birth` or `death` are
@@ -434,9 +435,10 @@ insert at random positions, and nothing in the posterior tells the slots
 apart. Per-slot means, traces and R-hat are therefore meaningless. Use
 summaries that don't depend on the labels, such as the distribution of all
 active centres, or relabel each sample (here, by sorting on the centre) before
-summarizing. In this run no label switches actually happen, because there are
-no deaths after burn-in; sorting works when the components are well separated
-in the sort key:
+summarizing. Labels switch in this run even though no birth or death is
+accepted after burn-in: parallel-tempering swaps exchange whole states between
+temperatures, and the chains reached `k = 2` with the pulses in different
+slots. Sorting works when the components are well separated in the sort key:
 
 ```python
 comps = chain["components"][0, 1000:]  # (n, K, P), NaN past k
