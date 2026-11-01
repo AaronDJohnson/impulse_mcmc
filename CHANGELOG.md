@@ -330,7 +330,7 @@ matter only if you ran that branch.
 - The `[flow]` extra (coppuccino) carries a `python_version >= '3.11'` marker,
   matching coppuccino's own requirement, so `pip install "impulse-mcmc[flow]"`
   still resolves on 3.10 (without the flow proposal).
-- The project description and `CITATION.cff` describe the `PTSampler`-only
+- The project description and `CITATION.cff` are updated to match the 2.0.0
   scope. The description becomes immutable PyPI metadata per version.
 
 ### Changed (documentation)

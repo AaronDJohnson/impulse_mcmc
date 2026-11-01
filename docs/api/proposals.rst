@@ -68,4 +68,5 @@ find the row layout in ``chain_stats.layout``. See
 .. autoclass:: IndependentComponentProposal
 
 .. autoclass:: RJLayout
-   :members: k, params, shared, components, slot, active_mask, make_row, insert, remove
+   :members: k, params, shared, components, slot, active_mask, n_active, ndim, width,
+              check_k, make_row, insert, remove

@@ -26,10 +26,14 @@ Slots `k` to `K − 1` hold NaN. Your likelihood and prior receive the `D`
 parameter columns as `x` and the model index separately as `k`. The padding is
 storage only: inactive slots are never sampled and carry no density.
 
+`k` runs from `min_components` (default 0) to `max_components`.
+`sample(x0, num_iterations, initial_k=...)` takes `x0` without `k` and starts
+at `initial_k` (default `min_components`).
+
 ## Quickstart: how many pulses?
 
 Data with two Gaussian pulses in white noise, fitted with up to five pulses of
-two parameters each (amplitude, centre). The amplitude prior starts at 0.5, so
+two parameters each (amplitude, centre). The amplitude prior starts at 0.6, so
 a pulse too faint to detect is not an option. There are no shared parameters.
 
 ```python
@@ -39,7 +43,7 @@ from impulse import IndependentComponentProposal, RJPTSampler
 
 K, P = 5, 2  # up to 5 pulses, each (amplitude, centre)
 WIDTH, SIGMA = 0.3, 0.1
-LOW, HIGH = np.array([0.5, 0.0]), np.array([2.0, 10.0])
+LOW, HIGH = np.array([0.6, 0.0]), np.array([2.0, 10.0])
 LOG_VOLUME = np.log(np.prod(HIGH - LOW))
 
 rng = np.random.default_rng(0)
@@ -89,6 +93,13 @@ chain = sampler.load_chain()
 ks = chain["k"][0, 1000:]  # cold chain after burn-in
 print("p(k):", (np.bincount(ks, minlength=K + 1) / ks.size).round(3))
 ```
+
+The chain climbs from `k = 0` to `k = 2` within the first couple of hundred
+iterations and stays there: at this noise level a third pulse of amplitude
+≥ 0.6 is ruled out, so almost every later birth and death is rejected. The
+prior matters: with amplitudes allowed down to 0, a faint extra pulse costs
+little, `p(k = 2)` drops to about 0.35 and `k = 3` becomes the most probable.
+That is the posterior for that prior, not a sampler failure.
 
 `births` is the *component proposal*: the density that birth moves draw new
 components from. Here it is the component prior.
@@ -180,8 +191,11 @@ Two requirements are yours to meet:
   rejected. At the end of each `sample()` call a `RuntimeWarning` gives the
   number rejected in that call, with the running total in parentheses.
   Mixing a sharp density with the prior, as below, guarantees coverage.
-- **A fixed density.** A density that changes during the run must stop
-  changing at `num_adapt`, by implementing `freeze_adaptation()`.
+- **A fixed density.** A density that adapts during the run must stop
+  changing: pass `num_adapt` and implement `freeze_adaptation()`, which the
+  sampler calls when the iteration count reaches `num_adapt` (with the default
+  `num_adapt=None` it is never called). Treat samples before `num_adapt` as
+  warm-up.
 
 A draw must also lie inside the declared periodic intervals
 (`component_periodic`, see below), and `logpdf` must be the density of that
@@ -193,8 +207,8 @@ interval, for example `(−π, π)`, declare that interval in `component_periodi
 `IndependentComponentProposal(draw, logpdf)` wraps state-free functions
 `draw(rng)` and `logpdf(u)`, as in the quickstart. The prior is always a valid
 birth density, but a poor one when the likelihood is sharp: most births land
-where the data rule a component out. A density built from the data does
-better. For galactic binaries that is an F-statistic map; for these pulses, a
+where the data rule a component out. A density built from the data puts
+births where components are likely, so the chain finds them sooner. For galactic binaries that is an F-statistic map; for these pulses, a
 matched filter over the centre:
 
 ```python
@@ -246,19 +260,24 @@ for name, run in [("prior births", sampler), ("matched-filter births", gridded)]
     print(f"{name}: cold chain first has k = 2 at saved iteration {np.argmax(cold_k == 2)}")
 ```
 
+Once the chain has both pulses the choice no longer matters here: no third
+pulse fits, so every birth is rejected either way.
+
 ## Custom moves
 
 ### Within a model: `add_custom_jump`
 
 A within-model move has the `PTSampler` signature (see
-{doc}`custom-proposals`), `move(chain_stats) -> (row, qxy)`, with two
+{doc}`custom-proposals`), `move(chain_stats) -> (row, qxy)`, with three
 differences: `chain_stats.current_sample` is the full row `(D + 1,)` with `k`
 last, and the returned row must keep the same `k` and NaN in the same slots
 (the sampler raises `ValueError` naming the move otherwise).
 `current_sample` is a read-only view of the live chain state: writing to it
 raises `ValueError`, and so does returning it (or any array sharing its
 memory). Return a new array, for example `current_sample.copy()` with changes.
-`chain_stats.layout` is an {class}`~impulse.RJLayout`, which knows where each
+`chain_stats.ndim` is `D`, without the `k` column: choose coordinates with
+`layout.n_active(k)` or `layout.slot(j)`, not `range(chain_stats.ndim)`, which
+includes inactive slots. `chain_stats.layout` is an {class}`~impulse.RJLayout`, which knows where each
 slot is:
 
 ```python
@@ -283,9 +302,11 @@ harmless for a symmetric random-walk step like this one (`qxy = 0`), but a move
 with any other `qxy` must return periodic values already wrapped into their
 intervals, and compute `qxy` for those values.
 
-A move with no active coordinates (for example `n_shared = 0` and `k = 0`)
-returns the current state, which counts as accepted. Within-model acceptance
-rates therefore read high when the chain spends time at low `k`.
+The built-in within-model moves (`rj_am`, `rj_scam`, `rj_de`, and
+`NudgeCentre` above) return the current state when there is nothing to move
+(for example `n_shared = 0` and `k = 0`), and `rj_de` also does so until its
+history buffer has filled. The sampler counts that as accepted, so within-model
+acceptance rates read high when the chain spends time at low `k`.
 
 `weight` must be finite and at least 0. Moves named `birth` or `death` are
 refused: those are the names of the built-in birth/death entries in
@@ -373,8 +394,8 @@ print(sorted(custom.proposal_acceptance_rates()))
 ```
 
 The same rules apply to model jumps: the returned row must be a new array, and
-the sampler checks it (shape, `k` within the limits, finite values before slot
-`k`, NaN after it) and raises `ValueError` naming the jump otherwise. Returned
+the sampler checks it (shape, `k` within the limits, finite shared parameters and
+slots 0 to `k − 1`, NaN after them) and raises `ValueError` naming the jump otherwise. Returned
 rows must already be wrapped into the periodic intervals, with `qxy` computed
 for the wrapped values, unless `qxy` is `−inf`, which means "reject" and is
 not checked. `log_jacobian` must be finite.
@@ -388,7 +409,7 @@ mode, which local moves can't.
 
 ## Periodic parameters
 
-`component_periodic={j: period}` marks parameter `j` of every component as
+`component_periodic={j: period}` or `{j: (low, high)}` marks parameter `j` of every component as
 periodic: for components `(log10 A, f, φ)`, `component_periodic={2: 2 * np.pi}`
 wraps every phase. `periodic` takes indices into the padded parameter vector
 and is for shared parameters; the two may not overlap.
@@ -413,7 +434,9 @@ insert at random positions, and nothing in the posterior tells the slots
 apart. Per-slot means, traces and R-hat are therefore meaningless. Use
 summaries that don't depend on the labels, such as the distribution of all
 active centres, or relabel each sample (here, by sorting on the centre) before
-summarizing:
+summarizing. In this run no label switches actually happen, because there are
+no deaths after burn-in; sorting works when the components are well separated
+in the sort key:
 
 ```python
 comps = chain["components"][0, 1000:]  # (n, K, P), NaN past k
@@ -437,8 +460,8 @@ sampler the same way, with the same constructor arguments, the same
 `add_custom_jump` and `add_model_jump` calls in the same order, and a component
 proposal of the same class, then pass `resume=True`. On top of the `PTSampler`
 checks, a changed `n_shared`, `n_component`, `max_components`,
-`min_components`, component proposal class, or model jump `log_jacobian`
-raises `CheckpointMismatchError`.
+`min_components`, component proposal class name, or list of model jumps
+(names, order, `log_jacobian`) raises `CheckpointMismatchError`.
 
 The sampler cannot tell whether a component proposal was rebuilt from
 different data or settings. A proposal can guard against that by returning a
@@ -447,7 +470,7 @@ fingerprint from `get_checkpoint_state()` and comparing it in
 (checkpoints are `.npz` + JSON, so a NumPy array or scalar needs converting
 first, as the hexdigest string is here):
 
-```{code-block} python
+```python
 import hashlib
 
 
@@ -458,13 +481,21 @@ class CheckedGriddedProposal(GriddedProposal):
     def set_checkpoint_state(self, state):
         if state["map"] != self.get_checkpoint_state()["map"]:
             raise ValueError("the birth map differs from the checkpointed run")
+
+
+checked = CheckedGriddedProposal(edges, matched)
+checked.set_checkpoint_state(checked.get_checkpoint_state())  # same map: no error
 ```
 
 ## JAX
 
-With `vectorized=True, jax=True` the sampler always sends the full batch, so
-the function compiles once; `k` changes values, not shape. Mask with
-`jnp.where`, and enable 64-bit floats before creating any JAX array (the
+Use `vectorized=True, jax=True` with a jitted likelihood: the sampler then always
+sends the full batch, so the function compiles once and `k` changes values, not
+shape. (With `vectorized=True, jax=False` the batch size varies, so JAX
+recompiles.) Mask with `jnp.where`: sanitize inactive inputs to an in-domain
+value before any arithmetic, as below. If a component's contribution at that
+value is not zero, also mask the contribution with a second `jnp.where` before
+summing. Enable 64-bit floats before creating any JAX array (the
 {doc}`vectorized likelihoods notebook <../examples/vectorized_likelihoods>`
 shows why):
 
@@ -487,6 +518,11 @@ def lnlike_jax(x, k):
     return -0.5 * jnp.sum(r * r, axis=1) / SIGMA**2
 
 
+# Check the function without jit against the NumPy version. Under jit, XLA can turn a
+# mask-multiply into a select, which hides the NaN bug.
+with jax.disable_jit():
+    assert np.allclose(lnlike_jax(check_x, check_k), lnlike_vectorized(check_x, check_k))
+
 jax_sampler = RJPTSampler(
     n_shared=0,
     n_component=P,
@@ -497,7 +533,9 @@ jax_sampler = RJPTSampler(
     jax=True,
     component_proposal=births,
     ntemps=4,
+    seed=1,
     outdir="rj_chains_jax",
+    verbose=False,
 )
 ```
 
@@ -506,4 +544,5 @@ jax_sampler = RJPTSampler(
 Each saved row holds `D + 5` values: the padded parameters, `k`, `lnlike`,
 `lnprob`, `accepted` and `temperature`. With `K = 20`, `p = 8` and no shared
 parameters that is 165 values, about 1.3 kB per row, or 132 MB per
-temperature for 100,000 saved rows. `thin` is the main lever.
+temperature for 100,000 saved rows, with the default `chain_format="binary"`
+(`"text"` files are about 3× larger). `thin` is the main lever.
