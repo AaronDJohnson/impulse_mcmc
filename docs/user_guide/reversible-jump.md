@@ -545,4 +545,4 @@ Each saved row holds `D + 5` values: the padded parameters, `k`, `lnlike`,
 `lnprob`, `accepted` and `temperature`. With `K = 20`, `p = 8` and no shared
 parameters that is 165 values, about 1.3 kB per row, or 132 MB per
 temperature for 100,000 saved rows, with the default `chain_format="binary"`
-(`"text"` files are about 3× larger). `thin` is the main lever.
+(`"text"` files are roughly 2 to 3× larger). `thin` is the main lever.
