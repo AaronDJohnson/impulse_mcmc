@@ -509,7 +509,7 @@ summing. Enable 64-bit floats before creating any JAX array (the
 {doc}`vectorized likelihoods notebook <../examples/vectorized_likelihoods>`
 shows why):
 
-```{code-block} python
+```python
 import jax
 import jax.numpy as jnp
 
