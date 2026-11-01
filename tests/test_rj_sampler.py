@@ -274,6 +274,27 @@ def test_moves_see_a_read_only_current_sample(tmp_path):
         sampler.sample(X0, 5, initial_k=1)
 
 
+@pytest.mark.parametrize("vectorized", [False, True])
+@pytest.mark.parametrize("which", ["lnlike", "lnprior"])
+def test_user_functions_get_read_only_arrays(tmp_path, vectorized, which):
+    def writes(x, k):
+        x[np.isnan(x)] = 0.0
+        return 0.0 if vectorized is False else np.zeros(len(x))
+
+    kwargs = {which: writes}
+    if which == "lnlike":
+        kwargs["lnprior"] = _lnprior
+    else:
+        kwargs["lnlike"] = _lnlike
+    if vectorized:
+        other = "lnprior" if which == "lnlike" else "lnlike"
+        f = kwargs[other]
+        kwargs[other] = lambda x, k: np.array([f(xi, int(ki)) for xi, ki in zip(x, k)])
+    sampler = _sampler(tmp_path, vectorized=vectorized, ntemps=1, **kwargs)
+    with pytest.raises(ValueError, match="read-only"):
+        sampler.sample(X0, 5, initial_k=1)
+
+
 def test_jump_weights_are_checked(tmp_path):
     sampler = _sampler(tmp_path)
 

@@ -1059,8 +1059,13 @@ class _RJCallable:
     def __call__(self, x: np.ndarray, *args: Any, **kwargs: Any) -> Any:
         d = self.ndim
         if self.vectorized:
-            return self.f(np.ascontiguousarray(x[:, :d]), x[:, d].astype(np.intp), *args, **kwargs)
-        return self.f(x[:d], int(x[d]), *args, **kwargs)
+            return self.f(
+                _readonly(np.ascontiguousarray(x[:, :d])),
+                x[:, d].astype(np.intp),
+                *args,
+                **kwargs,
+            )
+        return self.f(_readonly(x[:d]), int(x[d]), *args, **kwargs)
 
 
 def _merge_periodic(
@@ -1133,7 +1138,9 @@ class RJPTSampler(PTSampler):
     lnlike, lnprior : callable
         ``f(x, k)``. Per-row mode: ``x`` is the padded ``(D,)`` vector and
         ``k`` an int. With ``vectorized=True``: ``x`` is ``(n, D)`` and ``k``
-        an ``(n,)`` integer array. Entries past ``k`` are NaN. ``lnprior`` is
+        an ``(n,)`` integer array. Entries past ``k`` are NaN. The arrays passed
+        in are read-only views of the engine's state: writing into ``x`` raises
+        ``ValueError``, so copy it first if you need to modify it. ``lnprior`` is
         the joint prior over numbered slots including ``log p(k)``; for
         exchangeable components it is ``log p(k) + sum_{i<k} log pi(theta_i)``
         plus the shared prior, with no ``k!``. The likelihood is tempered and
