@@ -12,9 +12,11 @@ repository-code: "https://github.com/AaronDJohnson/impulse_mcmc"
 license: MIT
 abstract: >-
   Parallel-tempering MCMC with adaptive proposals and bit-exact
-  checkpoint/resume.
+  checkpoint/resume, including a reversible-jump sampler for a variable
+  number of components.
 keywords:
   - MCMC
   - parallel tempering
+  - reversible jump
   - adaptive Metropolis
   - Bayesian inference
